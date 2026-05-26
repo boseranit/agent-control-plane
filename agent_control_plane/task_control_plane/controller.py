@@ -4,7 +4,7 @@ import json
 import shutil
 import subprocess
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -25,7 +25,14 @@ PLANNER_PROMPT_PATH = PACKAGE_DIRECTORY / "prompts" / "planner-agent.md"
 PLANNER_OUTPUT_SCHEMA_PATH = (
     PACKAGE_DIRECTORY / "schemas" / "planner-output.schema.json"
 )
+CONTEXT_PROMPT_PATH = PACKAGE_DIRECTORY / "prompts" / "context-agent.md"
+CONTEXT_ANSWERS_SCHEMA_PATH = (
+    PACKAGE_DIRECTORY / "schemas" / "context-answers-output.schema.json"
+)
 PLANNER_STATUSES = frozenset({"planned", "needs_answers"})
+CONTEXT_ANSWER_STATUSES = frozenset({"answered", "unresolved"})
+
+HumanAnswerProvider = Callable[[list[dict[str, Any]], Path, Path], list[dict[str, Any]]]
 
 
 @dataclass(frozen=True)
@@ -43,6 +50,14 @@ class TaskRunError(RuntimeError):
 
 class PlannerOutputError(RuntimeError):
     """Raised when the Planner Agent output cannot drive Controller routing."""
+
+
+class ContextOutputError(RuntimeError):
+    """Raised when the Context Agent output cannot drive Controller routing."""
+
+
+class HumanAnswerError(RuntimeError):
+    """Raised when human answer provider output cannot drive Controller routing."""
 
 
 def start_task_run(
@@ -95,7 +110,12 @@ def start_task_run(
     )
 
 
-def plan_active_task(task_state_path: str | Path, codex_client: Any) -> dict[str, Any]:
+def plan_active_task(
+    task_state_path: str | Path,
+    codex_client: Any,
+    *,
+    human_answer_provider: HumanAnswerProvider | None = None,
+) -> dict[str, Any]:
     task_state_file = Path(task_state_path)
     state = _read_json(task_state_file)
     active_task_state = _active_task_state(state)
@@ -104,41 +124,113 @@ def plan_active_task(task_state_path: str | Path, codex_client: Any) -> dict[str
     task_spec = load_task_spec(state["task_spec_snapshot_path"])
     target_repository = Path(state["target_repository"]).resolve()
     task_context_path = Path(artifacts["task_context"])
+    planning_artifact_path = Path(artifacts["planning"])
     task_context = _read_json(task_context_path)
 
-    developer_instructions = PLANNER_PROMPT_PATH.read_text(encoding="utf-8")
+    planner_developer_instructions = PLANNER_PROMPT_PATH.read_text(encoding="utf-8")
     planner_output_schema = _read_json(PLANNER_OUTPUT_SCHEMA_PATH)
     thread = _planner_thread(
         codex_client=codex_client,
         task_state=active_task_state,
         target_repository=target_repository,
-        developer_instructions=developer_instructions,
+        developer_instructions=planner_developer_instructions,
         model=task_spec.codex.model,
     )
 
     _persist_planner_thread_id(active_task_state, thread.id)
     _write_json(task_state_file, state)
 
-    turn_result = thread.run(
-        _planner_turn_input(task_context_path, task_context),
-        approval_mode=ApprovalMode.auto_review,
-        cwd=str(target_repository),
-        effort=_reasoning_effort(task_spec.codex.effort),
+    turn_result = _run_planner_thread(
+        thread=thread,
+        turn_input=_planner_turn_input(task_context_path, task_context),
+        target_repository=target_repository,
+        effort=task_spec.codex.effort,
         model=task_spec.codex.model,
         output_schema=planner_output_schema,
-        sandbox_policy=ReadOnlySandboxPolicy(type="readOnly"),
     )
     planner_output = _parse_planner_output(turn_result)
     _check_planner_output_for_routing(planner_output)
-    _append_planner_output(Path(artifacts["planning"]), planner_output)
+    _append_planner_output(planning_artifact_path, planner_output)
 
-    status = planner_output["status"]
-    if status == "planned":
-        state["phase"] = "plan_ready"
-        active_task_state["phase"] = "plan_ready"
-    elif status == "needs_answers":
+    context_thread: Any | None = None
+    context_answers_schema: dict[str, Any] | None = None
+    while planner_output["status"] == "needs_answers":
         state["phase"] = "planning_needs_answers"
         active_task_state["phase"] = "planning_needs_answers"
+        _write_json(task_state_file, state)
+
+        if context_thread is None:
+            context_developer_instructions = CONTEXT_PROMPT_PATH.read_text(
+                encoding="utf-8"
+            )
+            context_answers_schema = _read_json(CONTEXT_ANSWERS_SCHEMA_PATH)
+            context_thread = _context_thread(
+                codex_client=codex_client,
+                task_state=active_task_state,
+                target_repository=target_repository,
+                developer_instructions=context_developer_instructions,
+                model=task_spec.codex.model,
+            )
+            _persist_context_thread_id(active_task_state, context_thread.id)
+            _write_json(task_state_file, state)
+
+        questions = _planner_questions(planner_output)
+        context_turn_result = _run_context_thread(
+            thread=context_thread,
+            turn_input=_context_turn_input(
+                questions=questions,
+                task_context_path=task_context_path,
+                planning_artifact_path=planning_artifact_path,
+            ),
+            target_repository=target_repository,
+            effort=task_spec.codex.effort,
+            model=task_spec.codex.model,
+            output_schema=context_answers_schema,
+        )
+        context_output = _parse_context_output(context_turn_result)
+        _check_context_output_for_routing(context_output, questions)
+        context_answers = _context_answers(context_output)
+        unresolved_questions = _unresolved_questions_for_human(
+            questions, context_answers
+        )
+        human_answers: list[dict[str, Any]] = []
+        if unresolved_questions:
+            if human_answer_provider is None:
+                raise HumanAnswerError(
+                    "Planner questions need human answers, but no human answer provider was supplied."
+                )
+            human_answers = human_answer_provider(
+                unresolved_questions, task_context_path, planning_artifact_path
+            )
+            _check_human_answers_for_routing(human_answers, unresolved_questions)
+
+        _append_answer_batch(
+            planning_artifact_path,
+            planner_questions=questions,
+            context_answers=context_answers,
+            human_answers=human_answers,
+        )
+
+        turn_result = _run_planner_thread(
+            thread=thread,
+            turn_input=_planner_follow_up_turn_input(
+                task_context_path=task_context_path,
+                planning_artifact_path=planning_artifact_path,
+                planner_questions=questions,
+                context_answers=context_answers,
+                human_answers=human_answers,
+            ),
+            target_repository=target_repository,
+            effort=task_spec.codex.effort,
+            model=task_spec.codex.model,
+            output_schema=planner_output_schema,
+        )
+        planner_output = _parse_planner_output(turn_result)
+        _check_planner_output_for_routing(planner_output)
+        _append_planner_output(planning_artifact_path, planner_output)
+
+    state["phase"] = "plan_ready"
+    active_task_state["phase"] = "plan_ready"
 
     _write_json(task_state_file, state)
     return planner_output
@@ -322,6 +414,26 @@ def _planner_thread(
     return codex_client.thread_start(**thread_kwargs)
 
 
+def _run_planner_thread(
+    *,
+    thread: Any,
+    turn_input: str,
+    target_repository: Path,
+    effort: str | None,
+    model: str | None,
+    output_schema: dict[str, Any],
+) -> Any:
+    return thread.run(
+        turn_input,
+        approval_mode=ApprovalMode.auto_review,
+        cwd=str(target_repository),
+        effort=_reasoning_effort(effort),
+        model=model,
+        output_schema=output_schema,
+        sandbox_policy=ReadOnlySandboxPolicy(type="readOnly"),
+    )
+
+
 def _planner_thread_id(task_state: Mapping[str, Any]) -> str | None:
     threads = task_state.get("threads")
     if not isinstance(threads, dict):
@@ -343,6 +455,68 @@ def _persist_planner_thread_id(task_state: dict[str, Any], thread_id: Any) -> No
     threads["planner"] = thread_id
 
 
+def _context_thread(
+    *,
+    codex_client: Any,
+    task_state: dict[str, Any],
+    target_repository: Path,
+    developer_instructions: str,
+    model: str | None,
+) -> Any:
+    context_thread_id = _context_thread_id(task_state)
+    thread_kwargs = {
+        "approval_mode": ApprovalMode.auto_review,
+        "cwd": str(target_repository),
+        "developer_instructions": developer_instructions,
+        "model": model,
+        "sandbox": SandboxMode.read_only,
+    }
+    if context_thread_id:
+        return codex_client.thread_resume(context_thread_id, **thread_kwargs)
+    return codex_client.thread_start(**thread_kwargs)
+
+
+def _run_context_thread(
+    *,
+    thread: Any,
+    turn_input: str,
+    target_repository: Path,
+    effort: str | None,
+    model: str | None,
+    output_schema: dict[str, Any],
+) -> Any:
+    return thread.run(
+        turn_input,
+        approval_mode=ApprovalMode.auto_review,
+        cwd=str(target_repository),
+        effort=_reasoning_effort(effort),
+        model=model,
+        output_schema=output_schema,
+        sandbox_policy=ReadOnlySandboxPolicy(type="readOnly"),
+    )
+
+
+def _context_thread_id(task_state: Mapping[str, Any]) -> str | None:
+    threads = task_state.get("threads")
+    if not isinstance(threads, dict):
+        return None
+    context_thread_id = threads.get("context")
+    if context_thread_id is None:
+        return None
+    if not isinstance(context_thread_id, str) or not context_thread_id.strip():
+        raise TaskRunError("Context Agent thread ID in Task State must be a string.")
+    return context_thread_id
+
+
+def _persist_context_thread_id(task_state: dict[str, Any], thread_id: Any) -> None:
+    if not isinstance(thread_id, str) or not thread_id.strip():
+        raise TaskRunError("Context Agent thread did not return a usable thread ID.")
+    threads = task_state.setdefault("threads", {})
+    if not isinstance(threads, dict):
+        raise TaskRunError("Task State field 'threads' must be a mapping.")
+    threads["context"] = thread_id
+
+
 def _planner_turn_input(
     task_context_path: Path, task_context: Mapping[str, Any]
 ) -> str:
@@ -360,6 +534,51 @@ def _planner_turn_input(
             f"Task context artifact: {task_context_path}",
             f"Planning artifact: {artifacts['planning']}",
             f"Approved Plan artifact: {artifacts['approved_plan']}",
+        ]
+    )
+
+
+def _context_turn_input(
+    *,
+    questions: list[dict[str, Any]],
+    task_context_path: Path,
+    planning_artifact_path: Path,
+) -> str:
+    return "\n".join(
+        [
+            "Answer these Planner Agent questions from the Target Repository and task context.",
+            "",
+            f"Task context artifact: {task_context_path}",
+            f"Planning artifact: {planning_artifact_path}",
+            "",
+            "Planner questions:",
+            json.dumps(questions, indent=2, sort_keys=True),
+        ]
+    )
+
+
+def _planner_follow_up_turn_input(
+    *,
+    task_context_path: Path,
+    planning_artifact_path: Path,
+    planner_questions: list[dict[str, Any]],
+    context_answers: list[dict[str, Any]],
+    human_answers: list[dict[str, Any]],
+) -> str:
+    latest_answer_batch = {
+        "planner_questions": planner_questions,
+        "context_answers": context_answers,
+        "human_answers": human_answers,
+    }
+    return "\n".join(
+        [
+            "Continue planning the active Task using the latest answers.",
+            "",
+            f"Task context artifact: {task_context_path}",
+            f"Planning artifact: {planning_artifact_path}",
+            "",
+            "Latest answer batch:",
+            json.dumps(latest_answer_batch, indent=2, sort_keys=True),
         ]
     )
 
@@ -389,6 +608,25 @@ def _parse_planner_output(turn_result: Any) -> dict[str, Any]:
     return parsed
 
 
+def _parse_context_output(turn_result: Any) -> dict[str, Any]:
+    final_response = getattr(turn_result, "final_response", None)
+    if isinstance(final_response, str):
+        try:
+            parsed = json.loads(final_response)
+        except json.JSONDecodeError as exc:
+            raise ContextOutputError(
+                "Context Agent returned unparseable JSON."
+            ) from exc
+    elif isinstance(final_response, dict):
+        parsed = final_response
+    else:
+        raise ContextOutputError("Context Agent did not return a JSON object.")
+
+    if not isinstance(parsed, dict):
+        raise ContextOutputError("Context Agent output must be a JSON object.")
+    return parsed
+
+
 def _check_planner_output_for_routing(planner_output: Mapping[str, Any]) -> None:
     status = planner_output.get("status")
     if status not in PLANNER_STATUSES:
@@ -405,16 +643,170 @@ def _check_planner_output_for_routing(planner_output: Mapping[str, Any]) -> None
             raise PlannerOutputError(
                 "Planner Agent status 'needs_answers' requires questions."
             )
+        seen_question_ids: set[str] = set()
+        for question in questions:
+            if not isinstance(question, dict):
+                raise PlannerOutputError("Planner Agent questions must be objects.")
+            question_id = question.get("id")
+            if not isinstance(question_id, str) or not question_id.strip():
+                raise PlannerOutputError("Planner Agent questions require an id.")
+            if question_id in seen_question_ids:
+                raise PlannerOutputError(
+                    f"Planner Agent question ID is duplicated: {question_id!r}."
+                )
+            seen_question_ids.add(question_id)
+            question_text = question.get("question")
+            if not isinstance(question_text, str) or not question_text.strip():
+                raise PlannerOutputError(
+                    "Planner Agent questions require question text."
+                )
+
+
+def _check_context_output_for_routing(
+    context_output: Mapping[str, Any], questions: list[dict[str, Any]]
+) -> None:
+    answers = context_output.get("answers")
+    if not isinstance(answers, list):
+        raise ContextOutputError("Context Agent output requires answers.")
+
+    question_ids = {question["id"] for question in questions}
+    seen_answer_ids: set[str] = set()
+    for answer in answers:
+        if not isinstance(answer, dict):
+            raise ContextOutputError("Context Agent answers must be objects.")
+        question_id = answer.get("question_id")
+        if not isinstance(question_id, str) or not question_id.strip():
+            raise ContextOutputError("Context Agent answers require question_id.")
+        if question_id not in question_ids:
+            raise ContextOutputError(
+                f"Context Agent answered an unknown question_id: {question_id!r}."
+            )
+        if question_id in seen_answer_ids:
+            raise ContextOutputError(
+                f"Context Agent answer is duplicated: {question_id!r}."
+            )
+        seen_answer_ids.add(question_id)
+
+        status = answer.get("status")
+        if status not in CONTEXT_ANSWER_STATUSES:
+            raise ContextOutputError(
+                f"Unknown Context Agent answer status: {status!r}."
+            )
+        reason = answer.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ContextOutputError("Context Agent answers require a reason.")
+        if status == "answered":
+            answer_text = answer.get("answer")
+            if not isinstance(answer_text, str) or not answer_text.strip():
+                raise ContextOutputError(
+                    "Context Agent answered status requires answer."
+                )
+
+    if seen_answer_ids != question_ids:
+        raise ContextOutputError(
+            "Context Agent must answer or mark every planner question."
+        )
+
+
+def _check_human_answers_for_routing(
+    human_answers: Any, unresolved_questions: list[dict[str, Any]]
+) -> None:
+    if not isinstance(human_answers, list):
+        raise HumanAnswerError("Human answer provider must return a list of answers.")
+
+    unresolved_question_ids = {question["id"] for question in unresolved_questions}
+    seen_answer_ids: set[str] = set()
+    for answer in human_answers:
+        if not isinstance(answer, dict):
+            raise HumanAnswerError("Human answers must be objects.")
+        question_id = answer.get("question_id")
+        if not isinstance(question_id, str) or not question_id.strip():
+            raise HumanAnswerError("Human answers require question_id.")
+        if question_id not in unresolved_question_ids:
+            raise HumanAnswerError(
+                f"Human answer references an unknown question_id: {question_id!r}."
+            )
+        if question_id in seen_answer_ids:
+            raise HumanAnswerError(f"Human answer is duplicated: {question_id!r}.")
+        seen_answer_ids.add(question_id)
+
+        answer_text = answer.get("answer")
+        if not isinstance(answer_text, str) or not answer_text.strip():
+            raise HumanAnswerError("Human answers require answer text.")
+
+    if seen_answer_ids != unresolved_question_ids:
+        raise HumanAnswerError(
+            "Human answer provider must answer every unresolved question."
+        )
+
+
+def _planner_questions(planner_output: Mapping[str, Any]) -> list[dict[str, Any]]:
+    questions = planner_output["questions"]
+    if not isinstance(questions, list):
+        raise PlannerOutputError(
+            "Planner Agent status 'needs_answers' requires questions."
+        )
+    return questions
+
+
+def _context_answers(context_output: Mapping[str, Any]) -> list[dict[str, Any]]:
+    answers = context_output["answers"]
+    if not isinstance(answers, list):
+        raise ContextOutputError("Context Agent output requires answers.")
+    return answers
+
+
+def _unresolved_questions_for_human(
+    questions: list[dict[str, Any]], context_answers: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    questions_by_id = {question["id"]: question for question in questions}
+    unresolved_questions: list[dict[str, Any]] = []
+    for answer in context_answers:
+        if answer["status"] != "unresolved":
+            continue
+        question = dict(questions_by_id[answer["question_id"]])
+        question["unresolved_reason"] = answer["reason"]
+        unresolved_questions.append(question)
+    return unresolved_questions
 
 
 def _append_planner_output(path: Path, planner_output: dict[str, Any]) -> None:
+    planning_artifact = _planning_artifact(path)
+
+    planning_artifact["planner_outputs"].append(planner_output)
+    _write_json(path, planning_artifact)
+
+
+def _append_answer_batch(
+    path: Path,
+    *,
+    planner_questions: list[dict[str, Any]],
+    context_answers: list[dict[str, Any]],
+    human_answers: list[dict[str, Any]],
+) -> None:
+    planning_artifact = _planning_artifact(path)
+    planning_artifact["answer_batches"].append(
+        {
+            "planner_questions": planner_questions,
+            "context_answers": context_answers,
+            "human_answers": human_answers,
+        }
+    )
+    _write_json(path, planning_artifact)
+
+
+def _planning_artifact(path: Path) -> dict[str, Any]:
     if path.exists():
         planning_artifact = _read_json(path)
     else:
-        planning_artifact = {"planner_outputs": []}
+        planning_artifact = {}
 
     planner_outputs = planning_artifact.setdefault("planner_outputs", [])
     if not isinstance(planner_outputs, list):
         raise TaskRunError("Planning artifact field 'planner_outputs' must be a list.")
-    planner_outputs.append(planner_output)
-    _write_json(path, planning_artifact)
+
+    answer_batches = planning_artifact.setdefault("answer_batches", [])
+    if not isinstance(answer_batches, list):
+        raise TaskRunError("Planning artifact field 'answer_batches' must be a list.")
+
+    return planning_artifact

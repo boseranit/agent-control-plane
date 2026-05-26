@@ -7,8 +7,12 @@ import pytest
 
 from agent_control_plane.task_control_plane.cli import main
 from agent_control_plane.task_control_plane.controller import (
+    CONTEXT_ANSWERS_SCHEMA_PATH,
+    CONTEXT_PROMPT_PATH,
     PLANNER_OUTPUT_SCHEMA_PATH,
     PLANNER_PROMPT_PATH,
+    ContextOutputError,
+    HumanAnswerError,
     PlannerOutputError,
     TaskRun,
     TaskRunError,
@@ -20,33 +24,68 @@ from agent_control_plane.task_control_plane.task_spec import load_task_spec
 
 
 class FakeCodexClient:
-    def __init__(self, planner_output: object) -> None:
+    def __init__(
+        self,
+        planner_output: object | list[object],
+        context_outputs: list[object] | None = None,
+    ) -> None:
         self.started_threads: list[dict[str, object]] = []
         self.resumed_threads: list[dict[str, object]] = []
-        self.started_thread = FakeCodexThread("planner-thread-1", planner_output)
+        self.outputs_by_role = {
+            "planner": (
+                list(planner_output)
+                if isinstance(planner_output, list)
+                else [planner_output]
+            ),
+            "context": list(context_outputs or []),
+        }
+        self.started_thread: FakeCodexThread | None = None
         self.resumed_thread: FakeCodexThread | None = None
+        self.threads_by_role: dict[str, FakeCodexThread] = {}
 
     def thread_start(self, **kwargs: object) -> "FakeCodexThread":
         self.started_threads.append(kwargs)
-        return self.started_thread
+        role = self._role(kwargs)
+        thread = FakeCodexThread(f"{role}-thread-1", self.outputs_by_role[role])
+        self.threads_by_role[role] = thread
+        if role == "planner":
+            self.started_thread = thread
+        return thread
 
     def thread_resume(self, thread_id: str, **kwargs: object) -> "FakeCodexThread":
         self.resumed_threads.append({"thread_id": thread_id, **kwargs})
-        self.resumed_thread = FakeCodexThread(
-            thread_id, self.started_thread.planner_output
-        )
+        role = self._role(kwargs)
+        self.resumed_thread = FakeCodexThread(thread_id, self.outputs_by_role[role])
+        self.threads_by_role[role] = self.resumed_thread
         return self.resumed_thread
+
+    @staticmethod
+    def _role(kwargs: dict[str, object]) -> str:
+        developer_instructions = kwargs.get("developer_instructions")
+        if (
+            isinstance(developer_instructions, str)
+            and "Context Agent" in developer_instructions
+        ):
+            return "context"
+        if (
+            isinstance(developer_instructions, str)
+            and "Planner Agent" in developer_instructions
+        ):
+            return "planner"
+        raise AssertionError("FakeCodexClient could not identify thread role.")
 
 
 class FakeCodexThread:
-    def __init__(self, thread_id: str, planner_output: object) -> None:
+    def __init__(self, thread_id: str, outputs: list[object]) -> None:
         self.id = thread_id
-        self.planner_output = planner_output
+        self.outputs = outputs
         self.run_calls: list[dict[str, object]] = []
 
     def run(self, input: str, **kwargs: object) -> object:
         self.run_calls.append({"input": input, **kwargs})
-        return FakeCodexTurnResult(self.planner_output)
+        if not self.outputs:
+            raise AssertionError(f"No queued output for thread {self.id}.")
+        return FakeCodexTurnResult(self.outputs.pop(0))
 
 
 class FakeCodexTurnResult:
@@ -436,7 +475,180 @@ def test_plan_active_task_resumes_existing_planner_thread(tmp_path: Path) -> Non
     assert state["tasks"][0]["threads"]["planner"] == "planner-thread-existing"
 
 
-def test_plan_active_task_pauses_when_planner_needs_answers(tmp_path: Path) -> None:
+def test_plan_active_task_resolves_planner_questions_with_context_and_human_answers(
+    tmp_path: Path,
+) -> None:
+    target_repository, task_run = create_task_run(tmp_path)
+    first_planner_output = {
+        "status": "needs_answers",
+        "questions": [
+            {
+                "id": "q1",
+                "context": "Need the current planning entrypoint.",
+                "question": "Which public function should planning tests call?",
+                "type": "repo_context",
+            },
+            {
+                "id": "q2",
+                "context": "Need human policy for this issue.",
+                "question": "Should this slice implement plan approval?",
+                "type": "human_policy",
+            },
+        ],
+    }
+    second_planner_output = {
+        "status": "needs_answers",
+        "questions": [
+            {
+                "id": "q3",
+                "context": "Need Task State persistence details.",
+                "question": "Where should the Context Agent thread ID be stored?",
+                "type": "repo_context",
+            }
+        ],
+    }
+    final_planner_output = {
+        "status": "planned",
+        "plan_markdown": "Use plan_active_task and persist the Context Agent thread.",
+    }
+    first_context_output = {
+        "answers": [
+            {
+                "question_id": "q1",
+                "status": "answered",
+                "answer": "Call plan_active_task through the controller module.",
+                "reason": "The controller exposes planning through that public function.",
+            },
+            {
+                "question_id": "q2",
+                "status": "unresolved",
+                "reason": "The Target Repository cannot answer approval policy.",
+            },
+        ]
+    }
+    second_context_output = {
+        "answers": [
+            {
+                "question_id": "q3",
+                "status": "answered",
+                "answer": "Store it under the active Task State threads mapping.",
+                "reason": "Planner thread IDs already use that Task State location.",
+            }
+        ]
+    }
+    codex_client = FakeCodexClient(
+        [first_planner_output, second_planner_output, final_planner_output],
+        context_outputs=[first_context_output, second_context_output],
+    )
+    human_batches: list[tuple[list[dict[str, object]], Path, Path]] = []
+
+    def answer_from_human(
+        unresolved_questions: list[dict[str, object]],
+        context_artifact_path: Path,
+        planning_artifact_path: Path,
+    ) -> list[dict[str, str]]:
+        human_batches.append(
+            (unresolved_questions, context_artifact_path, planning_artifact_path)
+        )
+        return [
+            {
+                "question_id": "q2",
+                "answer": "Do not implement plan approval in issue 03.",
+            }
+        ]
+
+    result = plan_active_task(
+        task_run.task_state_path,
+        codex_client,
+        human_answer_provider=answer_from_human,
+    )
+
+    assert result == final_planner_output
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    task_state = state["tasks"][0]
+    assert state["phase"] == "plan_ready"
+    assert task_state["phase"] == "plan_ready"
+    assert task_state["threads"] == {
+        "context": "context-thread-1",
+        "planner": "planner-thread-1",
+    }
+    context_start_call = next(
+        call
+        for call in codex_client.started_threads
+        if "Context Agent" in call["developer_instructions"]
+    )
+    assert context_start_call["cwd"] == str(target_repository.resolve())
+    assert sdk_value(context_start_call["approval_mode"]) == "auto_review"
+    assert sdk_value(context_start_call["sandbox"]) == "read-only"
+    assert context_start_call["model"] == "gpt-5-codex"
+
+    planner_thread = codex_client.threads_by_role["planner"]
+    assert len(planner_thread.run_calls) == 3
+    assert "Call plan_active_task" in planner_thread.run_calls[1]["input"]
+    assert "Do not implement plan approval" in planner_thread.run_calls[1]["input"]
+    assert (
+        "Store it under the active Task State threads mapping"
+        in (planner_thread.run_calls[2]["input"])
+    )
+
+    context_thread = codex_client.threads_by_role["context"]
+    assert len(context_thread.run_calls) == 2
+    context_run_call = context_thread.run_calls[0]
+    assert (
+        "Which public function should planning tests call?" in context_run_call["input"]
+    )
+    assert str(task_run.first_task_context_path) in context_run_call["input"]
+    planning_artifact_path = Path(task_state["artifacts"]["planning"])
+    assert str(planning_artifact_path) in context_run_call["input"]
+    assert context_run_call["cwd"] == str(target_repository.resolve())
+    assert sdk_value(context_run_call["approval_mode"]) == "auto_review"
+    assert context_run_call["sandbox_policy"].type == "readOnly"
+    assert context_run_call["output_schema"]["title"] == "ContextAnswersOutput"
+
+    assert len(human_batches) == 1
+    unresolved_batch, context_artifact_path, human_planning_artifact_path = (
+        human_batches[0]
+    )
+    assert unresolved_batch == [
+        {
+            "id": "q2",
+            "context": "Need human policy for this issue.",
+            "question": "Should this slice implement plan approval?",
+            "type": "human_policy",
+            "unresolved_reason": "The Target Repository cannot answer approval policy.",
+        }
+    ]
+    assert context_artifact_path == task_run.first_task_context_path
+    assert human_planning_artifact_path == planning_artifact_path
+
+    planning_artifact = json.loads(planning_artifact_path.read_text(encoding="utf-8"))
+    assert planning_artifact["planner_outputs"] == [
+        first_planner_output,
+        second_planner_output,
+        final_planner_output,
+    ]
+    assert planning_artifact["answer_batches"] == [
+        {
+            "planner_questions": first_planner_output["questions"],
+            "context_answers": first_context_output["answers"],
+            "human_answers": [
+                {
+                    "question_id": "q2",
+                    "answer": "Do not implement plan approval in issue 03.",
+                }
+            ],
+        },
+        {
+            "planner_questions": second_planner_output["questions"],
+            "context_answers": second_context_output["answers"],
+            "human_answers": [],
+        },
+    ]
+
+
+def test_plan_active_task_uses_context_answers_without_human_input(
+    tmp_path: Path,
+) -> None:
     _, task_run = create_task_run(tmp_path)
     planner_output = {
         "status": "needs_answers",
@@ -449,18 +661,100 @@ def test_plan_active_task_pauses_when_planner_needs_answers(tmp_path: Path) -> N
             }
         ],
     }
-    codex_client = FakeCodexClient(planner_output)
+    final_planner_output = {
+        "status": "planned",
+        "plan_markdown": "Use the controller planning function.",
+    }
+    context_output = {
+        "answers": [
+            {
+                "question_id": "q1",
+                "status": "answered",
+                "answer": "Expose the behavior through plan_active_task.",
+                "reason": "That is the public planning entrypoint.",
+            }
+        ]
+    }
+    codex_client = FakeCodexClient(
+        [planner_output, final_planner_output], context_outputs=[context_output]
+    )
 
     result = plan_active_task(task_run.task_state_path, codex_client)
 
-    assert result == planner_output
+    assert result == final_planner_output
     state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
-    assert state["phase"] == "planning_needs_answers"
-    assert state["tasks"][0]["phase"] == "planning_needs_answers"
+    assert state["phase"] == "plan_ready"
+    assert state["tasks"][0]["phase"] == "plan_ready"
     planning_artifact = json.loads(
         Path(state["tasks"][0]["artifacts"]["planning"]).read_text(encoding="utf-8")
     )
-    assert planning_artifact["planner_outputs"] == [planner_output]
+    assert planning_artifact["planner_outputs"] == [
+        planner_output,
+        final_planner_output,
+    ]
+    assert planning_artifact["answer_batches"] == [
+        {
+            "planner_questions": planner_output["questions"],
+            "context_answers": context_output["answers"],
+            "human_answers": [],
+        }
+    ]
+
+
+def test_plan_active_task_resumes_existing_context_thread(tmp_path: Path) -> None:
+    _, task_run = create_task_run(tmp_path)
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    state["tasks"][0]["threads"] = {
+        "context": "context-thread-existing",
+        "planner": "planner-thread-existing",
+    }
+    task_run.task_state_path.write_text(
+        json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    planner_output = {
+        "status": "needs_answers",
+        "questions": [
+            {
+                "id": "q1",
+                "question": "Where should the Context Agent thread ID be stored?",
+            }
+        ],
+    }
+    final_planner_output = {
+        "status": "planned",
+        "plan_markdown": "Reuse the persisted Context Agent thread.",
+    }
+    context_output = {
+        "answers": [
+            {
+                "question_id": "q1",
+                "status": "answered",
+                "answer": "Store it in the active Task State threads mapping.",
+                "reason": "That mapping already holds role thread IDs.",
+            }
+        ]
+    }
+    codex_client = FakeCodexClient(
+        [planner_output, final_planner_output], context_outputs=[context_output]
+    )
+
+    plan_active_task(task_run.task_state_path, codex_client)
+
+    assert codex_client.started_threads == []
+    assert [call["thread_id"] for call in codex_client.resumed_threads] == [
+        "planner-thread-existing",
+        "context-thread-existing",
+    ]
+    context_resume_call = codex_client.resumed_threads[1]
+    assert "Context Agent" in context_resume_call["developer_instructions"]
+    assert sdk_value(context_resume_call["approval_mode"]) == "auto_review"
+    assert sdk_value(context_resume_call["sandbox"]) == "read-only"
+
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    assert state["tasks"][0]["threads"] == {
+        "context": "context-thread-existing",
+        "planner": "planner-thread-existing",
+    }
 
 
 @pytest.mark.parametrize(
@@ -486,6 +780,115 @@ def test_plan_active_task_rejects_unroutable_planner_output(
     assert not Path(state["tasks"][0]["artifacts"]["planning"]).exists()
 
 
+def test_plan_active_task_rejects_unroutable_context_output(tmp_path: Path) -> None:
+    _, task_run = create_task_run(tmp_path)
+    planner_output = {
+        "status": "needs_answers",
+        "questions": [{"id": "q1", "question": "Which path stores answers?"}],
+    }
+    context_output = {
+        "answers": [
+            {
+                "question_id": "q1",
+                "status": "guessed",
+                "reason": "Not a valid routing status.",
+            }
+        ]
+    }
+    codex_client = FakeCodexClient([planner_output], context_outputs=[context_output])
+
+    with pytest.raises(ContextOutputError, match="Unknown Context Agent answer status"):
+        plan_active_task(task_run.task_state_path, codex_client)
+
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    assert state["phase"] == "planning_needs_answers"
+    assert state["tasks"][0]["phase"] == "planning_needs_answers"
+    assert state["tasks"][0]["threads"]["context"] == "context-thread-1"
+    planning_artifact = json.loads(
+        Path(state["tasks"][0]["artifacts"]["planning"]).read_text(encoding="utf-8")
+    )
+    assert planning_artifact["planner_outputs"] == [planner_output]
+    assert planning_artifact["answer_batches"] == []
+
+
+def test_plan_active_task_rejects_malformed_human_answers(tmp_path: Path) -> None:
+    _, task_run = create_task_run(tmp_path)
+    planner_output = {
+        "status": "needs_answers",
+        "questions": [{"id": "q1", "question": "Should this wait for a human?"}],
+    }
+    context_output = {
+        "answers": [
+            {
+                "question_id": "q1",
+                "status": "unresolved",
+                "reason": "The Target Repository cannot answer this.",
+            }
+        ]
+    }
+    codex_client = FakeCodexClient([planner_output], context_outputs=[context_output])
+
+    def malformed_human_answers(
+        _unresolved_questions: list[dict[str, object]],
+        _context_artifact_path: Path,
+        _planning_artifact_path: Path,
+    ) -> list[dict[str, str]]:
+        return [{"question_id": "wrong-id", "answer": "Use the issue scope."}]
+
+    with pytest.raises(HumanAnswerError, match="unknown question_id"):
+        plan_active_task(
+            task_run.task_state_path,
+            codex_client,
+            human_answer_provider=malformed_human_answers,
+        )
+
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    planning_artifact = json.loads(
+        Path(state["tasks"][0]["artifacts"]["planning"]).read_text(encoding="utf-8")
+    )
+    assert planning_artifact["planner_outputs"] == [planner_output]
+    assert planning_artifact["answer_batches"] == []
+
+
+def test_plan_active_task_rejects_unroutable_follow_up_planner_output(
+    tmp_path: Path,
+) -> None:
+    _, task_run = create_task_run(tmp_path)
+    planner_output = {
+        "status": "needs_answers",
+        "questions": [{"id": "q1", "question": "Which public interface is used?"}],
+    }
+    context_output = {
+        "answers": [
+            {
+                "question_id": "q1",
+                "status": "answered",
+                "answer": "Use plan_active_task.",
+                "reason": "The controller exposes this function.",
+            }
+        ]
+    }
+    codex_client = FakeCodexClient(
+        [planner_output, {"status": "surprised"}], context_outputs=[context_output]
+    )
+
+    with pytest.raises(PlannerOutputError, match="Unknown Planner Agent status"):
+        plan_active_task(task_run.task_state_path, codex_client)
+
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    planning_artifact = json.loads(
+        Path(state["tasks"][0]["artifacts"]["planning"]).read_text(encoding="utf-8")
+    )
+    assert planning_artifact["planner_outputs"] == [planner_output]
+    assert planning_artifact["answer_batches"] == [
+        {
+            "planner_questions": planner_output["questions"],
+            "context_answers": context_output["answers"],
+            "human_answers": [],
+        }
+    ]
+
+
 def test_planner_prompt_and_output_schema_are_source_controlled() -> None:
     assert "Planner Agent" in PLANNER_PROMPT_PATH.read_text(encoding="utf-8")
     schema = json.loads(PLANNER_OUTPUT_SCHEMA_PATH.read_text(encoding="utf-8"))
@@ -498,6 +901,38 @@ def test_planner_prompt_and_output_schema_are_source_controlled() -> None:
         {
             "status": "needs_answers",
             "questions": [{"id": "q1", "question": "What should happen next?"}],
+        },
+        schema,
+    )
+
+
+def test_context_prompt_and_output_schema_are_source_controlled() -> None:
+    assert "Context Agent" in CONTEXT_PROMPT_PATH.read_text(encoding="utf-8")
+    schema = json.loads(CONTEXT_ANSWERS_SCHEMA_PATH.read_text(encoding="utf-8"))
+
+    jsonschema.Draft202012Validator.check_schema(schema)
+    jsonschema.validate(
+        {
+            "answers": [
+                {
+                    "question_id": "q1",
+                    "status": "answered",
+                    "answer": "Use the public controller interface.",
+                    "reason": "The code exposes that interface.",
+                }
+            ]
+        },
+        schema,
+    )
+    jsonschema.validate(
+        {
+            "answers": [
+                {
+                    "question_id": "q2",
+                    "status": "unresolved",
+                    "reason": "The repository cannot answer user policy.",
+                }
+            ]
         },
         schema,
     )
