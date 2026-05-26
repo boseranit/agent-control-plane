@@ -1,0 +1,43 @@
+[workspace]
+authors = ["Ranit Bose <59643631+boseranit@users.noreply.github.com>"]
+channels = ["conda-forge"]
+conda-pypi-map = { conda-forge = "conda-pypi-map.json" }
+name = "agent-control-plane"
+platforms = ["win-64", "linux-64"]
+version = "0.1.0"
+
+[system-requirements]
+libc = { family = "glibc", version = "2.35" }
+
+[environments]
+dev = ["dev"]
+
+[dependencies]
+python = "3.13.*"
+pip = ">=25,<26"
+mlflow = ">=3.11.1,<4"
+pyyaml = ">=6,<7"
+jsonschema = ">=4,<5"
+packaging = ">=24,<26"
+typer = ">=0.12,<1"
+rich = ">=13,<15"
+platformdirs = ">=4,<5"
+filelock = ">=3,<4"
+psutil = ">=6,<8"
+
+[pypi-dependencies]
+openai-codex = { git = "https://github.com/openai/codex.git", tag = "rust-v0.133.0", subdirectory = "sdk/python" }
+
+[pypi-options.dependency-overrides]
+# The SDK source tree keeps a stale template runtime pin; the 0.133.0
+# release publishes matching glibc Linux and Windows runtime wheels.
+openai-codex-cli-bin = "==0.133.0"
+
+[feature.dev.dependencies]
+pytest = ">=8,<9"
+ruff = ">=0.15.14,<0.16"
+
+[feature.dev.tasks]
+test = "pytest"
+format = "ruff format . && ruff check . --fix"
+sdk-check = "python -c \"import importlib.metadata as m, jsonschema, mlflow, yaml; print('sdk environment ok', m.version('openai-codex'), m.version('openai-codex-cli-bin'))\""
