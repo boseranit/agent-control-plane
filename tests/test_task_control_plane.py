@@ -3,6 +3,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 import jsonschema
@@ -119,7 +120,10 @@ class FakeCodexThread:
         self.run_calls.append({"input": input, **kwargs})
         if not self.outputs:
             raise AssertionError(f"No queued output for thread {self.id}.")
-        return FakeCodexTurnResult(self.outputs.pop(0))
+        output = self.outputs.pop(0)
+        if isinstance(output, BaseException):
+            raise output
+        return FakeCodexTurnResult(output)
 
 
 class FakeCodexTurnResult:
@@ -556,6 +560,211 @@ def test_plan_active_task_starts_planner_thread_and_records_planned_output(
     assert task_state["plan_approval"]["status"] == "approved"
     assert task_state["plan_approval"]["mode"] == "automatic"
     assert task_state["plan_approval"]["approved_plan_path"] == str(approved_plan_path)
+
+
+def test_plan_active_task_sleeps_until_usage_limit_retry_time_and_retries(
+    tmp_path: Path,
+) -> None:
+    _, task_run = create_task_run(tmp_path, require_plan_approval=False)
+    planner_output = {
+        "status": "planned",
+        "plan_markdown": "Continue after the usage-limit wait.",
+    }
+    usage_limit_error = RuntimeError(
+        "Codex usage limit reached. Please try again at 2026-05-27T14:05:00+10:00."
+    )
+    codex_client = FakeCodexClient([usage_limit_error, planner_output])
+    sleeps: list[float] = []
+
+    result = plan_active_task(
+        task_run.task_state_path,
+        codex_client,
+        usage_clock=lambda: datetime.fromisoformat("2026-05-27T14:00:00+10:00"),
+        usage_sleep=sleeps.append,
+    )
+
+    assert result == planner_output
+    assert sleeps == [300.0]
+    planner_thread = codex_client.threads_by_role["planner"]
+    assert len(planner_thread.run_calls) == 2
+    assert planner_thread.run_calls[0]["input"] == planner_thread.run_calls[1]["input"]
+
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    task_state = state["tasks"][0]
+    usage_wait = state["usage_limit_waits"][0]
+    assert task_state["usage_limit_waits"] == [usage_wait]
+    assert usage_wait["role"] == "planner"
+    assert usage_wait["sleep_seconds"] == 300.0
+    assert usage_wait["suggested_retry_at"] == "2026-05-27T14:05:00+10:00"
+    assert "usage limit" in usage_wait["message"]
+    assert state["phase"] == "plan_approved"
+
+
+def test_plan_active_task_handles_usage_limit_waits_in_context_agent_turns(
+    tmp_path: Path,
+) -> None:
+    _, task_run = create_task_run(tmp_path, require_plan_approval=False)
+    planner_output = {
+        "status": "needs_answers",
+        "questions": [{"id": "q1", "question": "Which file should change?"}],
+    }
+    final_planner_output = {
+        "status": "planned",
+        "plan_markdown": "Use the answered context.",
+    }
+    context_output = {
+        "answers": [
+            {
+                "question_id": "q1",
+                "status": "answered",
+                "answer": "Change app.py.",
+                "reason": "The task context points at app.py.",
+            }
+        ]
+    }
+    usage_limit_error = RuntimeError(
+        "Codex usage limit reached. Please retry after 1 hour and 30 minutes."
+    )
+    codex_client = FakeCodexClient(
+        [planner_output, final_planner_output],
+        context_outputs=[usage_limit_error, context_output],
+    )
+    sleeps: list[float] = []
+
+    result = plan_active_task(
+        task_run.task_state_path,
+        codex_client,
+        usage_clock=lambda: datetime.fromisoformat("2026-05-27T14:00:00+10:00"),
+        usage_sleep=sleeps.append,
+    )
+
+    assert result == final_planner_output
+    assert sleeps == [5400.0]
+    context_thread = codex_client.threads_by_role["context"]
+    assert len(context_thread.run_calls) == 2
+    assert context_thread.run_calls[0]["input"] == context_thread.run_calls[1]["input"]
+
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    usage_wait = state["usage_limit_waits"][0]
+    assert usage_wait["role"] == "context"
+    assert usage_wait["sleep_seconds"] == 5400.0
+    assert usage_wait["suggested_retry_at"] == "2026-05-27T15:30:00+10:00"
+
+
+def test_run_active_task_implementer_never_records_negative_usage_limit_sleep(
+    tmp_path: Path,
+) -> None:
+    _, task_run = create_task_run(tmp_path, require_plan_approval=False)
+    planner_output = {"status": "planned", "plan_markdown": "Make the change."}
+    implementer_output = {
+        "status": "implementation_complete",
+        "summary": "Implemented after a stale retry time.",
+        "changed_files": ["app.py"],
+        "recommended_commands": [],
+    }
+    usage_limit_error = RuntimeError(
+        "Codex usage limit reached. Please try again at 2026-05-27T13:59:30+10:00."
+    )
+    codex_client = FakeCodexClient(
+        planner_output,
+        implementer_outputs=[usage_limit_error, implementer_output],
+    )
+    plan_active_task(task_run.task_state_path, codex_client)
+    sleeps: list[float] = []
+
+    result = run_active_task_implementer(
+        task_run.task_state_path,
+        codex_client,
+        usage_clock=lambda: datetime.fromisoformat("2026-05-27T14:00:00+10:00"),
+        usage_sleep=sleeps.append,
+    )
+
+    assert result == implementer_output
+    assert sleeps == [0.0]
+    implementer_thread = codex_client.threads_by_role["implementer"]
+    assert len(implementer_thread.run_calls) == 2
+
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    usage_wait = state["usage_limit_waits"][0]
+    assert usage_wait["role"] == "implementer"
+    assert usage_wait["sleep_seconds"] == 0.0
+
+
+def test_run_active_task_reviewer_handles_local_time_of_day_usage_limit_wait(
+    tmp_path: Path,
+) -> None:
+    _, task_run = create_task_run(tmp_path, require_plan_approval=False)
+    planner_output = {"status": "planned", "plan_markdown": "Make the change."}
+    implementer_output = {
+        "status": "implementation_complete",
+        "summary": "Implemented.",
+        "changed_files": ["app.py"],
+        "recommended_commands": [],
+    }
+    reviewer_output = {
+        "status": "approved",
+        "summary": "Ready to commit.",
+        "blocking_issues": [],
+        "requested_changes": [],
+        "non_blocking_issues": [],
+    }
+    usage_limit_error = RuntimeError(
+        "Codex usage limit reached. Please try again at 2:05 PM."
+    )
+    codex_client = FakeCodexClient(
+        planner_output,
+        implementer_outputs=[implementer_output],
+        reviewer_outputs=[usage_limit_error, reviewer_output],
+    )
+    plan_active_task(task_run.task_state_path, codex_client)
+    run_active_task_implementer(task_run.task_state_path, codex_client)
+    run_active_task_tests(task_run.task_state_path)
+    sleeps: list[float] = []
+
+    result = run_active_task_reviewer(
+        task_run.task_state_path,
+        codex_client,
+        usage_clock=lambda: datetime.fromisoformat("2026-05-27T14:00:00+10:00"),
+        usage_sleep=sleeps.append,
+    )
+
+    assert result == reviewer_output
+    assert sleeps == [300.0]
+    reviewer_thread = codex_client.thread_history_by_role["reviewer"][0]
+    assert len(reviewer_thread.run_calls) == 2
+
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    usage_wait = state["usage_limit_waits"][0]
+    assert usage_wait["role"] == "reviewer"
+    assert usage_wait["suggested_retry_at"] == "2026-05-27T14:05:00+10:00"
+    assert state["phase"] == "commit_ready"
+
+
+def test_codex_non_usage_errors_propagate_without_sleeping(
+    tmp_path: Path,
+) -> None:
+    _, task_run = create_task_run(tmp_path, require_plan_approval=False)
+    codex_client = FakeCodexClient(
+        [
+            RuntimeError(
+                "Codex transport failed. Please try again at 2026-05-27T14:05:00+10:00."
+            )
+        ]
+    )
+    sleeps: list[float] = []
+
+    with pytest.raises(RuntimeError, match="transport failed"):
+        plan_active_task(
+            task_run.task_state_path,
+            codex_client,
+            usage_clock=lambda: datetime.fromisoformat("2026-05-27T14:00:00+10:00"),
+            usage_sleep=sleeps.append,
+        )
+
+    assert sleeps == []
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    assert "usage_limit_waits" not in state
+    assert "usage_limit_waits" not in state["tasks"][0]
 
 
 def test_plan_active_task_opens_approved_plan_for_human_approval_and_keeps_edits(

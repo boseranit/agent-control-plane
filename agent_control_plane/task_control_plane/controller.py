@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -10,7 +11,7 @@ import time
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from typing import Any, BinaryIO, TextIO
 
@@ -54,6 +55,8 @@ REVIEWER_STATUSES = frozenset({"approved", "rejected"})
 HumanAnswerProvider = Callable[[list[dict[str, Any]], Path, Path], list[dict[str, Any]]]
 ApprovedPlanEditor = Callable[[Path], None]
 PlanApprovalConfirmer = Callable[[Path], bool]
+UsageLimitClock = Callable[[], datetime]
+UsageLimitSleeper = Callable[[float], None]
 
 
 @dataclass(frozen=True)
@@ -147,6 +150,8 @@ def resume_task_run(
     human_answer_provider: HumanAnswerProvider | None = None,
     approved_plan_editor: ApprovedPlanEditor | None = None,
     plan_approval_confirmer: PlanApprovalConfirmer | None = None,
+    usage_clock: UsageLimitClock | None = None,
+    usage_sleep: UsageLimitSleeper | None = None,
 ) -> dict[str, Any]:
     task_run = _load_existing_task_run(run_id, runtime_root)
 
@@ -183,6 +188,8 @@ def resume_task_run(
                 human_answer_provider=human_answer_provider,
                 approved_plan_editor=approved_plan_editor,
                 plan_approval_confirmer=plan_approval_confirmer,
+                usage_clock=usage_clock,
+                usage_sleep=usage_sleep,
             )
             continue
 
@@ -191,7 +198,12 @@ def resume_task_run(
                 Path(state["target_repository"]).resolve(),
                 "before resuming implementation",
             )
-            run_active_task_implementer(task_run.task_state_path, codex_client)
+            run_active_task_implementer(
+                task_run.task_state_path,
+                codex_client,
+                usage_clock=usage_clock,
+                usage_sleep=usage_sleep,
+            )
             continue
 
         if phase == "ready_for_tests":
@@ -200,19 +212,30 @@ def resume_task_run(
 
         if phase == "tests_failed":
             repair_result = run_active_task_failed_test_repair(
-                task_run.task_state_path, codex_client
+                task_run.task_state_path,
+                codex_client,
+                usage_clock=usage_clock,
+                usage_sleep=usage_sleep,
             )
             if repair_result.get("status") == "failed":
                 return repair_result
             continue
 
         if phase == "tests_passed":
-            run_active_task_reviewer(task_run.task_state_path, codex_client)
+            run_active_task_reviewer(
+                task_run.task_state_path,
+                codex_client,
+                usage_clock=usage_clock,
+                usage_sleep=usage_sleep,
+            )
             continue
 
         if phase == "review_rejected":
             repair_result = run_active_task_review_rejection_repair(
-                task_run.task_state_path, codex_client
+                task_run.task_state_path,
+                codex_client,
+                usage_clock=usage_clock,
+                usage_sleep=usage_sleep,
             )
             if repair_result.get("status") == "failed":
                 return repair_result
@@ -234,6 +257,8 @@ def plan_active_task(
     human_answer_provider: HumanAnswerProvider | None = None,
     approved_plan_editor: ApprovedPlanEditor | None = None,
     plan_approval_confirmer: PlanApprovalConfirmer | None = None,
+    usage_clock: UsageLimitClock | None = None,
+    usage_sleep: UsageLimitSleeper | None = None,
 ) -> dict[str, Any]:
     task_state_file = Path(task_state_path)
     state = _read_json(task_state_file)
@@ -279,6 +304,11 @@ def plan_active_task(
             effort=task_spec.codex.effort,
             model=task_spec.codex.model,
             output_schema=planner_output_schema,
+            task_state_file=task_state_file,
+            state=state,
+            active_task_state=active_task_state,
+            usage_clock=usage_clock,
+            usage_sleep=usage_sleep,
         )
         planner_output = _parse_planner_output(turn_result)
         _check_planner_output_for_routing(planner_output)
@@ -318,6 +348,11 @@ def plan_active_task(
             effort=task_spec.codex.effort,
             model=task_spec.codex.model,
             output_schema=context_answers_schema,
+            task_state_file=task_state_file,
+            state=state,
+            active_task_state=active_task_state,
+            usage_clock=usage_clock,
+            usage_sleep=usage_sleep,
         )
         context_output = _parse_context_output(context_turn_result)
         _check_context_output_for_routing(context_output, questions)
@@ -356,6 +391,11 @@ def plan_active_task(
             effort=task_spec.codex.effort,
             model=task_spec.codex.model,
             output_schema=planner_output_schema,
+            task_state_file=task_state_file,
+            state=state,
+            active_task_state=active_task_state,
+            usage_clock=usage_clock,
+            usage_sleep=usage_sleep,
         )
         planner_output = _parse_planner_output(turn_result)
         _check_planner_output_for_routing(planner_output)
@@ -429,18 +469,28 @@ def build_implementer_turn_input(task_state_path: str | Path) -> str:
 
 
 def run_active_task_implementer(
-    task_state_path: str | Path, codex_client: Any
+    task_state_path: str | Path,
+    codex_client: Any,
+    *,
+    usage_clock: UsageLimitClock | None = None,
+    usage_sleep: UsageLimitSleeper | None = None,
 ) -> dict[str, Any]:
     task_state_file = Path(task_state_path)
     return _run_active_task_implementer_turn(
         task_state_file,
         codex_client,
         build_implementer_turn_input(task_state_file),
+        usage_clock=usage_clock,
+        usage_sleep=usage_sleep,
     )
 
 
 def run_active_task_failed_test_repair(
-    task_state_path: str | Path, codex_client: Any
+    task_state_path: str | Path,
+    codex_client: Any,
+    *,
+    usage_clock: UsageLimitClock | None = None,
+    usage_sleep: UsageLimitSleeper | None = None,
 ) -> dict[str, Any]:
     task_state_file = Path(task_state_path)
     state = _read_json(task_state_file)
@@ -470,11 +520,17 @@ def run_active_task_failed_test_repair(
         task_state_file,
         codex_client,
         _failed_test_repair_turn_input(artifacts, latest_test_status),
+        usage_clock=usage_clock,
+        usage_sleep=usage_sleep,
     )
 
 
 def run_active_task_review_rejection_repair(
-    task_state_path: str | Path, codex_client: Any
+    task_state_path: str | Path,
+    codex_client: Any,
+    *,
+    usage_clock: UsageLimitClock | None = None,
+    usage_sleep: UsageLimitSleeper | None = None,
 ) -> dict[str, Any]:
     task_state_file = Path(task_state_path)
     state = _read_json(task_state_file)
@@ -503,11 +559,18 @@ def run_active_task_review_rejection_repair(
         task_state_file,
         codex_client,
         _review_rejection_repair_turn_input(latest_review_output_json),
+        usage_clock=usage_clock,
+        usage_sleep=usage_sleep,
     )
 
 
 def _run_active_task_implementer_turn(
-    task_state_file: Path, codex_client: Any, turn_input: str
+    task_state_file: Path,
+    codex_client: Any,
+    turn_input: str,
+    *,
+    usage_clock: UsageLimitClock | None = None,
+    usage_sleep: UsageLimitSleeper | None = None,
 ) -> dict[str, Any]:
     state = _read_json(task_state_file)
     active_task_state = _active_task_state(state)
@@ -538,6 +601,11 @@ def _run_active_task_implementer_turn(
         effort=task_spec.codex.effort,
         model=task_spec.codex.model,
         output_schema=implementer_result_schema,
+        task_state_file=task_state_file,
+        state=state,
+        active_task_state=active_task_state,
+        usage_clock=usage_clock,
+        usage_sleep=usage_sleep,
     )
     implementer_output = _parse_implementer_output(turn_result)
     _write_json(Path(artifacts["implementation_result"]), implementer_output)
@@ -574,7 +642,11 @@ def run_active_task_tests(task_state_path: str | Path) -> dict[str, Any]:
 
 
 def run_active_task_reviewer(
-    task_state_path: str | Path, codex_client: Any
+    task_state_path: str | Path,
+    codex_client: Any,
+    *,
+    usage_clock: UsageLimitClock | None = None,
+    usage_sleep: UsageLimitSleeper | None = None,
 ) -> dict[str, Any]:
     task_state_file = Path(task_state_path)
     state = _read_json(task_state_file)
@@ -606,6 +678,11 @@ def run_active_task_reviewer(
         effort=task_spec.codex.effort,
         model=task_spec.codex.model,
         output_schema=reviewer_output_schema,
+        task_state_file=task_state_file,
+        state=state,
+        active_task_state=active_task_state,
+        usage_clock=usage_clock,
+        usage_sleep=usage_sleep,
     )
     reviewer_output = _parse_reviewer_output(turn_result)
     reviewer_output_json = _reviewer_output_json_text(turn_result, reviewer_output)
@@ -1435,15 +1512,28 @@ def _run_planner_thread(
     effort: str | None,
     model: str | None,
     output_schema: dict[str, Any],
+    task_state_file: Path,
+    state: dict[str, Any],
+    active_task_state: dict[str, Any],
+    usage_clock: UsageLimitClock | None,
+    usage_sleep: UsageLimitSleeper | None,
 ) -> Any:
-    return thread.run(
-        turn_input,
-        approval_mode=ApprovalMode.auto_review,
-        cwd=str(target_repository),
-        effort=_reasoning_effort(effort),
-        model=model,
-        output_schema=output_schema,
-        sandbox_policy=ReadOnlySandboxPolicy(type="readOnly"),
+    return _run_codex_thread_with_usage_limit(
+        role="planner",
+        task_state_file=task_state_file,
+        state=state,
+        active_task_state=active_task_state,
+        usage_clock=usage_clock,
+        usage_sleep=usage_sleep,
+        run=lambda: thread.run(
+            turn_input,
+            approval_mode=ApprovalMode.auto_review,
+            cwd=str(target_repository),
+            effort=_reasoning_effort(effort),
+            model=model,
+            output_schema=output_schema,
+            sandbox_policy=ReadOnlySandboxPolicy(type="readOnly"),
+        ),
     )
 
 
@@ -1497,15 +1587,28 @@ def _run_context_thread(
     effort: str | None,
     model: str | None,
     output_schema: dict[str, Any],
+    task_state_file: Path,
+    state: dict[str, Any],
+    active_task_state: dict[str, Any],
+    usage_clock: UsageLimitClock | None,
+    usage_sleep: UsageLimitSleeper | None,
 ) -> Any:
-    return thread.run(
-        turn_input,
-        approval_mode=ApprovalMode.auto_review,
-        cwd=str(target_repository),
-        effort=_reasoning_effort(effort),
-        model=model,
-        output_schema=output_schema,
-        sandbox_policy=ReadOnlySandboxPolicy(type="readOnly"),
+    return _run_codex_thread_with_usage_limit(
+        role="context",
+        task_state_file=task_state_file,
+        state=state,
+        active_task_state=active_task_state,
+        usage_clock=usage_clock,
+        usage_sleep=usage_sleep,
+        run=lambda: thread.run(
+            turn_input,
+            approval_mode=ApprovalMode.auto_review,
+            cwd=str(target_repository),
+            effort=_reasoning_effort(effort),
+            model=model,
+            output_schema=output_schema,
+            sandbox_policy=ReadOnlySandboxPolicy(type="readOnly"),
+        ),
     )
 
 
@@ -1559,15 +1662,28 @@ def _run_implementer_thread(
     effort: str | None,
     model: str | None,
     output_schema: dict[str, Any],
+    task_state_file: Path,
+    state: dict[str, Any],
+    active_task_state: dict[str, Any],
+    usage_clock: UsageLimitClock | None,
+    usage_sleep: UsageLimitSleeper | None,
 ) -> Any:
-    return thread.run(
-        turn_input,
-        approval_mode=ApprovalMode.auto_review,
-        cwd=str(target_repository),
-        effort=_reasoning_effort(effort),
-        model=model,
-        output_schema=output_schema,
-        sandbox_policy=WorkspaceWriteSandboxPolicy(type="workspaceWrite"),
+    return _run_codex_thread_with_usage_limit(
+        role="implementer",
+        task_state_file=task_state_file,
+        state=state,
+        active_task_state=active_task_state,
+        usage_clock=usage_clock,
+        usage_sleep=usage_sleep,
+        run=lambda: thread.run(
+            turn_input,
+            approval_mode=ApprovalMode.auto_review,
+            cwd=str(target_repository),
+            effort=_reasoning_effort(effort),
+            model=model,
+            output_schema=output_schema,
+            sandbox_policy=WorkspaceWriteSandboxPolicy(type="workspaceWrite"),
+        ),
     )
 
 
@@ -1620,16 +1736,306 @@ def _run_reviewer_thread(
     effort: str | None,
     model: str | None,
     output_schema: dict[str, Any],
+    task_state_file: Path,
+    state: dict[str, Any],
+    active_task_state: dict[str, Any],
+    usage_clock: UsageLimitClock | None,
+    usage_sleep: UsageLimitSleeper | None,
 ) -> Any:
-    return thread.run(
-        turn_input,
-        approval_mode=ApprovalMode.deny_all,
-        cwd=str(target_repository),
-        effort=_reasoning_effort(effort),
-        model=model,
-        output_schema=output_schema,
-        sandbox_policy=ReadOnlySandboxPolicy(type="readOnly"),
+    return _run_codex_thread_with_usage_limit(
+        role="reviewer",
+        task_state_file=task_state_file,
+        state=state,
+        active_task_state=active_task_state,
+        usage_clock=usage_clock,
+        usage_sleep=usage_sleep,
+        run=lambda: thread.run(
+            turn_input,
+            approval_mode=ApprovalMode.deny_all,
+            cwd=str(target_repository),
+            effort=_reasoning_effort(effort),
+            model=model,
+            output_schema=output_schema,
+            sandbox_policy=ReadOnlySandboxPolicy(type="readOnly"),
+        ),
     )
+
+
+def _run_codex_thread_with_usage_limit(
+    *,
+    role: str,
+    task_state_file: Path,
+    state: dict[str, Any],
+    active_task_state: dict[str, Any],
+    usage_clock: UsageLimitClock | None,
+    usage_sleep: UsageLimitSleeper | None,
+    run: Callable[[], Any],
+) -> Any:
+    clock = usage_clock or _local_runtime_now
+    sleeper = usage_sleep or time.sleep
+
+    while True:
+        try:
+            return run()
+        except Exception as exc:
+            now = _runtime_datetime(clock())
+            suggested_retry_at = _usage_limit_retry_at(exc, now)
+            if suggested_retry_at is None:
+                raise
+
+            sleep_seconds = max(
+                (suggested_retry_at - now).total_seconds(),
+                0.0,
+            )
+            _record_usage_limit_wait(
+                task_state_file=task_state_file,
+                state=state,
+                active_task_state=active_task_state,
+                role=role,
+                message=_exception_message(exc),
+                detected_at=now,
+                suggested_retry_at=suggested_retry_at,
+                sleep_seconds=sleep_seconds,
+            )
+            sleeper(sleep_seconds)
+
+
+def _usage_limit_retry_at(exc: Exception, now: datetime) -> datetime | None:
+    message = _exception_message(exc)
+    if not _looks_like_usage_limit(message):
+        return None
+    return _parse_retry_time(message, now)
+
+
+def _looks_like_usage_limit(message: str) -> bool:
+    normalized = message.lower()
+    usage_markers = (
+        "usage limit",
+        "rate limit",
+        "quota",
+        "too many requests",
+        "limit reached",
+        "limit exceeded",
+    )
+    return any(marker in normalized for marker in usage_markers)
+
+
+def _parse_retry_time(message: str, now: datetime) -> datetime | None:
+    return (
+        _parse_relative_retry_time(message, now)
+        or _parse_absolute_retry_time(message, now)
+        or _parse_time_of_day_retry_time(message, now)
+    )
+
+
+def _parse_relative_retry_time(message: str, now: datetime) -> datetime | None:
+    retry_after_match = re.search(
+        r"\bretry-after\s*[:=]\s*(?P<seconds>\d+(?:\.\d+)?)\b",
+        message,
+        flags=re.IGNORECASE,
+    )
+    if retry_after_match:
+        return now + timedelta(seconds=float(retry_after_match.group("seconds")))
+
+    relative_match = re.search(
+        r"\b(?:in|after)\s+(?P<duration>(?:\d+(?:\.\d+)?\s*"
+        r"(?:seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d)"
+        r"(?:\s*(?:,|and)?\s*)?)+)",
+        message,
+        flags=re.IGNORECASE,
+    )
+    if not relative_match:
+        return None
+
+    seconds = 0.0
+    for amount, unit in re.findall(
+        r"(\d+(?:\.\d+)?)\s*"
+        r"(seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d)",
+        relative_match.group("duration"),
+        flags=re.IGNORECASE,
+    ):
+        seconds += float(amount) * _duration_unit_seconds(unit)
+
+    if seconds <= 0:
+        return None
+    return now + timedelta(seconds=seconds)
+
+
+def _duration_unit_seconds(unit: str) -> float:
+    normalized = unit.lower()
+    if normalized in {"s", "sec", "secs", "second", "seconds"}:
+        return 1.0
+    if normalized in {"m", "min", "mins", "minute", "minutes"}:
+        return 60.0
+    if normalized in {"h", "hr", "hrs", "hour", "hours"}:
+        return 60.0 * 60.0
+    if normalized in {"d", "day", "days"}:
+        return 60.0 * 60.0 * 24.0
+    raise TaskRunError(f"Unknown usage-limit retry duration unit: {unit!r}.")
+
+
+def _parse_absolute_retry_time(message: str, now: datetime) -> datetime | None:
+    iso_match = re.search(
+        r"\b(?P<date>\d{4}-\d{2}-\d{2})[ T]"
+        r"(?P<time>\d{1,2}:\d{2}(?::\d{2})?)"
+        r"(?P<zone>\s*(?:Z|UTC|[+-]\d{2}:?\d{2}))?",
+        message,
+        flags=re.IGNORECASE,
+    )
+    if iso_match:
+        zone = _normalized_datetime_zone(iso_match.group("zone"))
+        timestamp = f"{iso_match.group('date')}T{iso_match.group('time')}{zone}"
+        try:
+            return _runtime_datetime(
+                datetime.fromisoformat(timestamp),
+                fallback_timezone=now.tzinfo,
+            )
+        except ValueError:
+            return None
+
+    month_match = re.search(
+        r"\b(?P<timestamp>[A-Za-z]{3,9}\s+\d{1,2},\s+\d{4}"
+        r"(?:,|\s+at)?\s+\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM))\b",
+        message,
+        flags=re.IGNORECASE,
+    )
+    if not month_match:
+        return None
+
+    timestamp = re.sub(
+        r"\s+at\s+",
+        " ",
+        month_match.group("timestamp").replace(",", ""),
+        flags=re.IGNORECASE,
+    )
+    for format_string in (
+        "%B %d %Y %I:%M:%S %p",
+        "%B %d %Y %I:%M %p",
+        "%b %d %Y %I:%M:%S %p",
+        "%b %d %Y %I:%M %p",
+    ):
+        try:
+            parsed = datetime.strptime(timestamp, format_string)
+        except ValueError:
+            continue
+        return parsed.replace(tzinfo=now.tzinfo)
+    return None
+
+
+def _parse_time_of_day_retry_time(message: str, now: datetime) -> datetime | None:
+    time_match = re.search(
+        r"\b(?:at|after)\s+"
+        r"(?P<time>\d{1,2}:\d{2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?)"
+        r"(?:\s*(?P<zone>UTC|Z|[+-]\d{2}:?\d{2}))?",
+        message,
+        flags=re.IGNORECASE,
+    )
+    if not time_match:
+        return None
+
+    time_text = _normalized_time_of_day(time_match.group("time"))
+    for format_string in ("%I:%M:%S %p", "%I:%M %p", "%H:%M:%S", "%H:%M"):
+        try:
+            parsed = datetime.strptime(time_text, format_string)
+        except ValueError:
+            continue
+        tzinfo = _timezone_from_retry_suffix(time_match.group("zone"), now.tzinfo)
+        retry_at = datetime.combine(now.date(), parsed.time(), tzinfo=tzinfo)
+        if retry_at <= now:
+            retry_at += timedelta(days=1)
+        return retry_at
+    return None
+
+
+def _normalized_datetime_zone(zone: str | None) -> str:
+    if zone is None or not zone.strip():
+        return ""
+    normalized = zone.strip().upper()
+    if normalized in {"Z", "UTC"}:
+        return "+00:00"
+    if re.fullmatch(r"[+-]\d{4}", normalized):
+        return f"{normalized[:3]}:{normalized[3:]}"
+    return normalized
+
+
+def _normalized_time_of_day(time_text: str) -> str:
+    normalized = time_text.strip().upper().replace(".", "")
+    return re.sub(r"(?<=\d)(AM|PM)$", r" \1", normalized)
+
+
+def _timezone_from_retry_suffix(
+    zone: str | None, fallback_timezone: tzinfo | None
+) -> tzinfo:
+    if zone is None or not zone.strip():
+        return fallback_timezone or _local_runtime_now().tzinfo or UTC
+
+    normalized = zone.strip().upper()
+    if normalized in {"Z", "UTC"}:
+        return UTC
+    if re.fullmatch(r"[+-]\d{2}:?\d{2}", normalized):
+        offset = normalized.replace(":", "")
+        sign = 1 if offset[0] == "+" else -1
+        hours = int(offset[1:3])
+        minutes = int(offset[3:5])
+        return timezone(sign * timedelta(hours=hours, minutes=minutes))
+    return fallback_timezone or _local_runtime_now().tzinfo or UTC
+
+
+def _record_usage_limit_wait(
+    *,
+    task_state_file: Path,
+    state: dict[str, Any],
+    active_task_state: dict[str, Any],
+    role: str,
+    message: str,
+    detected_at: datetime,
+    suggested_retry_at: datetime,
+    sleep_seconds: float,
+) -> None:
+    record = {
+        "role": role,
+        "detected_at": _format_runtime_timestamp(detected_at),
+        "suggested_retry_at": _format_runtime_timestamp(suggested_retry_at),
+        "sleep_seconds": sleep_seconds,
+        "message": message,
+    }
+    _append_usage_limit_wait(state, record, "Task State")
+    _append_usage_limit_wait(active_task_state, dict(record), "Active Task State")
+    _write_json(task_state_file, state)
+
+
+def _append_usage_limit_wait(
+    owner: dict[str, Any], record: dict[str, Any], owner_name: str
+) -> None:
+    waits = owner.setdefault("usage_limit_waits", [])
+    if not isinstance(waits, list):
+        raise TaskRunError(f"{owner_name} field 'usage_limit_waits' must be a list.")
+    waits.append(record)
+
+
+def _exception_message(exc: Exception) -> str:
+    message = str(exc)
+    if message:
+        return message
+    if exc.args:
+        return " ".join(str(arg) for arg in exc.args)
+    return exc.__class__.__name__
+
+
+def _runtime_datetime(
+    value: datetime, *, fallback_timezone: tzinfo | None = None
+) -> datetime:
+    if value.tzinfo is not None and value.utcoffset() is not None:
+        return value
+    return value.replace(tzinfo=fallback_timezone or _local_runtime_now().tzinfo or UTC)
+
+
+def _format_runtime_timestamp(value: datetime) -> str:
+    return _runtime_datetime(value).isoformat()
+
+
+def _local_runtime_now() -> datetime:
+    return datetime.now().astimezone()
 
 
 def _planner_turn_input(
