@@ -2,15 +2,90 @@ import json
 import subprocess
 from pathlib import Path
 
+import jsonschema
 import pytest
 
 from agent_control_plane.task_control_plane.cli import main
 from agent_control_plane.task_control_plane.controller import (
+    PLANNER_OUTPUT_SCHEMA_PATH,
+    PLANNER_PROMPT_PATH,
+    PlannerOutputError,
+    TaskRun,
     TaskRunError,
+    plan_active_task,
     start_task_run,
 )
 from agent_control_plane.task_control_plane.task_spec import TaskSpecError
 from agent_control_plane.task_control_plane.task_spec import load_task_spec
+
+
+class FakeCodexClient:
+    def __init__(self, planner_output: object) -> None:
+        self.started_threads: list[dict[str, object]] = []
+        self.resumed_threads: list[dict[str, object]] = []
+        self.started_thread = FakeCodexThread("planner-thread-1", planner_output)
+        self.resumed_thread: FakeCodexThread | None = None
+
+    def thread_start(self, **kwargs: object) -> "FakeCodexThread":
+        self.started_threads.append(kwargs)
+        return self.started_thread
+
+    def thread_resume(self, thread_id: str, **kwargs: object) -> "FakeCodexThread":
+        self.resumed_threads.append({"thread_id": thread_id, **kwargs})
+        self.resumed_thread = FakeCodexThread(
+            thread_id, self.started_thread.planner_output
+        )
+        return self.resumed_thread
+
+
+class FakeCodexThread:
+    def __init__(self, thread_id: str, planner_output: object) -> None:
+        self.id = thread_id
+        self.planner_output = planner_output
+        self.run_calls: list[dict[str, object]] = []
+
+    def run(self, input: str, **kwargs: object) -> object:
+        self.run_calls.append({"input": input, **kwargs})
+        return FakeCodexTurnResult(self.planner_output)
+
+
+class FakeCodexTurnResult:
+    def __init__(self, planner_output: object) -> None:
+        self.final_response = (
+            planner_output
+            if isinstance(planner_output, str)
+            else json.dumps(planner_output)
+        )
+
+
+def sdk_value(value: object) -> object:
+    return getattr(value, "value", value)
+
+
+def create_task_run(tmp_path: Path) -> tuple[Path, TaskRun]:
+    target_repository = tmp_path / "target"
+    target_repository.mkdir()
+    subprocess.run(
+        ["git", "init"], cwd=target_repository, check=True, capture_output=True
+    )
+
+    task_spec_path = tmp_path / "task-spec.yaml"
+    task_spec_path.write_text(
+        f"""
+target_repository: {target_repository}
+codex:
+  model: gpt-5-codex
+  effort: high
+tasks:
+  - id: TASK-1
+    title: First task
+    prompt: Implement the first task.
+""",
+        encoding="utf-8",
+    )
+    return target_repository, start_task_run(
+        task_spec_path, runtime_root=tmp_path / "runs"
+    )
 
 
 def test_load_task_spec_applies_defaults_and_preserves_ordered_tasks(
@@ -287,6 +362,145 @@ tasks:
         start_task_run(task_spec_path, runtime_root=tmp_path / "runs")
 
     assert not (tmp_path / "runs").exists()
+
+
+def test_plan_active_task_starts_planner_thread_and_records_planned_output(
+    tmp_path: Path,
+) -> None:
+    target_repository, task_run = create_task_run(tmp_path)
+    planner_output = {
+        "status": "planned",
+        "plan_markdown": "1. Inspect the existing code.\n2. Make the scoped change.",
+    }
+    codex_client = FakeCodexClient(planner_output)
+
+    result = plan_active_task(task_run.task_state_path, codex_client)
+
+    assert result == planner_output
+    assert len(codex_client.started_threads) == 1
+    start_call = codex_client.started_threads[0]
+    assert "Planner Agent" in start_call["developer_instructions"]
+    assert start_call["cwd"] == str(target_repository.resolve())
+    assert sdk_value(start_call["approval_mode"]) == "auto_review"
+    assert sdk_value(start_call["sandbox"]) == "read-only"
+    assert start_call["model"] == "gpt-5-codex"
+
+    run_call = codex_client.started_thread.run_calls[0]
+    assert "TASK-1" in run_call["input"]
+    assert run_call["cwd"] == str(target_repository.resolve())
+    assert sdk_value(run_call["approval_mode"]) == "auto_review"
+    assert run_call["sandbox_policy"].type == "readOnly"
+    assert sdk_value(run_call["effort"]) == "high"
+    assert run_call["output_schema"]["title"] == "PlannerOutput"
+
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    task_state = state["tasks"][0]
+    assert state["phase"] == "plan_ready"
+    assert task_state["phase"] == "plan_ready"
+    assert task_state["threads"]["planner"] == "planner-thread-1"
+
+    planning_artifact_path = Path(task_state["artifacts"]["planning"])
+    planning_artifact = json.loads(planning_artifact_path.read_text(encoding="utf-8"))
+    assert planning_artifact["planner_outputs"] == [planner_output]
+
+
+def test_plan_active_task_resumes_existing_planner_thread(tmp_path: Path) -> None:
+    target_repository, task_run = create_task_run(tmp_path)
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    state["tasks"][0]["threads"] = {"planner": "planner-thread-existing"}
+    task_run.task_state_path.write_text(
+        json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    planner_output = {
+        "status": "planned",
+        "plan_markdown": "Resume the existing Planner Agent thread.",
+    }
+    codex_client = FakeCodexClient(planner_output)
+
+    plan_active_task(task_run.task_state_path, codex_client)
+
+    assert codex_client.started_threads == []
+    assert len(codex_client.resumed_threads) == 1
+    resume_call = codex_client.resumed_threads[0]
+    assert resume_call["thread_id"] == "planner-thread-existing"
+    assert "Planner Agent" in resume_call["developer_instructions"]
+    assert resume_call["cwd"] == str(target_repository.resolve())
+    assert sdk_value(resume_call["approval_mode"]) == "auto_review"
+    assert sdk_value(resume_call["sandbox"]) == "read-only"
+    assert codex_client.resumed_thread is not None
+    assert codex_client.resumed_thread.run_calls[0]["output_schema"]["title"] == (
+        "PlannerOutput"
+    )
+
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    assert state["tasks"][0]["threads"]["planner"] == "planner-thread-existing"
+
+
+def test_plan_active_task_pauses_when_planner_needs_answers(tmp_path: Path) -> None:
+    _, task_run = create_task_run(tmp_path)
+    planner_output = {
+        "status": "needs_answers",
+        "questions": [
+            {
+                "id": "q1",
+                "context": "Need to know the existing public API.",
+                "question": "Which function should expose this behavior?",
+                "type": "repo_context",
+            }
+        ],
+    }
+    codex_client = FakeCodexClient(planner_output)
+
+    result = plan_active_task(task_run.task_state_path, codex_client)
+
+    assert result == planner_output
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    assert state["phase"] == "planning_needs_answers"
+    assert state["tasks"][0]["phase"] == "planning_needs_answers"
+    planning_artifact = json.loads(
+        Path(state["tasks"][0]["artifacts"]["planning"]).read_text(encoding="utf-8")
+    )
+    assert planning_artifact["planner_outputs"] == [planner_output]
+
+
+@pytest.mark.parametrize(
+    ("planner_output", "message"),
+    [
+        ("not json", "unparseable JSON"),
+        ({"status": "surprised"}, "Unknown Planner Agent status"),
+    ],
+)
+def test_plan_active_task_rejects_unroutable_planner_output(
+    tmp_path: Path, planner_output: object, message: str
+) -> None:
+    _, task_run = create_task_run(tmp_path)
+    codex_client = FakeCodexClient(planner_output)
+
+    with pytest.raises(PlannerOutputError, match=message):
+        plan_active_task(task_run.task_state_path, codex_client)
+
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    assert state["phase"] == "ready_for_planning"
+    assert state["tasks"][0]["phase"] == "ready_for_planning"
+    assert state["tasks"][0]["threads"]["planner"] == "planner-thread-1"
+    assert not Path(state["tasks"][0]["artifacts"]["planning"]).exists()
+
+
+def test_planner_prompt_and_output_schema_are_source_controlled() -> None:
+    assert "Planner Agent" in PLANNER_PROMPT_PATH.read_text(encoding="utf-8")
+    schema = json.loads(PLANNER_OUTPUT_SCHEMA_PATH.read_text(encoding="utf-8"))
+
+    jsonschema.Draft202012Validator.check_schema(schema)
+    jsonschema.validate(
+        {"status": "planned", "plan_markdown": "Do the scoped work."}, schema
+    )
+    jsonschema.validate(
+        {
+            "status": "needs_answers",
+            "questions": [{"id": "q1", "question": "What should happen next?"}],
+        },
+        schema,
+    )
 
 
 def test_cli_run_requires_explicit_task_spec_path(
