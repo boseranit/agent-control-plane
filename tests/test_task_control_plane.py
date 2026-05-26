@@ -23,6 +23,7 @@ from agent_control_plane.task_control_plane.controller import (
     TaskRunError,
     build_implementer_turn_input,
     plan_active_task,
+    run_active_task_failed_test_repair,
     run_active_task_implementer,
     run_active_task_tests,
     start_task_run,
@@ -87,6 +88,11 @@ class FakeCodexClient:
             and "Planner Agent" in developer_instructions
         ):
             return "planner"
+        if (
+            isinstance(developer_instructions, str)
+            and "Reviewer Agent" in developer_instructions
+        ):
+            raise AssertionError("Reviewer Agent must not be requested.")
         raise AssertionError("FakeCodexClient could not identify thread role.")
 
 
@@ -893,6 +899,166 @@ tasks:
     assert state["phase"] == "tests_failed"
     assert task_state["phase"] == "tests_failed"
     assert task_state["latest_test_status"] == result
+
+
+def test_run_active_task_failed_test_repair_bypasses_review_and_reuses_implementer_thread(
+    tmp_path: Path,
+) -> None:
+    target_repository = tmp_path / "target"
+    target_repository.mkdir()
+    subprocess.run(
+        ["git", "init"], cwd=target_repository, check=True, capture_output=True
+    )
+    failing_command = [
+        sys.executable,
+        "-c",
+        "import sys; print('failure output that stays in the log'); sys.exit(2)",
+    ]
+    task_spec_path = tmp_path / "task-spec.yaml"
+    task_spec_path.write_text(
+        f"""
+target_repository: {target_repository}
+require_plan_approval: false
+max_iterations: 2
+test_commands:
+  - name: unit
+    argv: {json.dumps(failing_command)}
+tasks:
+  - id: TASK-1
+    title: First task
+    prompt: Implement the first task.
+""",
+        encoding="utf-8",
+    )
+    task_run = start_task_run(task_spec_path, runtime_root=tmp_path / "runs")
+    planner_output = {"status": "planned", "plan_markdown": "Make the change."}
+    first_implementation_result = {
+        "status": "implementation_complete",
+        "summary": "Initial implementation.",
+        "changed_files": ["app.py"],
+        "recommended_commands": [],
+    }
+    repair_implementation_result = {
+        "status": "implementation_complete",
+        "summary": "Repaired failing tests.",
+        "changed_files": ["app.py", "tests/test_app.py"],
+        "recommended_commands": [],
+    }
+    codex_client = FakeCodexClient(
+        planner_output,
+        implementer_outputs=[
+            first_implementation_result,
+            repair_implementation_result,
+        ],
+    )
+    plan_active_task(task_run.task_state_path, codex_client)
+    run_active_task_implementer(task_run.task_state_path, codex_client)
+    failed_tests = run_active_task_tests(task_run.task_state_path)
+
+    result = run_active_task_failed_test_repair(task_run.task_state_path, codex_client)
+
+    assert result == repair_implementation_result
+    assert codex_client.resumed_threads[-1]["thread_id"] == "implementer-thread-1"
+    repair_run_call = codex_client.threads_by_role["implementer"].run_calls[0]
+
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    task_state = state["tasks"][0]
+    approved_plan_path = Path(task_state["artifacts"]["approved_plan"])
+    command_log_path = Path(task_state["artifacts"]["command_log"])
+    implementation_result_path = Path(task_state["artifacts"]["implementation_result"])
+
+    assert task_state["iterations"] == 1
+    assert state["phase"] == "ready_for_tests"
+    assert task_state["phase"] == "ready_for_tests"
+    assert "deterministic test commands failed" in repair_run_call["input"]
+    assert str(approved_plan_path) in repair_run_call["input"]
+    assert str(command_log_path) in repair_run_call["input"]
+    assert failed_tests["command_log_path"] == str(command_log_path)
+    assert "failure output that stays in the log" not in repair_run_call["input"]
+    assert json.loads(implementation_result_path.read_text(encoding="utf-8")) == (
+        repair_implementation_result
+    )
+    assert all(
+        "Reviewer Agent" not in str(call.get("developer_instructions"))
+        for call in [*codex_client.started_threads, *codex_client.resumed_threads]
+    )
+
+
+def test_run_active_task_failed_test_repair_marks_task_run_failed_at_iteration_cap_without_reverting(
+    tmp_path: Path,
+) -> None:
+    target_repository = tmp_path / "target"
+    target_repository.mkdir()
+    subprocess.run(
+        ["git", "init"], cwd=target_repository, check=True, capture_output=True
+    )
+    failing_command = [sys.executable, "-c", "import sys; sys.exit(1)"]
+    task_spec_path = tmp_path / "task-spec.yaml"
+    task_spec_path.write_text(
+        f"""
+target_repository: {target_repository}
+require_plan_approval: false
+max_iterations: 1
+test_commands:
+  - name: unit
+    argv: {json.dumps(failing_command)}
+tasks:
+  - id: TASK-1
+    title: First task
+    prompt: Implement the first task.
+  - id: TASK-2
+    title: Second task
+    prompt: Implement the second task.
+""",
+        encoding="utf-8",
+    )
+    task_run = start_task_run(task_spec_path, runtime_root=tmp_path / "runs")
+    planner_output = {"status": "planned", "plan_markdown": "Make the change."}
+    implementer_output = {
+        "status": "implementation_complete",
+        "summary": "Left failed work for inspection.",
+        "changed_files": ["attempt.txt"],
+        "recommended_commands": [],
+    }
+    codex_client = FakeCodexClient(
+        planner_output, implementer_outputs=[implementer_output]
+    )
+    plan_active_task(task_run.task_state_path, codex_client)
+    run_active_task_implementer(task_run.task_state_path, codex_client)
+    dirty_path = target_repository / "attempt.txt"
+    dirty_path.write_text("failed work remains\n", encoding="utf-8")
+    run_active_task_tests(task_run.task_state_path)
+
+    result = run_active_task_failed_test_repair(task_run.task_state_path, codex_client)
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "max_iterations_reached"
+    assert result["iterations"] == 1
+    assert result["max_iterations"] == 1
+    assert dirty_path.read_text(encoding="utf-8") == "failed work remains\n"
+    status = subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        cwd=target_repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "?? attempt.txt" in status.stdout
+    assert codex_client.resumed_threads == []
+
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    first_task_state, second_task_state = state["tasks"]
+    assert state["phase"] == "failed"
+    assert state["active_task_id"] == "TASK-1"
+    assert state["failure"]["active_task_id"] == "TASK-1"
+    assert first_task_state["status"] == "failed"
+    assert first_task_state["phase"] == "failed"
+    assert first_task_state["iterations"] == 1
+    assert first_task_state["failure"]["reason"] == "max_iterations_reached"
+    assert second_task_state["status"] == "pending"
+    assert second_task_state["phase"] == "pending"
+    assert second_task_state["iterations"] == 0
+    assert second_task_state["artifacts"] == {}
 
 
 def test_plan_active_task_resumes_existing_planner_thread(tmp_path: Path) -> None:

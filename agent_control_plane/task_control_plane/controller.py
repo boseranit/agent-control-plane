@@ -321,7 +321,50 @@ def run_active_task_implementer(
     task_state_path: str | Path, codex_client: Any
 ) -> dict[str, Any]:
     task_state_file = Path(task_state_path)
-    turn_input = build_implementer_turn_input(task_state_file)
+    return _run_active_task_implementer_turn(
+        task_state_file,
+        codex_client,
+        build_implementer_turn_input(task_state_file),
+    )
+
+
+def run_active_task_failed_test_repair(
+    task_state_path: str | Path, codex_client: Any
+) -> dict[str, Any]:
+    task_state_file = Path(task_state_path)
+    state = _read_json(task_state_file)
+    active_task_state = _active_task_state(state)
+    artifacts = _task_artifacts(active_task_state)
+    latest_test_status = _latest_failed_test_status(active_task_state)
+    task_spec = load_task_spec(state["task_spec_snapshot_path"])
+
+    iterations = _active_task_iterations(active_task_state) + 1
+    active_task_state["iterations"] = iterations
+    if iterations >= task_spec.max_iterations:
+        failure = _mark_active_task_failed(
+            state=state,
+            active_task_state=active_task_state,
+            reason="max_iterations_reached",
+            iterations=iterations,
+            max_iterations=task_spec.max_iterations,
+        )
+        _write_json(task_state_file, state)
+        return failure
+
+    state["phase"] = "failed_test_repair_pending"
+    active_task_state["phase"] = "failed_test_repair_pending"
+    _write_json(task_state_file, state)
+
+    return _run_active_task_implementer_turn(
+        task_state_file,
+        codex_client,
+        _failed_test_repair_turn_input(artifacts, latest_test_status),
+    )
+
+
+def _run_active_task_implementer_turn(
+    task_state_file: Path, codex_client: Any, turn_input: str
+) -> dict[str, Any]:
     state = _read_json(task_state_file)
     active_task_state = _active_task_state(state)
     artifacts = _task_artifacts(active_task_state)
@@ -383,6 +426,68 @@ def run_active_task_tests(task_state_path: str | Path) -> dict[str, Any]:
     active_task_state["latest_test_status"] = test_status
     _write_json(task_state_file, state)
     return test_status
+
+
+def _latest_failed_test_status(task_state: Mapping[str, Any]) -> dict[str, Any]:
+    latest_test_status = task_state.get("latest_test_status")
+    if not isinstance(latest_test_status, dict):
+        raise TaskRunError("Active Task has no deterministic test result.")
+    if latest_test_status.get("passed") is not False:
+        raise TaskRunError("Active Task latest deterministic tests did not fail.")
+    return latest_test_status
+
+
+def _active_task_iterations(task_state: Mapping[str, Any]) -> int:
+    iterations = task_state.get("iterations")
+    if not isinstance(iterations, int) or iterations < 0:
+        raise TaskRunError(
+            "Active Task iteration count must be a non-negative integer."
+        )
+    return iterations
+
+
+def _failed_test_repair_turn_input(
+    artifacts: Mapping[str, str], latest_test_status: Mapping[str, Any]
+) -> str:
+    command_log_path = (
+        latest_test_status.get("command_log_path") or artifacts["command_log"]
+    )
+    return "\n".join(
+        [
+            "The deterministic test commands failed.",
+            "",
+            f"Approved Plan artifact: {artifacts['approved_plan']}",
+            f"Command log artifact: {command_log_path}",
+            "",
+            "Inspect the command log, fix the implementation, and return a new implementation result.",
+        ]
+    )
+
+
+def _mark_active_task_failed(
+    *,
+    state: dict[str, Any],
+    active_task_state: dict[str, Any],
+    reason: str,
+    iterations: int,
+    max_iterations: int,
+) -> dict[str, Any]:
+    failure = {
+        "status": "failed",
+        "reason": reason,
+        "failed_at": _utc_timestamp(),
+        "iterations": iterations,
+        "max_iterations": max_iterations,
+    }
+    state["phase"] = "failed"
+    state["failure"] = {
+        "active_task_id": active_task_state.get("id"),
+        **failure,
+    }
+    active_task_state["status"] = "failed"
+    active_task_state["phase"] = "failed"
+    active_task_state["failure"] = failure
+    return failure
 
 
 def _run_test_commands(
