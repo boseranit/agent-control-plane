@@ -42,8 +42,13 @@ IMPLEMENTER_PROMPT_PATH = PACKAGE_DIRECTORY / "prompts" / "implementer-agent.md"
 IMPLEMENTER_RESULT_SCHEMA_PATH = (
     PACKAGE_DIRECTORY / "schemas" / "implementer-result-output.schema.json"
 )
+REVIEWER_PROMPT_PATH = PACKAGE_DIRECTORY / "prompts" / "reviewer-agent.md"
+REVIEWER_OUTPUT_SCHEMA_PATH = (
+    PACKAGE_DIRECTORY / "schemas" / "reviewer-output.schema.json"
+)
 PLANNER_STATUSES = frozenset({"planned", "needs_answers"})
 CONTEXT_ANSWER_STATUSES = frozenset({"answered", "unresolved"})
+REVIEWER_STATUSES = frozenset({"approved", "rejected"})
 
 HumanAnswerProvider = Callable[[list[dict[str, Any]], Path, Path], list[dict[str, Any]]]
 ApprovedPlanEditor = Callable[[Path], None]
@@ -73,6 +78,10 @@ class ContextOutputError(RuntimeError):
 
 class ImplementerOutputError(RuntimeError):
     """Raised when the Implementer Agent output cannot be recorded."""
+
+
+class ReviewerOutputError(RuntimeError):
+    """Raised when the Reviewer Agent output cannot drive Controller routing."""
 
 
 class HumanAnswerError(RuntimeError):
@@ -428,6 +437,67 @@ def run_active_task_tests(task_state_path: str | Path) -> dict[str, Any]:
     return test_status
 
 
+def run_active_task_reviewer(
+    task_state_path: str | Path, codex_client: Any
+) -> dict[str, Any]:
+    task_state_file = Path(task_state_path)
+    state = _read_json(task_state_file)
+    active_task_state = _active_task_state(state)
+    artifacts = _task_artifacts(active_task_state)
+    latest_test_status = _latest_passing_test_status(active_task_state)
+
+    task_spec = load_task_spec(state["task_spec_snapshot_path"])
+    target_repository = Path(state["target_repository"]).resolve()
+
+    reviewer_developer_instructions = REVIEWER_PROMPT_PATH.read_text(encoding="utf-8")
+    reviewer_output_schema = _read_json(REVIEWER_OUTPUT_SCHEMA_PATH)
+    thread = _reviewer_thread(
+        codex_client=codex_client,
+        target_repository=target_repository,
+        developer_instructions=reviewer_developer_instructions,
+        model=task_spec.codex.model,
+    )
+
+    turn_result = _run_reviewer_thread(
+        thread=thread,
+        turn_input=_reviewer_turn_input(
+            task_spec=task_spec,
+            active_task_state=active_task_state,
+            artifacts=artifacts,
+            latest_test_status=latest_test_status,
+        ),
+        target_repository=target_repository,
+        effort=task_spec.codex.effort,
+        model=task_spec.codex.model,
+        output_schema=reviewer_output_schema,
+    )
+    reviewer_output = _parse_reviewer_output(turn_result)
+    _check_reviewer_output_for_routing(reviewer_output)
+    _append_review_output(Path(artifacts["review_log"]), reviewer_output)
+
+    active_task_state["review_attempts"] = (
+        _active_task_review_attempts(active_task_state) + 1
+    )
+    active_task_state["latest_review_output"] = reviewer_output
+    if reviewer_output["status"] == "approved":
+        state["phase"] = "commit_ready"
+        active_task_state["phase"] = "commit_ready"
+    else:
+        state["phase"] = "review_rejected"
+        active_task_state["phase"] = "review_rejected"
+    _write_json(task_state_file, state)
+    return reviewer_output
+
+
+def _latest_passing_test_status(task_state: Mapping[str, Any]) -> dict[str, Any]:
+    latest_test_status = task_state.get("latest_test_status")
+    if not isinstance(latest_test_status, dict):
+        raise TaskRunError("Active Task has no deterministic test result.")
+    if latest_test_status.get("passed") is not True:
+        raise TaskRunError("Active Task latest deterministic tests did not pass.")
+    return latest_test_status
+
+
 def _latest_failed_test_status(task_state: Mapping[str, Any]) -> dict[str, Any]:
     latest_test_status = task_state.get("latest_test_status")
     if not isinstance(latest_test_status, dict):
@@ -444,6 +514,15 @@ def _active_task_iterations(task_state: Mapping[str, Any]) -> int:
             "Active Task iteration count must be a non-negative integer."
         )
     return iterations
+
+
+def _active_task_review_attempts(task_state: Mapping[str, Any]) -> int:
+    review_attempts = task_state.get("review_attempts", 0)
+    if not isinstance(review_attempts, int) or review_attempts < 0:
+        raise TaskRunError(
+            "Active Task review attempt count must be a non-negative integer."
+        )
+    return review_attempts
 
 
 def _failed_test_repair_turn_input(
@@ -1040,6 +1119,42 @@ def _persist_implementer_thread_id(task_state: dict[str, Any], thread_id: Any) -
     threads["implementer"] = thread_id
 
 
+def _reviewer_thread(
+    *,
+    codex_client: Any,
+    target_repository: Path,
+    developer_instructions: str,
+    model: str | None,
+) -> Any:
+    return codex_client.thread_start(
+        approval_mode=ApprovalMode.deny_all,
+        cwd=str(target_repository),
+        developer_instructions=developer_instructions,
+        model=model,
+        sandbox=SandboxMode.read_only,
+    )
+
+
+def _run_reviewer_thread(
+    *,
+    thread: Any,
+    turn_input: str,
+    target_repository: Path,
+    effort: str | None,
+    model: str | None,
+    output_schema: dict[str, Any],
+) -> Any:
+    return thread.run(
+        turn_input,
+        approval_mode=ApprovalMode.deny_all,
+        cwd=str(target_repository),
+        effort=_reasoning_effort(effort),
+        model=model,
+        output_schema=output_schema,
+        sandbox_policy=ReadOnlySandboxPolicy(type="readOnly"),
+    )
+
+
 def _planner_turn_input(
     task_context_path: Path, task_context: Mapping[str, Any]
 ) -> str:
@@ -1106,6 +1221,40 @@ def _planner_follow_up_turn_input(
     )
 
 
+def _reviewer_turn_input(
+    *,
+    task_spec: TaskSpec,
+    active_task_state: Mapping[str, Any],
+    artifacts: Mapping[str, str],
+    latest_test_status: Mapping[str, Any],
+) -> str:
+    active_task_id = active_task_state.get("id")
+    task = next(
+        (task for task in task_spec.tasks if task.task_id == active_task_id), None
+    )
+    if task is None:
+        raise TaskRunError(f"Task Spec snapshot has no active Task: {active_task_id}")
+
+    command_log_path = (
+        latest_test_status.get("command_log_path") or artifacts["command_log"]
+    )
+    return "\n".join(
+        [
+            "Review the active Task after passing deterministic tests.",
+            "",
+            f"Task ID: {task.task_id}",
+            f"Task title: {task.title}",
+            f"Task prompt: {task.prompt}",
+            f"Task context: {task.context or 'None'}",
+            "",
+            f"Task context artifact: {artifacts['task_context']}",
+            f"Approved Plan artifact: {artifacts['approved_plan']}",
+            f"Command log artifact: {command_log_path}",
+            f"Review log artifact: {artifacts['review_log']}",
+        ]
+    )
+
+
 def _reasoning_effort(effort: str | None) -> ReasoningEffort | None:
     if effort is None:
         return None
@@ -1166,6 +1315,25 @@ def _parse_implementer_output(turn_result: Any) -> dict[str, Any]:
 
     if not isinstance(parsed, dict):
         raise ImplementerOutputError("Implementer Agent output must be a JSON object.")
+    return parsed
+
+
+def _parse_reviewer_output(turn_result: Any) -> dict[str, Any]:
+    final_response = getattr(turn_result, "final_response", None)
+    if isinstance(final_response, str):
+        try:
+            parsed = json.loads(final_response)
+        except json.JSONDecodeError as exc:
+            raise ReviewerOutputError(
+                "Reviewer Agent returned unparseable JSON."
+            ) from exc
+    elif isinstance(final_response, dict):
+        parsed = final_response
+    else:
+        raise ReviewerOutputError("Reviewer Agent did not return a JSON object.")
+
+    if not isinstance(parsed, dict):
+        raise ReviewerOutputError("Reviewer Agent output must be a JSON object.")
     return parsed
 
 
@@ -1248,6 +1416,26 @@ def _check_context_output_for_routing(
         raise ContextOutputError(
             "Context Agent must answer or mark every planner question."
         )
+
+
+def _check_reviewer_output_for_routing(reviewer_output: Mapping[str, Any]) -> None:
+    status = reviewer_output.get("status")
+    if status not in REVIEWER_STATUSES:
+        raise ReviewerOutputError(f"Unknown Reviewer Agent status: {status!r}.")
+
+    summary = reviewer_output.get("summary")
+    if not isinstance(summary, str) or not summary.strip():
+        raise ReviewerOutputError("Reviewer Agent output requires summary.")
+
+    for field in ("blocking_issues", "requested_changes", "non_blocking_issues"):
+        issues = reviewer_output.get(field)
+        if not isinstance(issues, list):
+            raise ReviewerOutputError(f"Reviewer Agent output requires {field}.")
+        for issue in issues:
+            if not isinstance(issue, dict):
+                raise ReviewerOutputError(
+                    f"Reviewer Agent {field} entries must be objects."
+                )
 
 
 def _check_human_answers_for_routing(
@@ -1335,6 +1523,12 @@ def _append_answer_batch(
         }
     )
     _write_json(path, planning_artifact)
+
+
+def _append_review_output(path: Path, reviewer_output: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as review_log:
+        review_log.write(json.dumps(reviewer_output, sort_keys=True) + "\n")
 
 
 def _write_approved_plan_candidate(path: Path, plan_markdown: str) -> None:

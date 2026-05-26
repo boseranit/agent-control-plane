@@ -16,6 +16,8 @@ from agent_control_plane.task_control_plane.controller import (
     IMPLEMENTER_RESULT_SCHEMA_PATH,
     PLANNER_OUTPUT_SCHEMA_PATH,
     PLANNER_PROMPT_PATH,
+    REVIEWER_OUTPUT_SCHEMA_PATH,
+    REVIEWER_PROMPT_PATH,
     ContextOutputError,
     HumanAnswerError,
     PlannerOutputError,
@@ -25,6 +27,7 @@ from agent_control_plane.task_control_plane.controller import (
     plan_active_task,
     run_active_task_failed_test_repair,
     run_active_task_implementer,
+    run_active_task_reviewer,
     run_active_task_tests,
     start_task_run,
 )
@@ -38,6 +41,7 @@ class FakeCodexClient:
         planner_output: object | list[object],
         context_outputs: list[object] | None = None,
         implementer_outputs: list[object] | None = None,
+        reviewer_outputs: list[object] | None = None,
     ) -> None:
         self.started_threads: list[dict[str, object]] = []
         self.resumed_threads: list[dict[str, object]] = []
@@ -49,16 +53,22 @@ class FakeCodexClient:
             ),
             "context": list(context_outputs or []),
             "implementer": list(implementer_outputs or []),
+            "reviewer": list(reviewer_outputs or []),
         }
         self.started_thread: FakeCodexThread | None = None
         self.resumed_thread: FakeCodexThread | None = None
         self.threads_by_role: dict[str, FakeCodexThread] = {}
+        self.thread_history_by_role: dict[str, list[FakeCodexThread]] = {}
 
     def thread_start(self, **kwargs: object) -> "FakeCodexThread":
         self.started_threads.append(kwargs)
         role = self._role(kwargs)
-        thread = FakeCodexThread(f"{role}-thread-1", self.outputs_by_role[role])
+        role_thread_count = len(self.thread_history_by_role.get(role, [])) + 1
+        thread = FakeCodexThread(
+            f"{role}-thread-{role_thread_count}", self.outputs_by_role[role]
+        )
         self.threads_by_role[role] = thread
+        self.thread_history_by_role.setdefault(role, []).append(thread)
         if role == "planner":
             self.started_thread = thread
         return thread
@@ -92,7 +102,7 @@ class FakeCodexClient:
             isinstance(developer_instructions, str)
             and "Reviewer Agent" in developer_instructions
         ):
-            raise AssertionError("Reviewer Agent must not be requested.")
+            return "reviewer"
         raise AssertionError("FakeCodexClient could not identify thread role.")
 
 
@@ -1061,6 +1071,154 @@ tasks:
     assert second_task_state["artifacts"] == {}
 
 
+def test_run_active_task_reviewer_uses_fresh_read_only_threads_and_records_approved_reviews(
+    tmp_path: Path,
+) -> None:
+    target_repository, task_run = create_task_run(tmp_path, require_plan_approval=False)
+    planner_output = {"status": "planned", "plan_markdown": "Make the change."}
+    implementer_output = {
+        "status": "implementation_complete",
+        "summary": "Implemented the approved plan.",
+        "changed_files": ["app.py"],
+        "recommended_commands": [],
+    }
+    first_review_output = {
+        "status": "approved",
+        "summary": "The task is ready to commit.",
+        "blocking_issues": [],
+        "requested_changes": [],
+        "non_blocking_issues": [
+            {
+                "path": "app.py",
+                "line": 12,
+                "message": "Consider a follow-up cleanup.",
+            }
+        ],
+    }
+    second_review_output = {
+        "status": "approved",
+        "summary": "A fresh review also approves the current changes.",
+        "blocking_issues": [],
+        "requested_changes": [],
+        "non_blocking_issues": [],
+    }
+    codex_client = FakeCodexClient(
+        planner_output,
+        implementer_outputs=[implementer_output],
+        reviewer_outputs=[first_review_output, second_review_output],
+    )
+    plan_active_task(task_run.task_state_path, codex_client)
+    run_active_task_implementer(task_run.task_state_path, codex_client)
+    test_status = run_active_task_tests(task_run.task_state_path)
+
+    first_result = run_active_task_reviewer(task_run.task_state_path, codex_client)
+    second_result = run_active_task_reviewer(task_run.task_state_path, codex_client)
+
+    assert test_status["passed"] is True
+    assert first_result == first_review_output
+    assert second_result == second_review_output
+
+    reviewer_start_calls = [
+        call
+        for call in codex_client.started_threads
+        if "Reviewer Agent" in call["developer_instructions"]
+    ]
+    assert len(reviewer_start_calls) == 2
+    assert codex_client.resumed_threads == []
+    for start_call in reviewer_start_calls:
+        assert start_call["cwd"] == str(target_repository.resolve())
+        assert sdk_value(start_call["approval_mode"]) == "deny_all"
+        assert sdk_value(start_call["sandbox"]) == "read-only"
+        assert start_call["model"] == "gpt-5-codex"
+
+    reviewer_threads = codex_client.thread_history_by_role["reviewer"]
+    assert [thread.id for thread in reviewer_threads] == [
+        "reviewer-thread-1",
+        "reviewer-thread-2",
+    ]
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    task_state = state["tasks"][0]
+    artifacts = task_state["artifacts"]
+    reviewer_run_call = reviewer_threads[0].run_calls[0]
+    reviewer_input = reviewer_run_call["input"]
+    assert "TASK-1" in reviewer_input
+    assert "First task" in reviewer_input
+    assert "Implement the first task." in reviewer_input
+    assert str(Path(artifacts["task_context"])) in reviewer_input
+    assert str(Path(artifacts["approved_plan"])) in reviewer_input
+    assert str(Path(artifacts["command_log"])) in reviewer_input
+    assert str(Path(artifacts["review_log"])) in reviewer_input
+    assert "diff --git" not in reviewer_input
+    assert reviewer_run_call["cwd"] == str(target_repository.resolve())
+    assert sdk_value(reviewer_run_call["approval_mode"]) == "deny_all"
+    assert reviewer_run_call["sandbox_policy"].type == "readOnly"
+    assert sdk_value(reviewer_run_call["effort"]) == "high"
+    assert reviewer_run_call["output_schema"]["title"] == "ReviewerOutput"
+
+    assert state["phase"] == "commit_ready"
+    assert task_state["phase"] == "commit_ready"
+    assert task_state["latest_review_output"] == second_review_output
+    assert "reviewer" not in task_state["threads"]
+
+    review_log_path = Path(artifacts["review_log"])
+    review_log_entries = [
+        json.loads(line)
+        for line in review_log_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert review_log_entries == [first_review_output, second_review_output]
+
+
+def test_run_active_task_reviewer_requires_passing_deterministic_tests(
+    tmp_path: Path,
+) -> None:
+    target_repository = tmp_path / "target"
+    target_repository.mkdir()
+    subprocess.run(
+        ["git", "init"], cwd=target_repository, check=True, capture_output=True
+    )
+    failing_command = [sys.executable, "-c", "import sys; sys.exit(1)"]
+    task_spec_path = tmp_path / "task-spec.yaml"
+    task_spec_path.write_text(
+        f"""
+target_repository: {target_repository}
+require_plan_approval: false
+test_commands:
+  - name: unit
+    argv: {json.dumps(failing_command)}
+tasks:
+  - id: TASK-1
+    title: First task
+    prompt: Implement the first task.
+""",
+        encoding="utf-8",
+    )
+    task_run = start_task_run(task_spec_path, runtime_root=tmp_path / "runs")
+    planner_output = {"status": "planned", "plan_markdown": "Make the change."}
+    implementer_output = {
+        "status": "implementation_complete",
+        "summary": "Ready for deterministic tests.",
+        "changed_files": [],
+        "recommended_commands": [],
+    }
+    codex_client = FakeCodexClient(
+        planner_output, implementer_outputs=[implementer_output]
+    )
+    plan_active_task(task_run.task_state_path, codex_client)
+    run_active_task_implementer(task_run.task_state_path, codex_client)
+    failed_tests = run_active_task_tests(task_run.task_state_path)
+
+    with pytest.raises(TaskRunError, match="did not pass"):
+        run_active_task_reviewer(task_run.task_state_path, codex_client)
+
+    assert failed_tests["passed"] is False
+    assert "reviewer" not in codex_client.thread_history_by_role
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    review_log_path = Path(state["tasks"][0]["artifacts"]["review_log"])
+    assert not review_log_path.exists()
+    assert state["phase"] == "tests_failed"
+    assert state["tasks"][0]["phase"] == "tests_failed"
+
+
 def test_plan_active_task_resumes_existing_planner_thread(tmp_path: Path) -> None:
     target_repository, task_run = create_task_run(tmp_path)
     state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
@@ -1567,6 +1725,40 @@ def test_implementer_prompt_and_result_schema_are_source_controlled() -> None:
             "summary": "Implemented the approved plan.",
             "changed_files": ["agent_control_plane/task_control_plane/controller.py"],
             "recommended_commands": [{"name": "unit", "argv": ["pytest", "-q"]}],
+        },
+        schema,
+    )
+
+
+def test_reviewer_prompt_and_output_schema_are_source_controlled() -> None:
+    prompt = REVIEWER_PROMPT_PATH.read_text(encoding="utf-8")
+    assert "Reviewer Agent" in prompt
+    assert "Controller will commit all current Target Repository changes" in prompt
+    assert "non-blocking issues do not prevent commit" in prompt
+    schema = json.loads(REVIEWER_OUTPUT_SCHEMA_PATH.read_text(encoding="utf-8"))
+
+    jsonschema.Draft202012Validator.check_schema(schema)
+    jsonschema.validate(
+        {
+            "status": "approved",
+            "summary": "Ready to commit with one advisory note.",
+            "blocking_issues": [],
+            "requested_changes": [],
+            "non_blocking_issues": [
+                {"path": "app.py", "message": "Consider a follow-up cleanup."}
+            ],
+        },
+        schema,
+    )
+    jsonschema.validate(
+        {
+            "status": "rejected",
+            "summary": "Needs a requested change before commit.",
+            "blocking_issues": [],
+            "requested_changes": [
+                {"path": "app.py", "message": "Add the missing empty-input guard."}
+            ],
+            "non_blocking_issues": [],
         },
         schema,
     )
