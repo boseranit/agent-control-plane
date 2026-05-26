@@ -5,12 +5,14 @@ import os
 import shlex
 import shutil
 import subprocess
+import threading
+import time
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO, TextIO
 
 from openai_codex import ApprovalMode
 from openai_codex.generated.v2_all import (
@@ -20,7 +22,11 @@ from openai_codex.generated.v2_all import (
     WorkspaceWriteSandboxPolicy,
 )
 
-from agent_control_plane.task_control_plane.task_spec import TaskSpec, load_task_spec
+from agent_control_plane.task_control_plane.task_spec import (
+    TaskSpec,
+    TestCommand,
+    load_task_spec,
+)
 
 
 PACKAGE_DIRECTORY = Path(__file__).parent
@@ -353,6 +359,233 @@ def run_active_task_implementer(
     active_task_state["phase"] = "ready_for_tests"
     _write_json(task_state_file, state)
     return implementer_output
+
+
+def run_active_task_tests(task_state_path: str | Path) -> dict[str, Any]:
+    task_state_file = Path(task_state_path)
+    state = _read_json(task_state_file)
+    active_task_state = _active_task_state(state)
+    artifacts = _task_artifacts(active_task_state)
+
+    task_spec = load_task_spec(state["task_spec_snapshot_path"])
+    target_repository = Path(state["target_repository"]).resolve()
+    command_log_path = Path(artifacts["command_log"])
+
+    test_status = _run_test_commands(
+        commands=task_spec.test_commands,
+        target_repository=target_repository,
+        command_log_path=command_log_path,
+    )
+
+    phase = "tests_passed" if test_status["passed"] else "tests_failed"
+    state["phase"] = phase
+    active_task_state["phase"] = phase
+    active_task_state["latest_test_status"] = test_status
+    _write_json(task_state_file, state)
+    return test_status
+
+
+def _run_test_commands(
+    *,
+    commands: tuple[TestCommand, ...],
+    target_repository: Path,
+    command_log_path: Path,
+) -> dict[str, Any]:
+    command_log_path.parent.mkdir(parents=True, exist_ok=True)
+    started_at = _utc_timestamp()
+    command_results: list[dict[str, Any]] = []
+
+    with command_log_path.open("a", encoding="utf-8", buffering=1) as command_log:
+        log_lock = threading.Lock()
+        _write_command_log(
+            command_log,
+            log_lock,
+            "\n".join(
+                [
+                    "===== test run START =====",
+                    f"started_at: {started_at}",
+                    f"cwd: {target_repository}",
+                    "",
+                ]
+            ),
+        )
+
+        for command in commands:
+            command_results.append(
+                _run_test_command(
+                    command=command,
+                    target_repository=target_repository,
+                    command_log=command_log,
+                    log_lock=log_lock,
+                )
+            )
+
+        passed = all(result["status"] == "passed" for result in command_results)
+        ended_at = _utc_timestamp()
+        status = "passed" if passed else "failed"
+        _write_command_log(
+            command_log,
+            log_lock,
+            "\n".join(
+                [
+                    "===== test run END =====",
+                    f"ended_at: {ended_at}",
+                    f"status: {status}",
+                    "",
+                ]
+            ),
+        )
+
+    return {
+        "status": status,
+        "passed": passed,
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "command_log_path": str(command_log_path),
+        "command_results": command_results,
+    }
+
+
+def _run_test_command(
+    *,
+    command: TestCommand,
+    target_repository: Path,
+    command_log: TextIO,
+    log_lock: threading.Lock,
+) -> dict[str, Any]:
+    argv = list(command.argv)
+    started_at = _utc_timestamp()
+    started_monotonic = time.monotonic()
+    _write_command_log(
+        command_log,
+        log_lock,
+        "\n".join(
+            [
+                f"===== test command START: {command.name} =====",
+                f"name: {command.name}",
+                f"argv: {json.dumps(argv)}",
+                f"started_at: {started_at}",
+                f"cwd: {target_repository}",
+                "",
+            ]
+        ),
+    )
+
+    try:
+        process = subprocess.Popen(
+            argv,
+            cwd=target_repository,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except OSError as exc:
+        ended_at = _utc_timestamp()
+        duration_seconds = round(time.monotonic() - started_monotonic, 3)
+        _write_command_log(
+            command_log,
+            log_lock,
+            "\n".join(
+                [
+                    f"[stderr] failed to start command: {exc}",
+                    f"===== test command END: {command.name} =====",
+                    f"ended_at: {ended_at}",
+                    "exit_code: null",
+                    "status: failed",
+                    f"duration_seconds: {duration_seconds}",
+                    "",
+                ]
+            ),
+        )
+        return {
+            "name": command.name,
+            "argv": argv,
+            "started_at": started_at,
+            "ended_at": ended_at,
+            "exit_code": None,
+            "status": "failed",
+            "duration_seconds": duration_seconds,
+        }
+
+    stdout_thread = threading.Thread(
+        target=_stream_pipe_to_command_log,
+        args=(process.stdout, "stdout", command_log, log_lock),
+    )
+    stderr_thread = threading.Thread(
+        target=_stream_pipe_to_command_log,
+        args=(process.stderr, "stderr", command_log, log_lock),
+    )
+    stdout_thread.start()
+    stderr_thread.start()
+    exit_code = process.wait()
+    stdout_thread.join()
+    stderr_thread.join()
+
+    ended_at = _utc_timestamp()
+    duration_seconds = round(time.monotonic() - started_monotonic, 3)
+    status = "passed" if exit_code == 0 else "failed"
+    _write_command_log(
+        command_log,
+        log_lock,
+        "\n".join(
+            [
+                f"===== test command END: {command.name} =====",
+                f"ended_at: {ended_at}",
+                f"exit_code: {exit_code}",
+                f"status: {status}",
+                f"duration_seconds: {duration_seconds}",
+                "",
+            ]
+        ),
+    )
+    return {
+        "name": command.name,
+        "argv": argv,
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "exit_code": exit_code,
+        "status": status,
+        "duration_seconds": duration_seconds,
+    }
+
+
+def _stream_pipe_to_command_log(
+    pipe: BinaryIO | None,
+    stream_name: str,
+    command_log: TextIO,
+    log_lock: threading.Lock,
+) -> None:
+    if pipe is None:
+        return
+    try:
+        while chunk := pipe.read1(4096):
+            text = chunk.decode("utf-8", errors="replace")
+            _write_stream_chunk(command_log, log_lock, stream_name, text)
+    finally:
+        pipe.close()
+
+
+def _write_stream_chunk(
+    command_log: TextIO, log_lock: threading.Lock, stream_name: str, text: str
+) -> None:
+    if not text:
+        return
+    prefixed_lines = []
+    for line in text.splitlines(keepends=True):
+        if not line.endswith("\n"):
+            line = f"{line}\n"
+        prefixed_lines.append(f"[{stream_name}] {line}")
+    prefixed_text = "".join(prefixed_lines)
+    _write_command_log(command_log, log_lock, prefixed_text)
+
+
+def _write_command_log(
+    command_log: TextIO, log_lock: threading.Lock, text: str
+) -> None:
+    if not text.endswith("\n"):
+        text = f"{text}\n"
+    with log_lock:
+        command_log.write(text)
+        command_log.flush()
 
 
 def _require_clean_target_repository(target_repository: Path) -> None:

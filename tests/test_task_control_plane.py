@@ -1,5 +1,8 @@
 import json
 import subprocess
+import sys
+import threading
+import time
 from pathlib import Path
 
 import jsonschema
@@ -21,6 +24,7 @@ from agent_control_plane.task_control_plane.controller import (
     build_implementer_turn_input,
     plan_active_task,
     run_active_task_implementer,
+    run_active_task_tests,
     start_task_run,
 )
 from agent_control_plane.task_control_plane.task_spec import TaskSpecError
@@ -737,6 +741,158 @@ def test_run_active_task_implementer_runs_from_approved_plan_and_resumes_thread(
     assert json.loads(implementation_result_path.read_text(encoding="utf-8")) == (
         second_implementation_result
     )
+
+
+def test_run_active_task_tests_streams_command_log_and_records_aggregate_status(
+    tmp_path: Path,
+) -> None:
+    target_repository = tmp_path / "target"
+    target_repository.mkdir()
+    subprocess.run(
+        ["git", "init"], cwd=target_repository, check=True, capture_output=True
+    )
+    first_command = [
+        sys.executable,
+        "-u",
+        "-c",
+        "\n".join(
+            [
+                "from pathlib import Path",
+                "import sys",
+                "import time",
+                "Path('cwd-proof.txt').write_text('ran in target\\n', encoding='utf-8')",
+                "Path('first-running.txt').write_text('yes\\n', encoding='utf-8')",
+                "sys.stdout.write('first stdout')",
+                "sys.stdout.flush()",
+                "sys.stderr.write('first stderr')",
+                "sys.stderr.flush()",
+                "time.sleep(1.0)",
+                "Path('first-running.txt').unlink()",
+                "sys.exit(3)",
+            ]
+        ),
+    ]
+    second_command = [
+        sys.executable,
+        "-u",
+        "-c",
+        "\n".join(
+            [
+                "from pathlib import Path",
+                "Path('second-ran.txt').write_text('yes\\n', encoding='utf-8')",
+                "print('second stdout', flush=True)",
+            ]
+        ),
+    ]
+    task_spec_path = tmp_path / "task-spec.yaml"
+    task_spec_path.write_text(
+        f"""
+target_repository: {target_repository}
+require_plan_approval: false
+test_commands:
+  - name: first-fails
+    argv: {json.dumps(first_command)}
+  - name: second-still-runs
+    argv: {json.dumps(second_command)}
+tasks:
+  - id: TASK-1
+    title: First task
+    prompt: Implement the first task.
+""",
+        encoding="utf-8",
+    )
+    task_run = start_task_run(task_spec_path, runtime_root=tmp_path / "runs")
+    planner_output = {"status": "planned", "plan_markdown": "Make the change."}
+    implementer_output = {
+        "status": "implementation_complete",
+        "summary": "Ready for deterministic tests.",
+        "changed_files": [],
+        "recommended_commands": [],
+    }
+    codex_client = FakeCodexClient(
+        planner_output, implementer_outputs=[implementer_output]
+    )
+    plan_active_task(task_run.task_state_path, codex_client)
+    run_active_task_implementer(task_run.task_state_path, codex_client)
+
+    state_before_tests = json.loads(
+        task_run.task_state_path.read_text(encoding="utf-8")
+    )
+    command_log_path = Path(state_before_tests["tasks"][0]["artifacts"]["command_log"])
+    result_holder: dict[str, object] = {}
+
+    def run_tests() -> None:
+        result_holder["result"] = run_active_task_tests(task_run.task_state_path)
+
+    worker = threading.Thread(target=run_tests)
+    worker.start()
+    deadline = time.monotonic() + 5.0
+    streamed_before_exit = False
+    while time.monotonic() < deadline:
+        if (
+            command_log_path.exists()
+            and (target_repository / "first-running.txt").exists()
+        ):
+            log_text = command_log_path.read_text(encoding="utf-8")
+            if "first stdout" in log_text and "first stderr" in log_text:
+                streamed_before_exit = True
+                break
+        time.sleep(0.02)
+
+    worker.join(timeout=5.0)
+    assert not worker.is_alive()
+    assert streamed_before_exit
+
+    result = result_holder["result"]
+    assert result["status"] == "failed"
+    assert result["passed"] is False
+    assert result["command_log_path"] == str(command_log_path)
+    assert [
+        (command["name"], command["exit_code"], command["status"])
+        for command in result["command_results"]
+    ] == [
+        ("first-fails", 3, "failed"),
+        ("second-still-runs", 0, "passed"),
+    ]
+    assert result["command_results"][0]["argv"] == first_command
+    assert result["command_results"][1]["argv"] == second_command
+
+    assert (target_repository / "cwd-proof.txt").read_text(encoding="utf-8") == (
+        "ran in target\n"
+    )
+    assert (target_repository / "second-ran.txt").read_text(encoding="utf-8") == (
+        "yes\n"
+    )
+
+    final_log_text = command_log_path.read_text(encoding="utf-8")
+    first_start = final_log_text.index("===== test command START: first-fails =====")
+    first_stdout = final_log_text.index("[stdout] first stdout")
+    first_stderr = final_log_text.index("[stderr] first stderr")
+    first_end = final_log_text.index("===== test command END: first-fails =====")
+    second_start = final_log_text.index(
+        "===== test command START: second-still-runs ====="
+    )
+    second_stdout = final_log_text.index("[stdout] second stdout")
+    second_end = final_log_text.index("===== test command END: second-still-runs =====")
+    assert (
+        first_start
+        < first_stdout
+        < first_end
+        < second_start
+        < second_stdout
+        < second_end
+    )
+    assert first_start < first_stderr < first_end
+    assert f"argv: {json.dumps(first_command)}" in final_log_text
+    assert f"argv: {json.dumps(second_command)}" in final_log_text
+    assert "exit_code: 3" in final_log_text
+    assert "exit_code: 0" in final_log_text
+
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    task_state = state["tasks"][0]
+    assert state["phase"] == "tests_failed"
+    assert task_state["phase"] == "tests_failed"
+    assert task_state["latest_test_status"] == result
 
 
 def test_plan_active_task_resumes_existing_planner_thread(tmp_path: Path) -> None:
