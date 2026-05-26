@@ -16,6 +16,7 @@ from agent_control_plane.task_control_plane.controller import (
     PlannerOutputError,
     TaskRun,
     TaskRunError,
+    build_implementer_turn_input,
     plan_active_task,
     start_task_run,
 )
@@ -101,7 +102,9 @@ def sdk_value(value: object) -> object:
     return getattr(value, "value", value)
 
 
-def create_task_run(tmp_path: Path) -> tuple[Path, TaskRun]:
+def create_task_run(
+    tmp_path: Path, *, require_plan_approval: bool = False
+) -> tuple[Path, TaskRun]:
     target_repository = tmp_path / "target"
     target_repository.mkdir()
     subprocess.run(
@@ -112,6 +115,7 @@ def create_task_run(tmp_path: Path) -> tuple[Path, TaskRun]:
     task_spec_path.write_text(
         f"""
 target_repository: {target_repository}
+require_plan_approval: {str(require_plan_approval).lower()}
 codex:
   model: gpt-5-codex
   effort: high
@@ -406,14 +410,25 @@ tasks:
 def test_plan_active_task_starts_planner_thread_and_records_planned_output(
     tmp_path: Path,
 ) -> None:
-    target_repository, task_run = create_task_run(tmp_path)
+    target_repository, task_run = create_task_run(tmp_path, require_plan_approval=False)
     planner_output = {
         "status": "planned",
         "plan_markdown": "1. Inspect the existing code.\n2. Make the scoped change.",
     }
     codex_client = FakeCodexClient(planner_output)
 
-    result = plan_active_task(task_run.task_state_path, codex_client)
+    def fail_if_editor_opens(_approved_plan_path: Path) -> None:
+        raise AssertionError("Auto-approval must not open the editor.")
+
+    def fail_if_confirmation_requested(_approved_plan_path: Path) -> bool:
+        raise AssertionError("Auto-approval must not request confirmation.")
+
+    result = plan_active_task(
+        task_run.task_state_path,
+        codex_client,
+        approved_plan_editor=fail_if_editor_opens,
+        plan_approval_confirmer=fail_if_confirmation_requested,
+    )
 
     assert result == planner_output
     assert len(codex_client.started_threads) == 1
@@ -434,13 +449,185 @@ def test_plan_active_task_starts_planner_thread_and_records_planned_output(
 
     state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
     task_state = state["tasks"][0]
-    assert state["phase"] == "plan_ready"
-    assert task_state["phase"] == "plan_ready"
+    assert state["phase"] == "plan_approved"
+    assert task_state["phase"] == "plan_approved"
     assert task_state["threads"]["planner"] == "planner-thread-1"
 
     planning_artifact_path = Path(task_state["artifacts"]["planning"])
     planning_artifact = json.loads(planning_artifact_path.read_text(encoding="utf-8"))
     assert planning_artifact["planner_outputs"] == [planner_output]
+
+    approved_plan_path = Path(task_state["artifacts"]["approved_plan"])
+    assert approved_plan_path.read_text(encoding="utf-8") == (
+        "1. Inspect the existing code.\n2. Make the scoped change.\n"
+    )
+    assert planning_artifact["approved_plan"]["path"] == str(approved_plan_path)
+    assert planning_artifact["approved_plan"]["approval"]["status"] == "approved"
+    assert planning_artifact["approved_plan"]["approval"]["mode"] == "automatic"
+    assert "approved_at" in planning_artifact["approved_plan"]["approval"]
+    assert "plan_markdown" not in planning_artifact["approved_plan"]
+    assert task_state["plan_approval"]["status"] == "approved"
+    assert task_state["plan_approval"]["mode"] == "automatic"
+    assert task_state["plan_approval"]["approved_plan_path"] == str(approved_plan_path)
+
+
+def test_plan_active_task_opens_approved_plan_for_human_approval_and_keeps_edits(
+    tmp_path: Path,
+) -> None:
+    _, task_run = create_task_run(tmp_path, require_plan_approval=True)
+    planner_output = {
+        "status": "planned",
+        "plan_markdown": "Planner draft that should be edited.",
+    }
+    codex_client = FakeCodexClient(planner_output)
+    opened_paths: list[Path] = []
+    confirmed_paths: list[Path] = []
+
+    def edit_approved_plan(approved_plan_path: Path) -> None:
+        opened_paths.append(approved_plan_path)
+        approved_plan_path.write_text("Human-edited Approved Plan.\n", encoding="utf-8")
+
+    def confirm_approved_plan(approved_plan_path: Path) -> bool:
+        confirmed_paths.append(approved_plan_path)
+        return True
+
+    result = plan_active_task(
+        task_run.task_state_path,
+        codex_client,
+        approved_plan_editor=edit_approved_plan,
+        plan_approval_confirmer=confirm_approved_plan,
+    )
+
+    assert result == planner_output
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    task_state = state["tasks"][0]
+    approved_plan_path = Path(task_state["artifacts"]["approved_plan"])
+    assert opened_paths == [approved_plan_path]
+    assert confirmed_paths == [approved_plan_path]
+    assert approved_plan_path.read_text(encoding="utf-8") == (
+        "Human-edited Approved Plan.\n"
+    )
+    assert state["phase"] == "plan_approved"
+    assert task_state["phase"] == "plan_approved"
+    assert task_state["plan_approval"]["status"] == "approved"
+    assert task_state["plan_approval"]["mode"] == "human"
+
+    planning_artifact = json.loads(
+        Path(task_state["artifacts"]["planning"]).read_text(encoding="utf-8")
+    )
+    assert planning_artifact["approved_plan"]["path"] == str(approved_plan_path)
+    assert planning_artifact["approved_plan"]["approval"]["status"] == "approved"
+    assert planning_artifact["approved_plan"]["approval"]["mode"] == "human"
+    assert "plan_markdown" not in planning_artifact["approved_plan"]
+
+
+def test_plan_active_task_records_declined_human_approval_without_approving(
+    tmp_path: Path,
+) -> None:
+    _, task_run = create_task_run(tmp_path, require_plan_approval=True)
+    planner_output = {
+        "status": "planned",
+        "plan_markdown": "Planner draft awaiting human approval.",
+    }
+    codex_client = FakeCodexClient(planner_output)
+    opened_paths: list[Path] = []
+    confirmed_paths: list[Path] = []
+
+    def edit_approved_plan(approved_plan_path: Path) -> None:
+        opened_paths.append(approved_plan_path)
+
+    def decline_approved_plan(approved_plan_path: Path) -> bool:
+        confirmed_paths.append(approved_plan_path)
+        return False
+
+    result = plan_active_task(
+        task_run.task_state_path,
+        codex_client,
+        approved_plan_editor=edit_approved_plan,
+        plan_approval_confirmer=decline_approved_plan,
+    )
+
+    assert result == planner_output
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    task_state = state["tasks"][0]
+    approved_plan_path = Path(task_state["artifacts"]["approved_plan"])
+    assert opened_paths == [approved_plan_path]
+    assert confirmed_paths == [approved_plan_path]
+    assert approved_plan_path.read_text(encoding="utf-8") == (
+        "Planner draft awaiting human approval.\n"
+    )
+    assert state["phase"] == "plan_approval_declined"
+    assert task_state["phase"] == "plan_approval_declined"
+    assert task_state["plan_approval"]["status"] == "declined"
+    assert task_state["plan_approval"]["mode"] == "human"
+
+    planning_artifact = json.loads(
+        Path(task_state["artifacts"]["planning"]).read_text(encoding="utf-8")
+    )
+    assert planning_artifact["approved_plan"]["path"] == str(approved_plan_path)
+    assert planning_artifact["approved_plan"]["approval"]["status"] == "declined"
+    assert planning_artifact["approved_plan"]["approval"]["mode"] == "human"
+    assert "declined_at" in planning_artifact["approved_plan"]["approval"]
+    assert "plan_markdown" not in planning_artifact["approved_plan"]
+
+
+def test_build_implementer_turn_input_rejects_declined_plan_approval(
+    tmp_path: Path,
+) -> None:
+    _, task_run = create_task_run(tmp_path, require_plan_approval=True)
+    planner_output = {
+        "status": "planned",
+        "plan_markdown": "Planner draft awaiting human approval.",
+    }
+    codex_client = FakeCodexClient(planner_output)
+    plan_active_task(
+        task_run.task_state_path,
+        codex_client,
+        approved_plan_editor=lambda _approved_plan_path: None,
+        plan_approval_confirmer=lambda _approved_plan_path: False,
+    )
+
+    with pytest.raises(TaskRunError, match="Approved Plan has not been approved"):
+        build_implementer_turn_input(task_run.task_state_path)
+
+
+def test_build_implementer_turn_input_uses_approved_plan_path_without_drafts(
+    tmp_path: Path,
+) -> None:
+    _, task_run = create_task_run(tmp_path, require_plan_approval=True)
+    planner_output = {
+        "status": "planned",
+        "plan_markdown": "Planner draft must stay out of implementer input.",
+    }
+    codex_client = FakeCodexClient(planner_output)
+
+    def edit_approved_plan(approved_plan_path: Path) -> None:
+        approved_plan_path.write_text(
+            "Edited Approved Plan must stay in the file only.\n", encoding="utf-8"
+        )
+
+    plan_active_task(
+        task_run.task_state_path,
+        codex_client,
+        approved_plan_editor=edit_approved_plan,
+        plan_approval_confirmer=lambda _approved_plan_path: True,
+    )
+
+    implementer_input = build_implementer_turn_input(task_run.task_state_path)
+
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    task_state = state["tasks"][0]
+    approved_plan_path = Path(task_state["artifacts"]["approved_plan"])
+    task_context_path = Path(task_state["artifacts"]["task_context"])
+    planning_artifact_path = Path(task_state["artifacts"]["planning"])
+    assert "TASK-1" in implementer_input
+    assert "First task" in implementer_input
+    assert str(task_context_path) in implementer_input
+    assert str(approved_plan_path) in implementer_input
+    assert str(planning_artifact_path) not in implementer_input
+    assert "Planner draft must stay out" not in implementer_input
+    assert "Edited Approved Plan" not in implementer_input
+    assert "planner_outputs" not in implementer_input
 
 
 def test_plan_active_task_resumes_existing_planner_thread(tmp_path: Path) -> None:
@@ -566,8 +753,8 @@ def test_plan_active_task_resolves_planner_questions_with_context_and_human_answ
     assert result == final_planner_output
     state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
     task_state = state["tasks"][0]
-    assert state["phase"] == "plan_ready"
-    assert task_state["phase"] == "plan_ready"
+    assert state["phase"] == "plan_approved"
+    assert task_state["phase"] == "plan_approved"
     assert task_state["threads"] == {
         "context": "context-thread-1",
         "planner": "planner-thread-1",
@@ -683,8 +870,8 @@ def test_plan_active_task_uses_context_answers_without_human_input(
 
     assert result == final_planner_output
     state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
-    assert state["phase"] == "plan_ready"
-    assert state["tasks"][0]["phase"] == "plan_ready"
+    assert state["phase"] == "plan_approved"
+    assert state["tasks"][0]["phase"] == "plan_approved"
     planning_artifact = json.loads(
         Path(state["tasks"][0]["artifacts"]["planning"]).read_text(encoding="utf-8")
     )

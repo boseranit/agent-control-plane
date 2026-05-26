@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import shlex
 import shutil
 import subprocess
 import uuid
@@ -33,6 +35,8 @@ PLANNER_STATUSES = frozenset({"planned", "needs_answers"})
 CONTEXT_ANSWER_STATUSES = frozenset({"answered", "unresolved"})
 
 HumanAnswerProvider = Callable[[list[dict[str, Any]], Path, Path], list[dict[str, Any]]]
+ApprovedPlanEditor = Callable[[Path], None]
+PlanApprovalConfirmer = Callable[[Path], bool]
 
 
 @dataclass(frozen=True)
@@ -115,6 +119,8 @@ def plan_active_task(
     codex_client: Any,
     *,
     human_answer_provider: HumanAnswerProvider | None = None,
+    approved_plan_editor: ApprovedPlanEditor | None = None,
+    plan_approval_confirmer: PlanApprovalConfirmer | None = None,
 ) -> dict[str, Any]:
     task_state_file = Path(task_state_path)
     state = _read_json(task_state_file)
@@ -229,11 +235,71 @@ def plan_active_task(
         _check_planner_output_for_routing(planner_output)
         _append_planner_output(planning_artifact_path, planner_output)
 
+    approved_plan_path = Path(artifacts["approved_plan"])
+    _write_approved_plan_candidate(approved_plan_path, planner_output["plan_markdown"])
+
     state["phase"] = "plan_ready"
     active_task_state["phase"] = "plan_ready"
+    if task_spec.require_plan_approval:
+        state["phase"] = "plan_pending_approval"
+        active_task_state["phase"] = "plan_pending_approval"
+        _write_json(task_state_file, state)
+        (approved_plan_editor or _open_approved_plan_in_editor)(approved_plan_path)
+        approval_confirmed = (plan_approval_confirmer or _confirm_approved_plan)(
+            approved_plan_path
+        ) is True
+        approval_status = "approved" if approval_confirmed else "declined"
+        _record_plan_approval(
+            state=state,
+            active_task_state=active_task_state,
+            planning_artifact_path=planning_artifact_path,
+            approved_plan_path=approved_plan_path,
+            status=approval_status,
+            mode="human",
+        )
+    else:
+        _record_plan_approval(
+            state=state,
+            active_task_state=active_task_state,
+            planning_artifact_path=planning_artifact_path,
+            approved_plan_path=approved_plan_path,
+            status="approved",
+            mode="automatic",
+        )
 
     _write_json(task_state_file, state)
     return planner_output
+
+
+def build_implementer_turn_input(task_state_path: str | Path) -> str:
+    state = _read_json(task_state_path)
+    active_task_state = _active_task_state(state)
+    plan_approval = active_task_state.get("plan_approval")
+    if not isinstance(plan_approval, dict) or plan_approval.get("status") != "approved":
+        raise TaskRunError("Approved Plan has not been approved for implementation.")
+
+    artifacts = _task_artifacts(active_task_state)
+    task_spec = load_task_spec(state["task_spec_snapshot_path"])
+    active_task_id = active_task_state.get("id")
+    task = next(
+        (task for task in task_spec.tasks if task.task_id == active_task_id), None
+    )
+    if task is None:
+        raise TaskRunError(f"Task Spec snapshot has no active Task: {active_task_id}")
+
+    return "\n".join(
+        [
+            "Implement the active Task using the Approved Plan artifact.",
+            "",
+            f"Task ID: {task.task_id}",
+            f"Task title: {task.title}",
+            f"Task prompt: {task.prompt}",
+            f"Task context: {task.context or 'None'}",
+            "",
+            f"Task context artifact: {artifacts['task_context']}",
+            f"Approved Plan artifact: {artifacts['approved_plan']}",
+        ]
+    )
 
 
 def _require_clean_target_repository(target_repository: Path) -> None:
@@ -793,6 +859,60 @@ def _append_answer_batch(
         }
     )
     _write_json(path, planning_artifact)
+
+
+def _write_approved_plan_candidate(path: Path, plan_markdown: str) -> None:
+    content = plan_markdown if plan_markdown.endswith("\n") else f"{plan_markdown}\n"
+    path.write_text(content, encoding="utf-8")
+
+
+def _open_approved_plan_in_editor(path: Path) -> None:
+    editor = os.environ.get("VISUAL") or os.environ.get("EDITOR")
+    if not editor:
+        raise TaskRunError(
+            "Plan approval requires EDITOR, VISUAL, or an injected Approved Plan editor."
+        )
+    subprocess.run([*shlex.split(editor), str(path)], check=True)
+
+
+def _confirm_approved_plan(path: Path) -> bool:
+    response = input(f"Approve Approved Plan at {path}? [y/N] ")
+    return response.strip().lower() in {"y", "yes"}
+
+
+def _record_plan_approval(
+    *,
+    state: dict[str, Any],
+    active_task_state: dict[str, Any],
+    planning_artifact_path: Path,
+    approved_plan_path: Path,
+    status: str,
+    mode: str,
+) -> None:
+    timestamp_field = "approved_at" if status == "approved" else "declined_at"
+    approval = {
+        "status": status,
+        "mode": mode,
+        "approved_plan_path": str(approved_plan_path),
+        timestamp_field: _utc_timestamp(),
+    }
+
+    state["phase"] = (
+        "plan_approved" if status == "approved" else "plan_approval_declined"
+    )
+    active_task_state["phase"] = state["phase"]
+    active_task_state["plan_approval"] = approval
+
+    planning_artifact = _planning_artifact(planning_artifact_path)
+    planning_artifact["approved_plan"] = {
+        "path": str(approved_plan_path),
+        "approval": approval,
+    }
+    _write_json(planning_artifact_path, planning_artifact)
+
+
+def _utc_timestamp() -> str:
+    return datetime.now(tz=UTC).isoformat().replace("+00:00", "Z")
 
 
 def _planning_artifact(path: Path) -> dict[str, Any]:
