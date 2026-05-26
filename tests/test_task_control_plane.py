@@ -9,6 +9,8 @@ from agent_control_plane.task_control_plane.cli import main
 from agent_control_plane.task_control_plane.controller import (
     CONTEXT_ANSWERS_SCHEMA_PATH,
     CONTEXT_PROMPT_PATH,
+    IMPLEMENTER_PROMPT_PATH,
+    IMPLEMENTER_RESULT_SCHEMA_PATH,
     PLANNER_OUTPUT_SCHEMA_PATH,
     PLANNER_PROMPT_PATH,
     ContextOutputError,
@@ -18,6 +20,7 @@ from agent_control_plane.task_control_plane.controller import (
     TaskRunError,
     build_implementer_turn_input,
     plan_active_task,
+    run_active_task_implementer,
     start_task_run,
 )
 from agent_control_plane.task_control_plane.task_spec import TaskSpecError
@@ -29,6 +32,7 @@ class FakeCodexClient:
         self,
         planner_output: object | list[object],
         context_outputs: list[object] | None = None,
+        implementer_outputs: list[object] | None = None,
     ) -> None:
         self.started_threads: list[dict[str, object]] = []
         self.resumed_threads: list[dict[str, object]] = []
@@ -39,6 +43,7 @@ class FakeCodexClient:
                 else [planner_output]
             ),
             "context": list(context_outputs or []),
+            "implementer": list(implementer_outputs or []),
         }
         self.started_thread: FakeCodexThread | None = None
         self.resumed_thread: FakeCodexThread | None = None
@@ -63,6 +68,11 @@ class FakeCodexClient:
     @staticmethod
     def _role(kwargs: dict[str, object]) -> str:
         developer_instructions = kwargs.get("developer_instructions")
+        if (
+            isinstance(developer_instructions, str)
+            and "Implementer Agent" in developer_instructions
+        ):
+            return "implementer"
         if (
             isinstance(developer_instructions, str)
             and "Context Agent" in developer_instructions
@@ -630,6 +640,105 @@ def test_build_implementer_turn_input_uses_approved_plan_path_without_drafts(
     assert "planner_outputs" not in implementer_input
 
 
+def test_run_active_task_implementer_runs_from_approved_plan_and_resumes_thread(
+    tmp_path: Path,
+) -> None:
+    target_repository, task_run = create_task_run(tmp_path, require_plan_approval=True)
+    planner_output = {
+        "status": "planned",
+        "plan_markdown": "Planner draft must not be sent to the Implementer Agent.",
+    }
+    first_implementation_result = {
+        "status": "implementation_complete",
+        "summary": "Implemented the approved plan.",
+        "changed_files": ["app.py"],
+        "recommended_commands": [{"name": "unit", "argv": ["pytest", "-q"]}],
+    }
+    second_implementation_result = {
+        "status": "implementation_complete",
+        "summary": "Refined the implementation.",
+        "changed_files": ["app.py", "tests/test_app.py"],
+        "recommended_commands": [],
+    }
+    codex_client = FakeCodexClient(
+        planner_output,
+        implementer_outputs=[
+            first_implementation_result,
+            second_implementation_result,
+        ],
+    )
+
+    def edit_approved_plan(approved_plan_path: Path) -> None:
+        approved_plan_path.write_text(
+            "Human-edited Approved Plan must stay in the file only.\n",
+            encoding="utf-8",
+        )
+
+    plan_active_task(
+        task_run.task_state_path,
+        codex_client,
+        approved_plan_editor=edit_approved_plan,
+        plan_approval_confirmer=lambda _approved_plan_path: True,
+    )
+
+    result = run_active_task_implementer(task_run.task_state_path, codex_client)
+
+    assert result == first_implementation_result
+    implementer_start_call = next(
+        call
+        for call in codex_client.started_threads
+        if "Implementer Agent" in call["developer_instructions"]
+    )
+    assert implementer_start_call["cwd"] == str(target_repository.resolve())
+    assert sdk_value(implementer_start_call["approval_mode"]) == "auto_review"
+    assert sdk_value(implementer_start_call["sandbox"]) == "workspace-write"
+    assert implementer_start_call["model"] == "gpt-5-codex"
+
+    implementer_thread = codex_client.threads_by_role["implementer"]
+    run_call = implementer_thread.run_calls[0]
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    task_state = state["tasks"][0]
+    approved_plan_path = Path(task_state["artifacts"]["approved_plan"])
+    task_context_path = Path(task_state["artifacts"]["task_context"])
+    planning_artifact_path = Path(task_state["artifacts"]["planning"])
+    assert "TASK-1" in run_call["input"]
+    assert "First task" in run_call["input"]
+    assert str(task_context_path) in run_call["input"]
+    assert str(approved_plan_path) in run_call["input"]
+    assert str(planning_artifact_path) not in run_call["input"]
+    assert "Planner draft must not be sent" not in run_call["input"]
+    assert "Human-edited Approved Plan" not in run_call["input"]
+    assert run_call["cwd"] == str(target_repository.resolve())
+    assert sdk_value(run_call["approval_mode"]) == "auto_review"
+    assert run_call["sandbox_policy"].type == "workspaceWrite"
+    assert sdk_value(run_call["effort"]) == "high"
+    assert run_call["output_schema"]["title"] == "ImplementerResultOutput"
+
+    assert state["phase"] == "ready_for_tests"
+    assert task_state["phase"] == "ready_for_tests"
+    assert task_state["threads"]["implementer"] == "implementer-thread-1"
+    implementation_result_path = Path(task_state["artifacts"]["implementation_result"])
+    assert json.loads(implementation_result_path.read_text(encoding="utf-8")) == (
+        first_implementation_result
+    )
+
+    implementation_result_path.write_text(
+        json.dumps({"status": "stale"}, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    resumed_result = run_active_task_implementer(task_run.task_state_path, codex_client)
+
+    assert resumed_result == second_implementation_result
+    assert codex_client.resumed_threads[-1]["thread_id"] == "implementer-thread-1"
+    assert (
+        "Implementer Agent"
+        in codex_client.resumed_threads[-1]["developer_instructions"]
+    )
+    assert json.loads(implementation_result_path.read_text(encoding="utf-8")) == (
+        second_implementation_result
+    )
+
+
 def test_plan_active_task_resumes_existing_planner_thread(tmp_path: Path) -> None:
     target_repository, task_run = create_task_run(tmp_path)
     state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
@@ -1120,6 +1229,22 @@ def test_context_prompt_and_output_schema_are_source_controlled() -> None:
                     "reason": "The repository cannot answer user policy.",
                 }
             ]
+        },
+        schema,
+    )
+
+
+def test_implementer_prompt_and_result_schema_are_source_controlled() -> None:
+    assert "Implementer Agent" in IMPLEMENTER_PROMPT_PATH.read_text(encoding="utf-8")
+    schema = json.loads(IMPLEMENTER_RESULT_SCHEMA_PATH.read_text(encoding="utf-8"))
+
+    jsonschema.Draft202012Validator.check_schema(schema)
+    jsonschema.validate(
+        {
+            "status": "implementation_complete",
+            "summary": "Implemented the approved plan.",
+            "changed_files": ["agent_control_plane/task_control_plane/controller.py"],
+            "recommended_commands": [{"name": "unit", "argv": ["pytest", "-q"]}],
         },
         schema,
     )

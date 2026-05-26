@@ -17,6 +17,7 @@ from openai_codex.generated.v2_all import (
     ReadOnlySandboxPolicy,
     ReasoningEffort,
     SandboxMode,
+    WorkspaceWriteSandboxPolicy,
 )
 
 from agent_control_plane.task_control_plane.task_spec import TaskSpec, load_task_spec
@@ -30,6 +31,10 @@ PLANNER_OUTPUT_SCHEMA_PATH = (
 CONTEXT_PROMPT_PATH = PACKAGE_DIRECTORY / "prompts" / "context-agent.md"
 CONTEXT_ANSWERS_SCHEMA_PATH = (
     PACKAGE_DIRECTORY / "schemas" / "context-answers-output.schema.json"
+)
+IMPLEMENTER_PROMPT_PATH = PACKAGE_DIRECTORY / "prompts" / "implementer-agent.md"
+IMPLEMENTER_RESULT_SCHEMA_PATH = (
+    PACKAGE_DIRECTORY / "schemas" / "implementer-result-output.schema.json"
 )
 PLANNER_STATUSES = frozenset({"planned", "needs_answers"})
 CONTEXT_ANSWER_STATUSES = frozenset({"answered", "unresolved"})
@@ -58,6 +63,10 @@ class PlannerOutputError(RuntimeError):
 
 class ContextOutputError(RuntimeError):
     """Raised when the Context Agent output cannot drive Controller routing."""
+
+
+class ImplementerOutputError(RuntimeError):
+    """Raised when the Implementer Agent output cannot be recorded."""
 
 
 class HumanAnswerError(RuntimeError):
@@ -300,6 +309,50 @@ def build_implementer_turn_input(task_state_path: str | Path) -> str:
             f"Approved Plan artifact: {artifacts['approved_plan']}",
         ]
     )
+
+
+def run_active_task_implementer(
+    task_state_path: str | Path, codex_client: Any
+) -> dict[str, Any]:
+    task_state_file = Path(task_state_path)
+    turn_input = build_implementer_turn_input(task_state_file)
+    state = _read_json(task_state_file)
+    active_task_state = _active_task_state(state)
+    artifacts = _task_artifacts(active_task_state)
+
+    task_spec = load_task_spec(state["task_spec_snapshot_path"])
+    target_repository = Path(state["target_repository"]).resolve()
+
+    implementer_developer_instructions = IMPLEMENTER_PROMPT_PATH.read_text(
+        encoding="utf-8"
+    )
+    implementer_result_schema = _read_json(IMPLEMENTER_RESULT_SCHEMA_PATH)
+    thread = _implementer_thread(
+        codex_client=codex_client,
+        task_state=active_task_state,
+        target_repository=target_repository,
+        developer_instructions=implementer_developer_instructions,
+        model=task_spec.codex.model,
+    )
+
+    _persist_implementer_thread_id(active_task_state, thread.id)
+    _write_json(task_state_file, state)
+
+    turn_result = _run_implementer_thread(
+        thread=thread,
+        turn_input=turn_input,
+        target_repository=target_repository,
+        effort=task_spec.codex.effort,
+        model=task_spec.codex.model,
+        output_schema=implementer_result_schema,
+    )
+    implementer_output = _parse_implementer_output(turn_result)
+    _write_json(Path(artifacts["implementation_result"]), implementer_output)
+
+    state["phase"] = "ready_for_tests"
+    active_task_state["phase"] = "ready_for_tests"
+    _write_json(task_state_file, state)
+    return implementer_output
 
 
 def _require_clean_target_repository(target_repository: Path) -> None:
@@ -583,6 +636,72 @@ def _persist_context_thread_id(task_state: dict[str, Any], thread_id: Any) -> No
     threads["context"] = thread_id
 
 
+def _implementer_thread(
+    *,
+    codex_client: Any,
+    task_state: dict[str, Any],
+    target_repository: Path,
+    developer_instructions: str,
+    model: str | None,
+) -> Any:
+    implementer_thread_id = _implementer_thread_id(task_state)
+    thread_kwargs = {
+        "approval_mode": ApprovalMode.auto_review,
+        "cwd": str(target_repository),
+        "developer_instructions": developer_instructions,
+        "model": model,
+        "sandbox": SandboxMode.workspace_write,
+    }
+    if implementer_thread_id:
+        return codex_client.thread_resume(implementer_thread_id, **thread_kwargs)
+    return codex_client.thread_start(**thread_kwargs)
+
+
+def _run_implementer_thread(
+    *,
+    thread: Any,
+    turn_input: str,
+    target_repository: Path,
+    effort: str | None,
+    model: str | None,
+    output_schema: dict[str, Any],
+) -> Any:
+    return thread.run(
+        turn_input,
+        approval_mode=ApprovalMode.auto_review,
+        cwd=str(target_repository),
+        effort=_reasoning_effort(effort),
+        model=model,
+        output_schema=output_schema,
+        sandbox_policy=WorkspaceWriteSandboxPolicy(type="workspaceWrite"),
+    )
+
+
+def _implementer_thread_id(task_state: Mapping[str, Any]) -> str | None:
+    threads = task_state.get("threads")
+    if not isinstance(threads, dict):
+        return None
+    implementer_thread_id = threads.get("implementer")
+    if implementer_thread_id is None:
+        return None
+    if not isinstance(implementer_thread_id, str) or not implementer_thread_id.strip():
+        raise TaskRunError(
+            "Implementer Agent thread ID in Task State must be a string."
+        )
+    return implementer_thread_id
+
+
+def _persist_implementer_thread_id(task_state: dict[str, Any], thread_id: Any) -> None:
+    if not isinstance(thread_id, str) or not thread_id.strip():
+        raise TaskRunError(
+            "Implementer Agent thread did not return a usable thread ID."
+        )
+    threads = task_state.setdefault("threads", {})
+    if not isinstance(threads, dict):
+        raise TaskRunError("Task State field 'threads' must be a mapping.")
+    threads["implementer"] = thread_id
+
+
 def _planner_turn_input(
     task_context_path: Path, task_context: Mapping[str, Any]
 ) -> str:
@@ -690,6 +809,25 @@ def _parse_context_output(turn_result: Any) -> dict[str, Any]:
 
     if not isinstance(parsed, dict):
         raise ContextOutputError("Context Agent output must be a JSON object.")
+    return parsed
+
+
+def _parse_implementer_output(turn_result: Any) -> dict[str, Any]:
+    final_response = getattr(turn_result, "final_response", None)
+    if isinstance(final_response, str):
+        try:
+            parsed = json.loads(final_response)
+        except json.JSONDecodeError as exc:
+            raise ImplementerOutputError(
+                "Implementer Agent returned unparseable JSON."
+            ) from exc
+    elif isinstance(final_response, dict):
+        parsed = final_response
+    else:
+        raise ImplementerOutputError("Implementer Agent did not return a JSON object.")
+
+    if not isinstance(parsed, dict):
+        raise ImplementerOutputError("Implementer Agent output must be a JSON object.")
     return parsed
 
 
