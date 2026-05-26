@@ -27,6 +27,7 @@ from agent_control_plane.task_control_plane.controller import (
     plan_active_task,
     run_active_task_failed_test_repair,
     run_active_task_implementer,
+    run_active_task_review_rejection_repair,
     run_active_task_reviewer,
     run_active_task_tests,
     start_task_run,
@@ -1217,6 +1218,196 @@ tasks:
     assert not review_log_path.exists()
     assert state["phase"] == "tests_failed"
     assert state["tasks"][0]["phase"] == "tests_failed"
+
+
+def test_run_active_task_review_rejection_repair_routes_verbatim_review_to_same_implementer_thread_and_back_to_tests(
+    tmp_path: Path,
+) -> None:
+    target_repository, task_run = create_task_run(tmp_path, require_plan_approval=False)
+    planner_output = {"status": "planned", "plan_markdown": "Make the change."}
+    initial_implementation_result = {
+        "status": "implementation_complete",
+        "summary": "Implemented the approved plan.",
+        "changed_files": ["app.py"],
+        "recommended_commands": [],
+    }
+    repair_implementation_result = {
+        "status": "implementation_complete",
+        "summary": "Addressed the reviewer feedback.",
+        "changed_files": ["app.py", "tests/test_app.py"],
+        "recommended_commands": [],
+    }
+    rejected_review_json = (
+        '{"status":"rejected","summary":"Needs changes before commit.",'
+        '"blocking_issues":[{"path":"app.py","line":4,'
+        '"message":"Guard empty input before calling parse."}],'
+        '"requested_changes":[{"path":"tests/test_app.py",'
+        '"message":"Add coverage for empty input."}],'
+        '"non_blocking_issues":[{"path":"README.md",'
+        '"message":"Document the edge case later."}]}'
+    )
+    approved_review_output = {
+        "status": "approved",
+        "summary": "Ready to commit after the repair.",
+        "blocking_issues": [],
+        "requested_changes": [],
+        "non_blocking_issues": [],
+    }
+    codex_client = FakeCodexClient(
+        planner_output,
+        implementer_outputs=[
+            initial_implementation_result,
+            repair_implementation_result,
+        ],
+        reviewer_outputs=[rejected_review_json, approved_review_output],
+    )
+    plan_active_task(task_run.task_state_path, codex_client)
+    run_active_task_implementer(task_run.task_state_path, codex_client)
+    run_active_task_tests(task_run.task_state_path)
+
+    rejected_review_output = run_active_task_reviewer(
+        task_run.task_state_path, codex_client
+    )
+    repair_result = run_active_task_review_rejection_repair(
+        task_run.task_state_path, codex_client
+    )
+
+    assert rejected_review_output == json.loads(rejected_review_json)
+    assert repair_result == repair_implementation_result
+    assert codex_client.resumed_threads[-1]["thread_id"] == "implementer-thread-1"
+    repair_run_call = codex_client.threads_by_role["implementer"].run_calls[0]
+    feedback_payload = repair_run_call["input"].split("Reviewer output:\n", 1)[1]
+    assert feedback_payload == rejected_review_json
+    assert (
+        '"blocking_issues":[{"path":"app.py","line":4,'
+        '"message":"Guard empty input before calling parse."}]'
+    ) in feedback_payload
+    assert (
+        '"requested_changes":[{"path":"tests/test_app.py",'
+        '"message":"Add coverage for empty input."}]'
+    ) in feedback_payload
+    assert (
+        '"non_blocking_issues":[{"path":"README.md",'
+        '"message":"Document the edge case later."}]'
+    ) in feedback_payload
+
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    task_state = state["tasks"][0]
+    artifacts = task_state["artifacts"]
+    implementation_result_path = Path(artifacts["implementation_result"])
+    review_log_path = Path(artifacts["review_log"])
+
+    assert state["phase"] == "ready_for_tests"
+    assert task_state["phase"] == "ready_for_tests"
+    assert task_state["iterations"] == 1
+    assert task_state["latest_review_output"] == rejected_review_output
+    assert task_state["latest_review_output_json"] == rejected_review_json
+    assert review_log_path.read_text(encoding="utf-8") == f"{rejected_review_json}\n"
+    assert json.loads(implementation_result_path.read_text(encoding="utf-8")) == (
+        repair_implementation_result
+    )
+
+    reviewer_thread_count = len(codex_client.thread_history_by_role["reviewer"])
+    with pytest.raises(TaskRunError, match="deterministic test"):
+        run_active_task_reviewer(task_run.task_state_path, codex_client)
+    assert len(codex_client.thread_history_by_role["reviewer"]) == reviewer_thread_count
+
+    run_active_task_tests(task_run.task_state_path)
+    approved_result = run_active_task_reviewer(task_run.task_state_path, codex_client)
+
+    assert approved_result == approved_review_output
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    task_state = state["tasks"][0]
+    assert state["phase"] == "commit_ready"
+    assert task_state["phase"] == "commit_ready"
+    assert task_state["review_attempts"] == 2
+    assert task_state["iterations"] == 1
+
+
+def test_run_active_task_review_rejection_repair_marks_task_run_failed_at_iteration_cap_without_reverting(
+    tmp_path: Path,
+) -> None:
+    target_repository = tmp_path / "target"
+    target_repository.mkdir()
+    subprocess.run(
+        ["git", "init"], cwd=target_repository, check=True, capture_output=True
+    )
+    task_spec_path = tmp_path / "task-spec.yaml"
+    task_spec_path.write_text(
+        f"""
+target_repository: {target_repository}
+require_plan_approval: false
+max_iterations: 1
+tasks:
+  - id: TASK-1
+    title: First task
+    prompt: Implement the first task.
+  - id: TASK-2
+    title: Second task
+    prompt: Implement the second task.
+""",
+        encoding="utf-8",
+    )
+    task_run = start_task_run(task_spec_path, runtime_root=tmp_path / "runs")
+    planner_output = {"status": "planned", "plan_markdown": "Make the change."}
+    implementer_output = {
+        "status": "implementation_complete",
+        "summary": "Left rejected work for inspection.",
+        "changed_files": ["attempt.txt"],
+        "recommended_commands": [],
+    }
+    rejected_review_json = (
+        '{"status":"rejected","summary":"Still blocked.",'
+        '"blocking_issues":[{"path":"attempt.txt","message":"Fix the task."}],'
+        '"requested_changes":[{"path":"attempt.txt","message":"Rewrite this."}],'
+        '"non_blocking_issues":[{"path":"notes.md","message":"Optional note."}]}'
+    )
+    codex_client = FakeCodexClient(
+        planner_output,
+        implementer_outputs=[implementer_output],
+        reviewer_outputs=[rejected_review_json],
+    )
+    plan_active_task(task_run.task_state_path, codex_client)
+    run_active_task_implementer(task_run.task_state_path, codex_client)
+    dirty_path = target_repository / "attempt.txt"
+    dirty_path.write_text("rejected work remains\n", encoding="utf-8")
+    run_active_task_tests(task_run.task_state_path)
+    run_active_task_reviewer(task_run.task_state_path, codex_client)
+
+    result = run_active_task_review_rejection_repair(
+        task_run.task_state_path, codex_client
+    )
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "max_iterations_reached"
+    assert result["iterations"] == 1
+    assert result["max_iterations"] == 1
+    assert dirty_path.read_text(encoding="utf-8") == "rejected work remains\n"
+    status = subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        cwd=target_repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "?? attempt.txt" in status.stdout
+    assert codex_client.resumed_threads == []
+
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    first_task_state, second_task_state = state["tasks"]
+    review_log_path = Path(first_task_state["artifacts"]["review_log"])
+    assert review_log_path.read_text(encoding="utf-8") == f"{rejected_review_json}\n"
+    assert state["phase"] == "failed"
+    assert state["active_task_id"] == "TASK-1"
+    assert state["failure"]["active_task_id"] == "TASK-1"
+    assert first_task_state["status"] == "failed"
+    assert first_task_state["phase"] == "failed"
+    assert first_task_state["iterations"] == 1
+    assert first_task_state["failure"]["reason"] == "max_iterations_reached"
+    assert second_task_state["status"] == "pending"
+    assert second_task_state["phase"] == "pending"
+    assert second_task_state["iterations"] == 0
+    assert second_task_state["artifacts"] == {}
 
 
 def test_plan_active_task_resumes_existing_planner_thread(tmp_path: Path) -> None:

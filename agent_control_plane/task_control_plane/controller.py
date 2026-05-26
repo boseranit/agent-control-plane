@@ -371,6 +371,39 @@ def run_active_task_failed_test_repair(
     )
 
 
+def run_active_task_review_rejection_repair(
+    task_state_path: str | Path, codex_client: Any
+) -> dict[str, Any]:
+    task_state_file = Path(task_state_path)
+    state = _read_json(task_state_file)
+    active_task_state = _active_task_state(state)
+    latest_review_output_json = _latest_rejected_review_output_json(active_task_state)
+    task_spec = load_task_spec(state["task_spec_snapshot_path"])
+
+    iterations = _active_task_iterations(active_task_state) + 1
+    active_task_state["iterations"] = iterations
+    if iterations >= task_spec.max_iterations:
+        failure = _mark_active_task_failed(
+            state=state,
+            active_task_state=active_task_state,
+            reason="max_iterations_reached",
+            iterations=iterations,
+            max_iterations=task_spec.max_iterations,
+        )
+        _write_json(task_state_file, state)
+        return failure
+
+    state["phase"] = "review_rejection_repair_pending"
+    active_task_state["phase"] = "review_rejection_repair_pending"
+    _write_json(task_state_file, state)
+
+    return _run_active_task_implementer_turn(
+        task_state_file,
+        codex_client,
+        _review_rejection_repair_turn_input(latest_review_output_json),
+    )
+
+
 def _run_active_task_implementer_turn(
     task_state_file: Path, codex_client: Any, turn_input: str
 ) -> dict[str, Any]:
@@ -409,6 +442,7 @@ def _run_active_task_implementer_turn(
 
     state["phase"] = "ready_for_tests"
     active_task_state["phase"] = "ready_for_tests"
+    active_task_state.pop("latest_test_status", None)
     _write_json(task_state_file, state)
     return implementer_output
 
@@ -472,13 +506,15 @@ def run_active_task_reviewer(
         output_schema=reviewer_output_schema,
     )
     reviewer_output = _parse_reviewer_output(turn_result)
+    reviewer_output_json = _reviewer_output_json_text(turn_result, reviewer_output)
     _check_reviewer_output_for_routing(reviewer_output)
-    _append_review_output(Path(artifacts["review_log"]), reviewer_output)
+    _append_review_output(Path(artifacts["review_log"]), reviewer_output_json)
 
     active_task_state["review_attempts"] = (
         _active_task_review_attempts(active_task_state) + 1
     )
     active_task_state["latest_review_output"] = reviewer_output
+    active_task_state["latest_review_output_json"] = reviewer_output_json
     if reviewer_output["status"] == "approved":
         state["phase"] = "commit_ready"
         active_task_state["phase"] = "commit_ready"
@@ -505,6 +541,19 @@ def _latest_failed_test_status(task_state: Mapping[str, Any]) -> dict[str, Any]:
     if latest_test_status.get("passed") is not False:
         raise TaskRunError("Active Task latest deterministic tests did not fail.")
     return latest_test_status
+
+
+def _latest_rejected_review_output_json(task_state: Mapping[str, Any]) -> str:
+    latest_review_output = task_state.get("latest_review_output")
+    if not isinstance(latest_review_output, dict):
+        raise TaskRunError("Active Task has no Reviewer Agent output.")
+    if latest_review_output.get("status") != "rejected":
+        raise TaskRunError("Active Task latest Reviewer Agent output was not rejected.")
+
+    latest_review_output_json = task_state.get("latest_review_output_json")
+    if isinstance(latest_review_output_json, str) and latest_review_output_json:
+        return latest_review_output_json
+    return json.dumps(latest_review_output)
 
 
 def _active_task_iterations(task_state: Mapping[str, Any]) -> int:
@@ -539,6 +588,17 @@ def _failed_test_repair_turn_input(
             f"Command log artifact: {command_log_path}",
             "",
             "Inspect the command log, fix the implementation, and return a new implementation result.",
+        ]
+    )
+
+
+def _review_rejection_repair_turn_input(latest_review_output_json: str) -> str:
+    return "\n".join(
+        [
+            "The Reviewer Agent rejected the Task. Address the reviewer feedback exactly.",
+            "",
+            "Reviewer output:",
+            latest_review_output_json,
         ]
     )
 
@@ -1337,6 +1397,15 @@ def _parse_reviewer_output(turn_result: Any) -> dict[str, Any]:
     return parsed
 
 
+def _reviewer_output_json_text(
+    turn_result: Any, reviewer_output: Mapping[str, Any]
+) -> str:
+    final_response = getattr(turn_result, "final_response", None)
+    if isinstance(final_response, str):
+        return final_response
+    return json.dumps(reviewer_output)
+
+
 def _check_planner_output_for_routing(planner_output: Mapping[str, Any]) -> None:
     status = planner_output.get("status")
     if status not in PLANNER_STATUSES:
@@ -1525,10 +1594,12 @@ def _append_answer_batch(
     _write_json(path, planning_artifact)
 
 
-def _append_review_output(path: Path, reviewer_output: dict[str, Any]) -> None:
+def _append_review_output(path: Path, reviewer_output_json: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as review_log:
-        review_log.write(json.dumps(reviewer_output, sort_keys=True) + "\n")
+        review_log.write(reviewer_output_json)
+        if not reviewer_output_json.endswith("\n"):
+            review_log.write("\n")
 
 
 def _write_approved_plan_candidate(path: Path, plan_markdown: str) -> None:
