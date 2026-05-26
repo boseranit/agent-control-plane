@@ -31,6 +31,7 @@ from agent_control_plane.task_control_plane.controller import (
     run_active_task_review_rejection_repair,
     run_active_task_reviewer,
     run_active_task_tests,
+    resume_task_run,
     start_task_run,
 )
 from agent_control_plane.task_control_plane.task_spec import TaskSpecError
@@ -167,6 +168,44 @@ require_plan_approval: {str(require_plan_approval).lower()}
 codex:
   model: gpt-5-codex
   effort: high
+tasks:
+  - id: TASK-1
+    title: First task
+    prompt: Implement the first task.
+""",
+        encoding="utf-8",
+    )
+    return target_repository, start_task_run(
+        task_spec_path, runtime_root=tmp_path / "runs"
+    )
+
+
+def create_single_task_run_with_passing_command(
+    tmp_path: Path,
+) -> tuple[Path, TaskRun]:
+    target_repository = tmp_path / "target"
+    target_repository.mkdir()
+    subprocess.run(
+        ["git", "init"], cwd=target_repository, check=True, capture_output=True
+    )
+    configure_git_identity(target_repository)
+    passing_command = [
+        sys.executable,
+        "-c",
+        (
+            "from pathlib import Path; "
+            "Path('test-created.txt').write_text('created by tests\\n', "
+            "encoding='utf-8')"
+        ),
+    ]
+    task_spec_path = tmp_path / "task-spec.yaml"
+    task_spec_path.write_text(
+        f"""
+target_repository: {target_repository}
+require_plan_approval: false
+test_commands:
+  - name: unit
+    argv: {json.dumps(passing_command)}
 tasks:
   - id: TASK-1
     title: First task
@@ -1742,6 +1781,514 @@ tasks:
     assert second_task_state["artifacts"] == {}
 
 
+def test_resume_task_run_continues_dirty_active_task_without_rerunning_completed_tasks(
+    tmp_path: Path,
+) -> None:
+    target_repository = tmp_path / "target"
+    target_repository.mkdir()
+    subprocess.run(
+        ["git", "init"], cwd=target_repository, check=True, capture_output=True
+    )
+    configure_git_identity(target_repository)
+    (target_repository / "base.txt").write_text("base\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "base.txt"],
+        cwd=target_repository,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "Initial target state"],
+        cwd=target_repository,
+        check=True,
+        capture_output=True,
+    )
+
+    test_counter_path = tmp_path / "test-counter.txt"
+    test_counter_path.write_text("0", encoding="utf-8")
+    command = [
+        sys.executable,
+        "-c",
+        (
+            "from pathlib import Path; import sys; "
+            f"path = Path({str(test_counter_path)!r}); "
+            "count = int(path.read_text(encoding='utf-8')); "
+            "path.write_text(str(count + 1), encoding='utf-8'); "
+            "sys.exit(1 if count == 1 else 0)"
+        ),
+    ]
+    task_spec_path = tmp_path / "task-spec.yaml"
+    task_spec_path.write_text(
+        f"""
+target_repository: {target_repository}
+require_plan_approval: false
+test_commands:
+  - name: unit
+    argv: {json.dumps(command)}
+tasks:
+  - id: TASK-1
+    title: First task
+    prompt: Implement the first task.
+  - id: TASK-2
+    title: Second task
+    prompt: Implement the second task.
+""",
+        encoding="utf-8",
+    )
+    task_run = start_task_run(task_spec_path, runtime_root=tmp_path / "runs")
+    prep_codex_client = FakeCodexClient(
+        [
+            {"status": "planned", "plan_markdown": "Plan Task 1."},
+            {"status": "planned", "plan_markdown": "Plan Task 2."},
+        ],
+        implementer_outputs=[
+            {
+                "status": "implementation_complete",
+                "summary": "Implemented Task 1.",
+                "changed_files": ["task1.txt"],
+                "recommended_commands": [],
+            },
+            {
+                "status": "implementation_complete",
+                "summary": "Implemented Task 2 before interruption.",
+                "changed_files": ["task2.txt"],
+                "recommended_commands": [],
+            },
+        ],
+        reviewer_outputs=[
+            {
+                "status": "approved",
+                "summary": "Task 1 is ready.",
+                "blocking_issues": [],
+                "requested_changes": [],
+                "non_blocking_issues": [],
+            }
+        ],
+    )
+
+    plan_active_task(task_run.task_state_path, prep_codex_client)
+    run_active_task_implementer(task_run.task_state_path, prep_codex_client)
+    (target_repository / "task1.txt").write_text("task 1\n", encoding="utf-8")
+    run_active_task_tests(task_run.task_state_path)
+    run_active_task_reviewer(task_run.task_state_path, prep_codex_client)
+    commit_active_task_and_advance(task_run.task_state_path)
+    plan_active_task(task_run.task_state_path, prep_codex_client)
+    run_active_task_implementer(task_run.task_state_path, prep_codex_client)
+    (target_repository / "task2.txt").write_text("task 2 dirty\n", encoding="utf-8")
+    failed_tests = run_active_task_tests(task_run.task_state_path)
+    interrupted_state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    task2_implementer_thread_id = interrupted_state["tasks"][1]["threads"][
+        "implementer"
+    ]
+
+    task_spec_path.write_text(
+        "this replacement spec must not be read\n", encoding="utf-8"
+    )
+    resume_codex_client = FakeCodexClient(
+        planner_output=[],
+        implementer_outputs=[
+            {
+                "status": "implementation_complete",
+                "summary": "Repaired Task 2 after resume.",
+                "changed_files": ["task2.txt"],
+                "recommended_commands": [],
+            }
+        ],
+        reviewer_outputs=[
+            {
+                "status": "approved",
+                "summary": "Task 2 is ready.",
+                "blocking_issues": [],
+                "requested_changes": [],
+                "non_blocking_issues": [],
+            }
+        ],
+    )
+
+    result = resume_task_run(
+        task_run.run_id,
+        resume_codex_client,
+        runtime_root=tmp_path / "runs",
+    )
+
+    assert failed_tests["passed"] is False
+    assert result["status"] == "completed"
+    assert result["completed_task_id"] == "TASK-2"
+    assert test_counter_path.read_text(encoding="utf-8") == "3"
+    assert [call["thread_id"] for call in resume_codex_client.resumed_threads] == [
+        task2_implementer_thread_id
+    ]
+    assert all(
+        "Reviewer Agent" in call["developer_instructions"]
+        for call in resume_codex_client.started_threads
+    )
+
+    subjects = subprocess.run(
+        ["git", "log", "--format=%s"],
+        cwd=target_repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    assert subjects[:2] == ["TASK-2: Second task", "TASK-1: First task"]
+
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    first_task_state, second_task_state = state["tasks"]
+    assert state["phase"] == "completed"
+    assert state["active_task_id"] is None
+    assert first_task_state["status"] == "completed"
+    assert first_task_state["commit_sha"]
+    assert second_task_state["status"] == "completed"
+    assert second_task_state["commit_sha"]
+    assert second_task_state["iterations"] == 1
+    assert second_task_state["threads"]["implementer"] == task2_implementer_thread_id
+
+
+def test_resume_task_run_resumes_planning_threads_and_continues_to_commit(
+    tmp_path: Path,
+) -> None:
+    _, task_run = create_single_task_run_with_passing_command(tmp_path)
+    planner_output = {
+        "status": "needs_answers",
+        "questions": [{"id": "q1", "question": "Which path should change?"}],
+    }
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    state["phase"] = "planning_needs_answers"
+    state["tasks"][0]["phase"] = "planning_needs_answers"
+    state["tasks"][0]["threads"] = {
+        "context": "context-thread-existing",
+        "planner": "planner-thread-existing",
+    }
+    task_run.task_state_path.write_text(
+        json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    planning_artifact_path = Path(state["tasks"][0]["artifacts"]["planning"])
+    planning_artifact_path.write_text(
+        json.dumps(
+            {"answer_batches": [], "planner_outputs": [planner_output]},
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    final_planner_output = {
+        "status": "planned",
+        "plan_markdown": "Use the existing public resume path.",
+    }
+    context_output = {
+        "answers": [
+            {
+                "question_id": "q1",
+                "status": "answered",
+                "answer": "Use the active Task context artifact.",
+                "reason": "The Task context names the artifacts.",
+            }
+        ]
+    }
+    implementer_output = {
+        "status": "implementation_complete",
+        "summary": "Implemented after resumed planning.",
+        "changed_files": ["test-created.txt"],
+        "recommended_commands": [],
+    }
+    review_output = {
+        "status": "approved",
+        "summary": "Ready after resumed planning.",
+        "blocking_issues": [],
+        "requested_changes": [],
+        "non_blocking_issues": [],
+    }
+    codex_client = FakeCodexClient(
+        [final_planner_output],
+        context_outputs=[context_output],
+        implementer_outputs=[implementer_output],
+        reviewer_outputs=[review_output],
+    )
+
+    result = resume_task_run(
+        task_run.run_id,
+        codex_client,
+        runtime_root=tmp_path / "runs",
+    )
+
+    assert result["status"] == "completed"
+    assert [call["thread_id"] for call in codex_client.resumed_threads[:2]] == [
+        "planner-thread-existing",
+        "context-thread-existing",
+    ]
+    assert len(codex_client.started_threads) == 2
+    assert any(
+        "Implementer Agent" in call["developer_instructions"]
+        for call in codex_client.started_threads
+    )
+    assert any(
+        "Reviewer Agent" in call["developer_instructions"]
+        for call in codex_client.started_threads
+    )
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    assert state["phase"] == "completed"
+    assert state["tasks"][0]["threads"]["planner"] == "planner-thread-existing"
+    assert state["tasks"][0]["threads"]["context"] == "context-thread-existing"
+    assert len(codex_client.threads_by_role["planner"].run_calls) == 1
+    assert (
+        "Use the active Task context artifact"
+        in (codex_client.threads_by_role["planner"].run_calls[0]["input"])
+    )
+
+
+@pytest.mark.parametrize("phase", ["plan_approved", "ready_for_tests"])
+def test_resume_task_run_continues_from_approved_plan_and_implementation_phases(
+    tmp_path: Path, phase: str
+) -> None:
+    target_repository, task_run = create_single_task_run_with_passing_command(tmp_path)
+    planner_output = {"status": "planned", "plan_markdown": "Make the change."}
+    initial_implementation_output = {
+        "status": "implementation_complete",
+        "summary": "Initial implementation.",
+        "changed_files": ["active.txt"],
+        "recommended_commands": [],
+    }
+    prep_codex_client = FakeCodexClient(
+        planner_output, implementer_outputs=[initial_implementation_output]
+    )
+    plan_active_task(task_run.task_state_path, prep_codex_client)
+    if phase == "ready_for_tests":
+        run_active_task_implementer(task_run.task_state_path, prep_codex_client)
+        (target_repository / "active.txt").write_text(
+            "active dirty work\n", encoding="utf-8"
+        )
+
+    resume_implementation_output = {
+        "status": "implementation_complete",
+        "summary": "Implemented after resume.",
+        "changed_files": ["test-created.txt"],
+        "recommended_commands": [],
+    }
+    review_output = {
+        "status": "approved",
+        "summary": "Ready after resume.",
+        "blocking_issues": [],
+        "requested_changes": [],
+        "non_blocking_issues": [],
+    }
+    resume_codex_client = FakeCodexClient(
+        planner_output=[],
+        implementer_outputs=[resume_implementation_output],
+        reviewer_outputs=[review_output],
+    )
+
+    result = resume_task_run(
+        task_run.run_id,
+        resume_codex_client,
+        runtime_root=tmp_path / "runs",
+    )
+
+    assert result["status"] == "completed"
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    assert state["phase"] == "completed"
+    if phase == "plan_approved":
+        assert any(
+            "Implementer Agent" in call["developer_instructions"]
+            for call in resume_codex_client.started_threads
+        )
+    else:
+        assert all(
+            "Implementer Agent" not in call["developer_instructions"]
+            for call in resume_codex_client.started_threads
+        )
+        assert resume_codex_client.resumed_threads == []
+
+
+def test_resume_task_run_continues_from_review_rejection_retry(
+    tmp_path: Path,
+) -> None:
+    target_repository, task_run = create_single_task_run_with_passing_command(tmp_path)
+    planner_output = {"status": "planned", "plan_markdown": "Make the change."}
+    initial_implementation_output = {
+        "status": "implementation_complete",
+        "summary": "Initial implementation.",
+        "changed_files": ["active.txt"],
+        "recommended_commands": [],
+    }
+    rejected_review_output = {
+        "status": "rejected",
+        "summary": "Needs one repair.",
+        "blocking_issues": [{"path": "active.txt", "message": "Fix it."}],
+        "requested_changes": [{"path": "active.txt", "message": "Repair it."}],
+        "non_blocking_issues": [],
+    }
+    prep_codex_client = FakeCodexClient(
+        planner_output,
+        implementer_outputs=[initial_implementation_output],
+        reviewer_outputs=[rejected_review_output],
+    )
+    plan_active_task(task_run.task_state_path, prep_codex_client)
+    run_active_task_implementer(task_run.task_state_path, prep_codex_client)
+    (target_repository / "active.txt").write_text(
+        "rejected dirty work\n", encoding="utf-8"
+    )
+    run_active_task_tests(task_run.task_state_path)
+    run_active_task_reviewer(task_run.task_state_path, prep_codex_client)
+    rejected_state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    implementer_thread_id = rejected_state["tasks"][0]["threads"]["implementer"]
+
+    repair_implementation_output = {
+        "status": "implementation_complete",
+        "summary": "Repaired after resume.",
+        "changed_files": ["active.txt"],
+        "recommended_commands": [],
+    }
+    approved_review_output = {
+        "status": "approved",
+        "summary": "Ready after repair.",
+        "blocking_issues": [],
+        "requested_changes": [],
+        "non_blocking_issues": [],
+    }
+    resume_codex_client = FakeCodexClient(
+        planner_output=[],
+        implementer_outputs=[repair_implementation_output],
+        reviewer_outputs=[approved_review_output],
+    )
+
+    result = resume_task_run(
+        task_run.run_id,
+        resume_codex_client,
+        runtime_root=tmp_path / "runs",
+    )
+
+    assert result["status"] == "completed"
+    assert [call["thread_id"] for call in resume_codex_client.resumed_threads] == [
+        implementer_thread_id
+    ]
+    assert all(
+        "Reviewer Agent" in call["developer_instructions"]
+        for call in resume_codex_client.started_threads
+    )
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    assert state["phase"] == "completed"
+    assert state["tasks"][0]["iterations"] == 1
+    assert state["tasks"][0]["review_attempts"] == 2
+
+
+def test_resume_task_run_requires_clean_repository_before_starting_next_task(
+    tmp_path: Path,
+) -> None:
+    target_repository = tmp_path / "target"
+    target_repository.mkdir()
+    subprocess.run(
+        ["git", "init"], cwd=target_repository, check=True, capture_output=True
+    )
+    configure_git_identity(target_repository)
+    test_counter_path = tmp_path / "next-task-test-counter.txt"
+    test_counter_path.write_text("0", encoding="utf-8")
+    passing_command = [
+        sys.executable,
+        "-c",
+        (
+            "from pathlib import Path; "
+            f"counter = Path({str(test_counter_path)!r}); "
+            "count = int(counter.read_text(encoding='utf-8')); "
+            "counter.write_text(str(count + 1), encoding='utf-8'); "
+            "Path('task2.txt').write_text('task 2\\n', encoding='utf-8') "
+            "if count >= 1 else None"
+        ),
+    ]
+    task_spec_path = tmp_path / "task-spec.yaml"
+    task_spec_path.write_text(
+        f"""
+target_repository: {target_repository}
+require_plan_approval: false
+test_commands:
+  - name: unit
+    argv: {json.dumps(passing_command)}
+tasks:
+  - id: TASK-1
+    title: First task
+    prompt: Implement the first task.
+  - id: TASK-2
+    title: Second task
+    prompt: Implement the second task.
+""",
+        encoding="utf-8",
+    )
+    task_run = start_task_run(task_spec_path, runtime_root=tmp_path / "runs")
+    post_commit_hook = target_repository / ".git" / "hooks" / "post-commit"
+    post_commit_hook.write_text(
+        "#!/bin/sh\nprintf 'post-commit drift\\n' > hook-drift.txt\n",
+        encoding="utf-8",
+    )
+    post_commit_hook.chmod(0o755)
+    prep_codex_client = FakeCodexClient(
+        {"status": "planned", "plan_markdown": "Make Task 1."},
+        implementer_outputs=[
+            {
+                "status": "implementation_complete",
+                "summary": "Implemented Task 1.",
+                "changed_files": ["task1.txt"],
+                "recommended_commands": [],
+            }
+        ],
+        reviewer_outputs=[
+            {
+                "status": "approved",
+                "summary": "Task 1 is ready.",
+                "blocking_issues": [],
+                "requested_changes": [],
+                "non_blocking_issues": [],
+            }
+        ],
+    )
+    plan_active_task(task_run.task_state_path, prep_codex_client)
+    run_active_task_implementer(task_run.task_state_path, prep_codex_client)
+    (target_repository / "task1.txt").write_text("task 1\n", encoding="utf-8")
+    run_active_task_tests(task_run.task_state_path)
+    run_active_task_reviewer(task_run.task_state_path, prep_codex_client)
+    with pytest.raises(TaskRunError, match="before starting the next Task"):
+        commit_active_task_and_advance(task_run.task_state_path)
+
+    resume_codex_client = FakeCodexClient(
+        {"status": "planned", "plan_markdown": "Make Task 2."},
+        implementer_outputs=[
+            {
+                "status": "implementation_complete",
+                "summary": "Implemented Task 2.",
+                "changed_files": ["task2.txt"],
+                "recommended_commands": [],
+            }
+        ],
+        reviewer_outputs=[
+            {
+                "status": "approved",
+                "summary": "Task 2 is ready.",
+                "blocking_issues": [],
+                "requested_changes": [],
+                "non_blocking_issues": [],
+            }
+        ],
+    )
+    with pytest.raises(TaskRunError, match="before starting the next Task"):
+        resume_task_run(
+            task_run.run_id,
+            resume_codex_client,
+            runtime_root=tmp_path / "runs",
+        )
+    assert resume_codex_client.started_threads == []
+
+    (target_repository / "hook-drift.txt").unlink()
+    result = resume_task_run(
+        task_run.run_id,
+        resume_codex_client,
+        runtime_root=tmp_path / "runs",
+    )
+
+    assert result["status"] == "completed"
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    assert state["phase"] == "completed"
+    assert [task["status"] for task in state["tasks"]] == ["completed", "completed"]
+
+
 def test_plan_active_task_resumes_existing_planner_thread(tmp_path: Path) -> None:
     target_repository, task_run = create_task_run(tmp_path)
     state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
@@ -2295,6 +2842,26 @@ def test_cli_run_requires_explicit_task_spec_path(
 
     assert exc_info.value.code == 2
     assert "task_spec_path" in capsys.readouterr().err
+
+
+def test_cli_resume_requires_task_run_id(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(["resume"])
+
+    assert exc_info.value.code == 2
+    assert "run_id" in capsys.readouterr().err
+
+
+def test_cli_resume_does_not_accept_replacement_task_spec_path(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(["resume", "run-123", "task-spec.yaml"])
+
+    assert exc_info.value.code == 2
+    assert "unrecognized arguments: task-spec.yaml" in capsys.readouterr().err
 
 
 def test_cli_run_starts_task_run_under_top_level_runs(

@@ -139,6 +139,94 @@ def start_task_run(
     )
 
 
+def resume_task_run(
+    run_id: str,
+    codex_client: Any,
+    *,
+    runtime_root: str | Path = "runs",
+    human_answer_provider: HumanAnswerProvider | None = None,
+    approved_plan_editor: ApprovedPlanEditor | None = None,
+    plan_approval_confirmer: PlanApprovalConfirmer | None = None,
+) -> dict[str, Any]:
+    task_run = _load_existing_task_run(run_id, runtime_root)
+
+    while True:
+        state = _read_json(task_run.task_state_path)
+        _check_loaded_task_run_state(task_run, state)
+        phase = state.get("phase")
+
+        if phase == "completed":
+            return {"status": "completed", "run_id": task_run.run_id}
+        if phase == "failed":
+            failure = state.get("failure")
+            return failure if isinstance(failure, dict) else {"status": "failed"}
+        if phase == "plan_approval_declined":
+            return {
+                "status": "stopped",
+                "reason": "plan_approval_declined",
+                "active_task_id": state.get("active_task_id"),
+            }
+        if phase == "target_repository_dirty_before_next_task":
+            _resume_after_dirty_before_next_task(task_run.task_state_path)
+            continue
+
+        _require_resume_can_continue_from_phase(state)
+
+        if phase in {"ready_for_planning", "planning_needs_answers"}:
+            _require_clean_target_repository(
+                Path(state["target_repository"]).resolve(),
+                "before resuming planning",
+            )
+            plan_active_task(
+                task_run.task_state_path,
+                codex_client,
+                human_answer_provider=human_answer_provider,
+                approved_plan_editor=approved_plan_editor,
+                plan_approval_confirmer=plan_approval_confirmer,
+            )
+            continue
+
+        if phase == "plan_approved":
+            _require_clean_target_repository(
+                Path(state["target_repository"]).resolve(),
+                "before resuming implementation",
+            )
+            run_active_task_implementer(task_run.task_state_path, codex_client)
+            continue
+
+        if phase == "ready_for_tests":
+            run_active_task_tests(task_run.task_state_path)
+            continue
+
+        if phase == "tests_failed":
+            repair_result = run_active_task_failed_test_repair(
+                task_run.task_state_path, codex_client
+            )
+            if repair_result.get("status") == "failed":
+                return repair_result
+            continue
+
+        if phase == "tests_passed":
+            run_active_task_reviewer(task_run.task_state_path, codex_client)
+            continue
+
+        if phase == "review_rejected":
+            repair_result = run_active_task_review_rejection_repair(
+                task_run.task_state_path, codex_client
+            )
+            if repair_result.get("status") == "failed":
+                return repair_result
+            continue
+
+        if phase == "commit_ready":
+            result = commit_active_task_and_advance(task_run.task_state_path)
+            if result["status"] == "completed":
+                return result
+            continue
+
+        raise TaskRunError(f"Cannot safely resume Task Run from phase: {phase!r}.")
+
+
 def plan_active_task(
     task_state_path: str | Path,
     codex_client: Any,
@@ -160,6 +248,11 @@ def plan_active_task(
 
     planner_developer_instructions = PLANNER_PROMPT_PATH.read_text(encoding="utf-8")
     planner_output_schema = _read_json(PLANNER_OUTPUT_SCHEMA_PATH)
+    resuming_planner_questions = state.get("phase") == "planning_needs_answers"
+    if resuming_planner_questions and _planner_thread_id(active_task_state) is None:
+        raise TaskRunError(
+            "Cannot resume Planner Agent questions without a saved Planner Agent thread ID."
+        )
     thread = _planner_thread(
         codex_client=codex_client,
         task_state=active_task_state,
@@ -171,17 +264,25 @@ def plan_active_task(
     _persist_planner_thread_id(active_task_state, thread.id)
     _write_json(task_state_file, state)
 
-    turn_result = _run_planner_thread(
-        thread=thread,
-        turn_input=_planner_turn_input(task_context_path, task_context),
-        target_repository=target_repository,
-        effort=task_spec.codex.effort,
-        model=task_spec.codex.model,
-        output_schema=planner_output_schema,
-    )
-    planner_output = _parse_planner_output(turn_result)
-    _check_planner_output_for_routing(planner_output)
-    _append_planner_output(planning_artifact_path, planner_output)
+    if resuming_planner_questions:
+        planner_output = _latest_planner_output(planning_artifact_path)
+        _check_planner_output_for_routing(planner_output)
+        if planner_output["status"] != "needs_answers":
+            raise TaskRunError(
+                "Saved planning phase requires latest Planner Agent output to need answers."
+            )
+    else:
+        turn_result = _run_planner_thread(
+            thread=thread,
+            turn_input=_planner_turn_input(task_context_path, task_context),
+            target_repository=target_repository,
+            effort=task_spec.codex.effort,
+            model=task_spec.codex.model,
+            output_schema=planner_output_schema,
+        )
+        planner_output = _parse_planner_output(turn_result)
+        _check_planner_output_for_routing(planner_output)
+        _append_planner_output(planning_artifact_path, planner_output)
 
     context_thread: Any | None = None
     context_answers_schema: dict[str, Any] | None = None
@@ -584,6 +685,117 @@ def commit_active_task_and_advance(task_state_path: str | Path) -> dict[str, Any
         "commit_sha": commit_sha,
         "active_task_id": next_task.task_id,
     }
+
+
+def _load_existing_task_run(run_id: str, runtime_root: str | Path) -> TaskRun:
+    if not isinstance(run_id, str) or not run_id.strip():
+        raise TaskRunError("Task Run ID is required.")
+
+    runtime_root_path = Path(runtime_root).resolve()
+    run_directory = runtime_root_path / run_id
+    task_spec_snapshot_path = run_directory / "task-spec.yaml"
+    task_state_path = run_directory / "task-state.json"
+
+    if not run_directory.exists():
+        raise TaskRunError(f"Task Run does not exist: {run_id}")
+    if not task_spec_snapshot_path.exists():
+        raise TaskRunError(
+            f"Task Run is missing snapshotted Task Spec: {task_spec_snapshot_path}"
+        )
+    if not task_state_path.exists():
+        raise TaskRunError(
+            f"Task Run is missing Controller-owned Task State: {task_state_path}"
+        )
+
+    state = _read_json(task_state_path)
+    active_task_state = _active_task_state(state) if state.get("active_task_id") else {}
+    artifacts = active_task_state.get("artifacts") if active_task_state else {}
+    first_task_context_path = (
+        Path(artifacts["task_context"])
+        if isinstance(artifacts, dict)
+        and isinstance(artifacts.get("task_context"), str)
+        else run_directory / "tasks"
+    )
+    return TaskRun(
+        run_id=run_id,
+        run_directory=run_directory,
+        task_spec_snapshot_path=task_spec_snapshot_path,
+        task_state_path=task_state_path,
+        first_task_context_path=first_task_context_path,
+    )
+
+
+def _check_loaded_task_run_state(task_run: TaskRun, state: Mapping[str, Any]) -> None:
+    if state.get("run_id") != task_run.run_id:
+        raise TaskRunError(
+            f"Task State run_id does not match requested Task Run ID: {task_run.run_id}"
+        )
+
+    task_spec_snapshot_path = Path(state.get("task_spec_snapshot_path", ""))
+    if task_spec_snapshot_path.resolve() != task_run.task_spec_snapshot_path.resolve():
+        raise TaskRunError(
+            "Task State does not point at this Task Run's snapshotted Task Spec."
+        )
+
+    task_state_path = Path(state.get("task_state_path", ""))
+    if task_state_path.resolve() != task_run.task_state_path.resolve():
+        raise TaskRunError(
+            "Task State does not point at this Task Run's Controller-owned state file."
+        )
+
+    load_task_spec(task_run.task_spec_snapshot_path)
+
+
+def _require_resume_can_continue_from_phase(state: Mapping[str, Any]) -> None:
+    active_task_state = _active_task_state(state)
+    active_task_id = state.get("active_task_id")
+    if active_task_state.get("id") != active_task_id:
+        raise TaskRunError("Task State active Task fields are inconsistent.")
+    if active_task_state.get("status") != "active":
+        raise TaskRunError(f"Task Run cannot resume inactive Task: {active_task_id!r}.")
+    if active_task_state.get("phase") != state.get("phase"):
+        raise TaskRunError(
+            "Task Run phase and active Task phase must match before resume."
+        )
+
+
+def _resume_after_dirty_before_next_task(task_state_path: str | Path) -> None:
+    task_state_file = Path(task_state_path)
+    state = _read_json(task_state_file)
+    if state.get("phase") != "target_repository_dirty_before_next_task":
+        raise TaskRunError("Task Run is not waiting to start the next Task.")
+
+    active_task_state = _active_task_state(state)
+    if active_task_state.get("status") != "completed":
+        raise TaskRunError(
+            "Task Run cannot start the next Task until the active Task is completed."
+        )
+
+    target_repository = Path(state["target_repository"]).resolve()
+    _require_clean_target_repository(target_repository, "before starting the next Task")
+
+    task_spec = load_task_spec(state["task_spec_snapshot_path"])
+    completed_task_id = active_task_state.get("id")
+    next_task_state = _next_pending_task_state(state, completed_task_id)
+    if next_task_state is None:
+        state["phase"] = "completed"
+        state["active_task_id"] = None
+        state["active_task"] = None
+        state["completed_at"] = (
+            active_task_state.get("completed_at") or _utc_timestamp()
+        )
+        _write_json(task_state_file, state)
+        return
+
+    next_task = _task_spec_task_by_id(task_spec, next_task_state.get("id"))
+    _activate_next_task(
+        state=state,
+        next_task_state=next_task_state,
+        next_task=next_task,
+        task_spec=task_spec,
+        task_state_path=task_state_file,
+    )
+    _write_json(task_state_file, state)
 
 
 def _latest_passing_test_status(task_state: Mapping[str, Any]) -> dict[str, Any]:
@@ -1751,6 +1963,19 @@ def _planner_questions(planner_output: Mapping[str, Any]) -> list[dict[str, Any]
             "Planner Agent status 'needs_answers' requires questions."
         )
     return questions
+
+
+def _latest_planner_output(planning_artifact_path: Path) -> dict[str, Any]:
+    planning_artifact = _planning_artifact(planning_artifact_path)
+    planner_outputs = planning_artifact["planner_outputs"]
+    if not planner_outputs:
+        raise TaskRunError(
+            "Saved planning phase has no Planner Agent output in the planning artifact."
+        )
+    planner_output = planner_outputs[-1]
+    if not isinstance(planner_output, dict):
+        raise TaskRunError("Saved Planner Agent output must be a JSON object.")
+    return planner_output
 
 
 def _context_answers(context_output: Mapping[str, Any]) -> list[dict[str, Any]]:
