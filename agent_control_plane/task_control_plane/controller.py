@@ -23,6 +23,7 @@ from openai_codex.generated.v2_all import (
 )
 
 from agent_control_plane.task_control_plane.task_spec import (
+    Task,
     TaskSpec,
     TestCommand,
     load_task_spec,
@@ -525,6 +526,66 @@ def run_active_task_reviewer(
     return reviewer_output
 
 
+def commit_active_task_and_advance(task_state_path: str | Path) -> dict[str, Any]:
+    task_state_file = Path(task_state_path)
+    state = _read_json(task_state_file)
+    active_task_state = _active_task_state(state)
+    _require_active_task_commit_ready(active_task_state)
+
+    task_spec = load_task_spec(state["task_spec_snapshot_path"])
+    target_repository = Path(state["target_repository"]).resolve()
+    active_task_id = active_task_state.get("id")
+    task = _task_spec_task_by_id(task_spec, active_task_id)
+
+    commit_sha = _commit_all_target_repository_changes(
+        target_repository=target_repository,
+        message=f"{task.task_id}: {task.title}",
+    )
+    completed_at = _utc_timestamp()
+    active_task_state["status"] = "completed"
+    active_task_state["phase"] = "completed"
+    active_task_state["commit_sha"] = commit_sha
+    active_task_state["completed_at"] = completed_at
+
+    next_task_state = _next_pending_task_state(state, task.task_id)
+    if next_task_state is None:
+        state["phase"] = "completed"
+        state["active_task_id"] = None
+        state["active_task"] = None
+        state["completed_at"] = completed_at
+        _write_json(task_state_file, state)
+        return {
+            "status": "completed",
+            "completed_task_id": task.task_id,
+            "commit_sha": commit_sha,
+        }
+
+    try:
+        _require_clean_target_repository(
+            target_repository, "before starting the next Task"
+        )
+    except TaskRunError:
+        state["phase"] = "target_repository_dirty_before_next_task"
+        _write_json(task_state_file, state)
+        raise
+
+    next_task = _task_spec_task_by_id(task_spec, next_task_state.get("id"))
+    _activate_next_task(
+        state=state,
+        next_task_state=next_task_state,
+        next_task=next_task,
+        task_spec=task_spec,
+        task_state_path=task_state_file,
+    )
+    _write_json(task_state_file, state)
+    return {
+        "status": "advanced",
+        "completed_task_id": task.task_id,
+        "commit_sha": commit_sha,
+        "active_task_id": next_task.task_id,
+    }
+
+
 def _latest_passing_test_status(task_state: Mapping[str, Any]) -> dict[str, Any]:
     latest_test_status = task_state.get("latest_test_status")
     if not isinstance(latest_test_status, dict):
@@ -832,7 +893,9 @@ def _write_command_log(
         command_log.flush()
 
 
-def _require_clean_target_repository(target_repository: Path) -> None:
+def _require_clean_target_repository(
+    target_repository: Path, clean_context: str = "before starting a Task Run"
+) -> None:
     if not target_repository.exists():
         raise TaskRunError(f"Target Repository does not exist: {target_repository}")
     if not target_repository.is_dir():
@@ -863,8 +926,128 @@ def _require_clean_target_repository(target_repository: Path) -> None:
         )
     if status.stdout.strip():
         raise TaskRunError(
-            f"Target Repository must be clean before starting a Task Run: {target_repository}"
+            f"Target Repository must be clean {clean_context}: {target_repository}"
         )
+
+
+def _require_active_task_commit_ready(task_state: Mapping[str, Any]) -> None:
+    if task_state.get("phase") != "commit_ready":
+        raise TaskRunError("Active Task is not ready to commit.")
+    _latest_passing_test_status(task_state)
+    latest_review_output = task_state.get("latest_review_output")
+    if not isinstance(latest_review_output, dict):
+        raise TaskRunError("Active Task has no Reviewer Agent output.")
+    if latest_review_output.get("status") != "approved":
+        raise TaskRunError("Active Task latest Reviewer Agent output was not approved.")
+
+
+def _commit_all_target_repository_changes(
+    *, target_repository: Path, message: str
+) -> str:
+    _run_git_command(["add", "--all"], target_repository)
+    staged_changes = subprocess.run(
+        ["git", "diff", "--cached", "--quiet", "--exit-code"],
+        cwd=target_repository,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if staged_changes.returncode == 0:
+        raise TaskRunError("No non-ignored Target Repository changes to commit.")
+    if staged_changes.returncode not in {0, 1}:
+        raise TaskRunError(
+            "Could not inspect staged Target Repository changes: "
+            f"{staged_changes.stderr.strip()}"
+        )
+
+    _run_git_command(["commit", "-m", message], target_repository)
+    return _run_git_command(["rev-parse", "HEAD"], target_repository).stdout.strip()
+
+
+def _run_git_command(
+    args: list[str], target_repository: Path
+) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=target_repository,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        command = " ".join(["git", *args])
+        if detail:
+            raise TaskRunError(f"{command} failed: {detail}")
+        raise TaskRunError(f"{command} failed.")
+    return result
+
+
+def _task_spec_task_by_id(task_spec: TaskSpec, task_id: Any) -> Task:
+    for task in task_spec.tasks:
+        if task.task_id == task_id:
+            return task
+    raise TaskRunError(f"Task Spec snapshot has no Task: {task_id}")
+
+
+def _next_pending_task_state(
+    state: Mapping[str, Any], completed_task_id: str
+) -> dict[str, Any] | None:
+    tasks = state.get("tasks")
+    if not isinstance(tasks, list):
+        raise TaskRunError("Task State field 'tasks' must be a list.")
+
+    for index, task_state in enumerate(tasks):
+        if not isinstance(task_state, dict):
+            raise TaskRunError("Task State tasks must be objects.")
+        if task_state.get("id") != completed_task_id:
+            continue
+        for next_task_state in tasks[index + 1 :]:
+            if not isinstance(next_task_state, dict):
+                raise TaskRunError("Task State tasks must be objects.")
+            if next_task_state.get("status") == "pending":
+                return next_task_state
+        return None
+
+    raise TaskRunError(f"Task State has no completed Task: {completed_task_id}")
+
+
+def _activate_next_task(
+    *,
+    state: dict[str, Any],
+    next_task_state: dict[str, Any],
+    next_task: Task,
+    task_spec: TaskSpec,
+    task_state_path: Path,
+) -> None:
+    run_directory = Path(state["run_directory"])
+    task_directory = run_directory / "tasks" / next_task.task_id
+    task_directory.mkdir(parents=True, exist_ok=True)
+    context_path = task_directory / "context.json"
+    artifact_paths = _artifact_paths(task_directory)
+
+    context = _task_context(
+        task_spec=task_spec,
+        task=next_task,
+        run_id=state["run_id"],
+        run_directory=run_directory,
+        task_spec_snapshot_path=Path(state["task_spec_snapshot_path"]),
+        task_state_path=task_state_path,
+        context_path=context_path,
+        artifact_paths=artifact_paths,
+    )
+    _write_json(context_path, context)
+
+    next_task_state["status"] = "active"
+    next_task_state["phase"] = "ready_for_planning"
+    next_task_state["iterations"] = 0
+    next_task_state["artifacts"] = {
+        name: str(path)
+        for name, path in {"task_context": context_path, **artifact_paths}.items()
+    }
+    state["phase"] = "ready_for_planning"
+    state["active_task_id"] = next_task.task_id
+    state["active_task"] = {"id": next_task.task_id, "title": next_task.title}
 
 
 def _new_run_id() -> str:
@@ -893,7 +1076,29 @@ def _first_task_context(
     context_path: Path,
     artifact_paths: dict[str, Path],
 ) -> dict[str, Any]:
-    first_task = task_spec.tasks[0]
+    return _task_context(
+        task_spec=task_spec,
+        task=task_spec.tasks[0],
+        run_id=run_id,
+        run_directory=run_directory,
+        task_spec_snapshot_path=task_spec_snapshot_path,
+        task_state_path=task_state_path,
+        context_path=context_path,
+        artifact_paths=artifact_paths,
+    )
+
+
+def _task_context(
+    *,
+    task_spec: TaskSpec,
+    task: Task,
+    run_id: str,
+    run_directory: Path,
+    task_spec_snapshot_path: Path,
+    task_state_path: Path,
+    context_path: Path,
+    artifact_paths: dict[str, Path],
+) -> dict[str, Any]:
     return {
         "run_id": run_id,
         "target_repository": str(task_spec.target_repository),
@@ -907,10 +1112,10 @@ def _first_task_context(
             "max_iterations": task_spec.max_iterations,
         },
         "task": {
-            "id": first_task.task_id,
-            "title": first_task.title,
-            "prompt": first_task.prompt,
-            "context": first_task.context,
+            "id": task.task_id,
+            "title": task.title,
+            "prompt": task.prompt,
+            "context": task.context,
         },
         "artifacts": {
             name: str(path)

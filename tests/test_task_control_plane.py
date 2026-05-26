@@ -24,6 +24,7 @@ from agent_control_plane.task_control_plane.controller import (
     TaskRun,
     TaskRunError,
     build_implementer_turn_input,
+    commit_active_task_and_advance,
     plan_active_task,
     run_active_task_failed_test_repair,
     run_active_task_implementer,
@@ -133,6 +134,21 @@ def sdk_value(value: object) -> object:
     return getattr(value, "value", value)
 
 
+def configure_git_identity(repository: Path) -> None:
+    subprocess.run(
+        ["git", "config", "user.name", "Task Control Plane Test"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "task-control-plane@example.test"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+
+
 def create_task_run(
     tmp_path: Path, *, require_plan_approval: bool = False
 ) -> tuple[Path, TaskRun]:
@@ -141,6 +157,7 @@ def create_task_run(
     subprocess.run(
         ["git", "init"], cwd=target_repository, check=True, capture_output=True
     )
+    configure_git_identity(target_repository)
 
     task_spec_path = tmp_path / "task-spec.yaml"
     task_spec_path.write_text(
@@ -1218,6 +1235,321 @@ tasks:
     assert not review_log_path.exists()
     assert state["phase"] == "tests_failed"
     assert state["tasks"][0]["phase"] == "tests_failed"
+
+
+def test_commit_active_task_commits_current_non_ignored_changes_and_advances_to_next_task(
+    tmp_path: Path,
+) -> None:
+    target_repository = tmp_path / "target"
+    target_repository.mkdir()
+    subprocess.run(
+        ["git", "init"], cwd=target_repository, check=True, capture_output=True
+    )
+    configure_git_identity(target_repository)
+    (target_repository / ".gitignore").write_text("ignored.log\n", encoding="utf-8")
+    (target_repository / "tracked.txt").write_text("before\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", ".gitignore", "tracked.txt"],
+        cwd=target_repository,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "Initial target state"],
+        cwd=target_repository,
+        check=True,
+        capture_output=True,
+    )
+
+    test_counter_path = tmp_path / "test-counter.txt"
+    test_counter_path.write_text("0", encoding="utf-8")
+    passing_command = [
+        sys.executable,
+        "-c",
+        (
+            "from pathlib import Path; "
+            f"path = Path({str(test_counter_path)!r}); "
+            "path.write_text(str(int(path.read_text(encoding='utf-8')) + 1), encoding='utf-8')"
+        ),
+    ]
+    task_spec_path = tmp_path / "task-spec.yaml"
+    task_spec_path.write_text(
+        f"""
+target_repository: {target_repository}
+require_plan_approval: false
+test_commands:
+  - name: unit
+    argv: {json.dumps(passing_command)}
+tasks:
+  - id: TASK-1
+    title: First task
+    prompt: Implement the first task.
+  - id: TASK-2
+    title: Second task
+    prompt: Implement the second task.
+""",
+        encoding="utf-8",
+    )
+    task_run = start_task_run(task_spec_path, runtime_root=tmp_path / "runs")
+    planner_output = {"status": "planned", "plan_markdown": "Make the change."}
+    implementer_output = {
+        "status": "implementation_complete",
+        "summary": "Changed tracked and untracked files.",
+        "changed_files": ["tracked.txt", "created.txt"],
+        "recommended_commands": [],
+    }
+    review_output = {
+        "status": "approved",
+        "summary": "Ready to commit.",
+        "blocking_issues": [],
+        "requested_changes": [],
+        "non_blocking_issues": [],
+    }
+    codex_client = FakeCodexClient(
+        planner_output,
+        implementer_outputs=[implementer_output],
+        reviewer_outputs=[review_output],
+    )
+    plan_active_task(task_run.task_state_path, codex_client)
+    run_active_task_implementer(task_run.task_state_path, codex_client)
+    (target_repository / "tracked.txt").write_text("after\n", encoding="utf-8")
+    (target_repository / "created.txt").write_text("new file\n", encoding="utf-8")
+    (target_repository / "ignored.log").write_text("ignored\n", encoding="utf-8")
+    test_status = run_active_task_tests(task_run.task_state_path)
+    run_active_task_reviewer(task_run.task_state_path, codex_client)
+
+    result = commit_active_task_and_advance(task_run.task_state_path)
+
+    assert test_status["passed"] is True
+    assert test_counter_path.read_text(encoding="utf-8") == "1"
+    assert result["status"] == "advanced"
+    assert result["completed_task_id"] == "TASK-1"
+    assert result["active_task_id"] == "TASK-2"
+
+    commit_subject = subprocess.run(
+        ["git", "show", "-s", "--format=%s", "HEAD"],
+        cwd=target_repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert commit_subject.startswith("TASK-1: First task")
+
+    committed_files = subprocess.run(
+        ["git", "show", "--name-only", "--pretty=format:", "HEAD"],
+        cwd=target_repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    assert "tracked.txt" in committed_files
+    assert "created.txt" in committed_files
+    assert "ignored.log" not in committed_files
+    assert (
+        subprocess.run(
+            ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+            cwd=target_repository,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        == ""
+    )
+
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    first_task_state, second_task_state = state["tasks"]
+    assert state["phase"] == "ready_for_planning"
+    assert state["active_task_id"] == "TASK-2"
+    assert first_task_state["status"] == "completed"
+    assert first_task_state["phase"] == "completed"
+    assert first_task_state["commit_sha"] == result["commit_sha"]
+    assert len(first_task_state["commit_sha"]) == 40
+    assert second_task_state["status"] == "active"
+    assert second_task_state["phase"] == "ready_for_planning"
+    assert second_task_state["artifacts"]
+
+    next_context_path = Path(second_task_state["artifacts"]["task_context"])
+    next_context = json.loads(next_context_path.read_text(encoding="utf-8"))
+    assert next_context["task"]["id"] == "TASK-2"
+    assert next_context["task"]["title"] == "Second task"
+    assert all(Path(path).is_absolute() for path in next_context["artifacts"].values())
+
+
+def test_commit_active_task_marks_run_completed_when_no_next_task_exists(
+    tmp_path: Path,
+) -> None:
+    target_repository, task_run = create_task_run(tmp_path, require_plan_approval=False)
+    planner_output = {"status": "planned", "plan_markdown": "Make the change."}
+    implementer_output = {
+        "status": "implementation_complete",
+        "summary": "Changed one file.",
+        "changed_files": ["done.txt"],
+        "recommended_commands": [],
+    }
+    review_output = {
+        "status": "approved",
+        "summary": "Ready to commit.",
+        "blocking_issues": [],
+        "requested_changes": [],
+        "non_blocking_issues": [],
+    }
+    codex_client = FakeCodexClient(
+        planner_output,
+        implementer_outputs=[implementer_output],
+        reviewer_outputs=[review_output],
+    )
+    plan_active_task(task_run.task_state_path, codex_client)
+    run_active_task_implementer(task_run.task_state_path, codex_client)
+    (target_repository / "done.txt").write_text("done\n", encoding="utf-8")
+    run_active_task_tests(task_run.task_state_path)
+    run_active_task_reviewer(task_run.task_state_path, codex_client)
+
+    result = commit_active_task_and_advance(task_run.task_state_path)
+
+    assert result["status"] == "completed"
+    assert result["completed_task_id"] == "TASK-1"
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    task_state = state["tasks"][0]
+    assert state["phase"] == "completed"
+    assert state["active_task_id"] is None
+    assert state["active_task"] is None
+    assert task_state["status"] == "completed"
+    assert task_state["phase"] == "completed"
+    assert task_state["commit_sha"] == result["commit_sha"]
+
+
+def test_commit_active_task_requires_clean_target_repository_before_activating_next_task(
+    tmp_path: Path,
+) -> None:
+    target_repository = tmp_path / "target"
+    target_repository.mkdir()
+    subprocess.run(
+        ["git", "init"], cwd=target_repository, check=True, capture_output=True
+    )
+    configure_git_identity(target_repository)
+    (target_repository / "base.txt").write_text("base\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "base.txt"],
+        cwd=target_repository,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "Initial target state"],
+        cwd=target_repository,
+        check=True,
+        capture_output=True,
+    )
+    post_commit_hook = target_repository / ".git" / "hooks" / "post-commit"
+    post_commit_hook.write_text(
+        "#!/bin/sh\nprintf 'post-commit drift\\n' > hook-drift.txt\n",
+        encoding="utf-8",
+    )
+    post_commit_hook.chmod(0o755)
+
+    task_spec_path = tmp_path / "task-spec.yaml"
+    task_spec_path.write_text(
+        f"""
+target_repository: {target_repository}
+require_plan_approval: false
+tasks:
+  - id: TASK-1
+    title: First task
+    prompt: Implement the first task.
+  - id: TASK-2
+    title: Second task
+    prompt: Implement the second task.
+""",
+        encoding="utf-8",
+    )
+    task_run = start_task_run(task_spec_path, runtime_root=tmp_path / "runs")
+    planner_output = {"status": "planned", "plan_markdown": "Make the change."}
+    implementer_output = {
+        "status": "implementation_complete",
+        "summary": "Changed one file.",
+        "changed_files": ["base.txt"],
+        "recommended_commands": [],
+    }
+    review_output = {
+        "status": "approved",
+        "summary": "Ready to commit.",
+        "blocking_issues": [],
+        "requested_changes": [],
+        "non_blocking_issues": [],
+    }
+    codex_client = FakeCodexClient(
+        planner_output,
+        implementer_outputs=[implementer_output],
+        reviewer_outputs=[review_output],
+    )
+    plan_active_task(task_run.task_state_path, codex_client)
+    run_active_task_implementer(task_run.task_state_path, codex_client)
+    (target_repository / "base.txt").write_text("task change\n", encoding="utf-8")
+    run_active_task_tests(task_run.task_state_path)
+    run_active_task_reviewer(task_run.task_state_path, codex_client)
+
+    with pytest.raises(TaskRunError, match="before starting the next Task"):
+        commit_active_task_and_advance(task_run.task_state_path)
+
+    status = subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        cwd=target_repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert "?? hook-drift.txt" in status
+
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    first_task_state, second_task_state = state["tasks"]
+    assert state["phase"] == "target_repository_dirty_before_next_task"
+    assert state["active_task_id"] == "TASK-1"
+    assert first_task_state["status"] == "completed"
+    assert first_task_state["phase"] == "completed"
+    assert len(first_task_state["commit_sha"]) == 40
+    assert second_task_state["status"] == "pending"
+    assert second_task_state["phase"] == "pending"
+    assert second_task_state["artifacts"] == {}
+
+
+def test_commit_active_task_refuses_until_tests_pass_and_reviewer_approves(
+    tmp_path: Path,
+) -> None:
+    target_repository, task_run = create_task_run(tmp_path, require_plan_approval=False)
+    planner_output = {"status": "planned", "plan_markdown": "Make the change."}
+    implementer_output = {
+        "status": "implementation_complete",
+        "summary": "Changed one file.",
+        "changed_files": ["pending.txt"],
+        "recommended_commands": [],
+    }
+    review_output = {
+        "status": "approved",
+        "summary": "Ready to commit.",
+        "blocking_issues": [],
+        "requested_changes": [],
+        "non_blocking_issues": [],
+    }
+    codex_client = FakeCodexClient(
+        planner_output,
+        implementer_outputs=[implementer_output],
+        reviewer_outputs=[review_output],
+    )
+    plan_active_task(task_run.task_state_path, codex_client)
+    run_active_task_implementer(task_run.task_state_path, codex_client)
+    (target_repository / "pending.txt").write_text("pending\n", encoding="utf-8")
+
+    with pytest.raises(TaskRunError, match="not ready to commit"):
+        commit_active_task_and_advance(task_run.task_state_path)
+
+    run_active_task_tests(task_run.task_state_path)
+    with pytest.raises(TaskRunError, match="not ready to commit"):
+        commit_active_task_and_advance(task_run.task_state_path)
+
+    run_active_task_reviewer(task_run.task_state_path, codex_client)
+    result = commit_active_task_and_advance(task_run.task_state_path)
+
+    assert result["status"] == "completed"
 
 
 def test_run_active_task_review_rejection_repair_routes_verbatim_review_to_same_implementer_thread_and_back_to_tests(
