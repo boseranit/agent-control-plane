@@ -33,3 +33,14 @@ This slice should make the planning loop deterministic while preserving the user
 ## Blocked by
 
 - `.scratch/task-control-plane/issues/02-plan-task-with-persistent-planner-agent.md`
+
+## Comments
+
+### Implementation
+
+- Commit: `3e2cab960f5722334b9552bb4956b17c525e8022`
+- Tests run:
+  - `pixi run -e dev ruff check .`
+  - `pixi run -e dev pytest`
+  - `git diff --check`
+- Notes: Added the source-controlled Context Agent prompt and context answers schema, persistent Context Agent thread start/resume, answer-history recording in `planning.json`, injectable human answer handling for unresolved planner questions, and a multi-round planning loop that keeps using the same Planner Agent thread until it returns `planned`. Real Codex calls remain covered by fakes only.

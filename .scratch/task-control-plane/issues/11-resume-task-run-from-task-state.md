@@ -34,3 +34,14 @@ Resume must not accept a replacement Task Spec path.
 - `.scratch/task-control-plane/issues/02-plan-task-with-persistent-planner-agent.md`
 - `.scratch/task-control-plane/issues/05-run-implementer-agent-from-approved-plan.md`
 - `.scratch/task-control-plane/issues/10-commit-approved-task-changes-and-advance.md`
+
+## Comments
+
+### Implementation
+
+- Commit: `38706fc2a90d287be3abd39dbd2012e73a21e45f`
+- Tests run:
+  - `pixi run -e dev ruff check .`
+  - `pixi run -e dev pytest`
+  - `git diff --check`
+- Notes: Added `resume_task_run(...)` and CLI `resume RUN_ID`. Resume loads the snapshotted Task Spec and Controller-owned Task State, routes from saved phases through existing controller steps, resumes saved Planner/Context/Implementer thread IDs when needed, keeps Reviewer Agent threads fresh, skips completed Tasks, permits dirty active implementation state while still enforcing cleanliness before starting the next Task, and rejects replacement Task Spec arguments at the CLI. Usage-limit handling remains out of scope for issue 12.

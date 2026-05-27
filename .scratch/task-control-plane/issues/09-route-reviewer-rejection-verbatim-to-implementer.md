@@ -29,3 +29,14 @@ The loop should then return to deterministic test execution before any later rev
 ## Blocked by
 
 - `.scratch/task-control-plane/issues/08-review-passing-work-with-fresh-reviewer-agents.md`
+
+## Comments
+
+### Implementation
+
+- Commit: `7fbe40413b1cedfce254733965f592187e766fae`
+- Tests run:
+  - `pixi run -e dev ruff check .`
+  - `pixi run -e dev pytest`
+  - `git diff --check`
+- Notes: Added `run_active_task_review_rejection_repair(...)` for reviewer-rejection repair. Rejected reviewer JSON is appended to the review log and stored/sent to the same Implementer Agent thread verbatim, including blocking issues, requested changes, and non-blocking issues. The repair increments the shared iteration counter, overwrites the latest implementation result, clears stale test status so tests must run again before review, and fails the Task Run at the iteration cap without reverting dirty Target Repository changes.

@@ -1,7 +1,7 @@
 # Task Control Plane PRD
 
-Status: ready-for-agent
-Label: ready-for-agent
+Status: done
+Label: done
 
 ## Problem Statement
 

@@ -31,3 +31,13 @@ This slice should use fake Codex clients in tests and avoid real network calls. 
 ## Blocked by
 
 - `.scratch/task-control-plane/issues/01-bootstrap-task-run-from-task-spec.md`
+
+## Comments
+
+### Implementation
+
+- Commit: `a1253ce4af28d333525513277f3a8c250c5f5200`
+- Tests run:
+  - `pixi run -e dev ruff check .`
+  - `pixi run -e dev pytest`
+- Notes: Added the source-controlled Planner Agent prompt and planner output schema, plus a fake-tested Planner Agent gateway that starts or resumes the persistent planner thread, passes SDK developer instructions and `output_schema`, persists the planner thread ID, records planner outputs in `planning.json`, and advances to `plan_ready` or `planning_needs_answers`. Real Codex network calls remain untested by design.
