@@ -29,3 +29,14 @@ The implementer-facing plan must be the Approved Plan artifact, not raw planner 
 
 - `.scratch/task-control-plane/issues/02-plan-task-with-persistent-planner-agent.md`
 - `.scratch/task-control-plane/issues/03-resolve-planner-questions-with-context-agent.md`
+
+## Comments
+
+### Implementation
+
+- Commit: `2c40a9d222ab33520451bca4d6df30c5c816d006`
+- Tests run:
+  - `pixi run -e dev ruff check .`
+  - `pixi run -e dev pytest`
+  - `git diff --check`
+- Notes: Planning now writes the planner Markdown into the authoritative `approved-plan.md` artifact, records approval metadata in Task State and `planning.json`, supports automatic approval when `require_plan_approval` is false, and uses injectable editor/confirmation hooks for human approval. Declined approval records `plan_approval_declined` and `build_implementer_turn_input` refuses to proceed. Implementer execution remains out of scope for issue 05.

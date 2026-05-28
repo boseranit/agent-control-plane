@@ -33,3 +33,14 @@ This slice should make one Task equal one final commit.
 
 - `.scratch/task-control-plane/issues/08-review-passing-work-with-fresh-reviewer-agents.md`
 - `.scratch/task-control-plane/issues/09-route-reviewer-rejection-verbatim-to-implementer.md`
+
+## Comments
+
+### Implementation
+
+- Commit: `a5bb1d7f883547e8d37ea9658624de5160582887`
+- Tests run:
+  - `pixi run -e dev ruff check .`
+  - `pixi run -e dev pytest`
+  - `git diff --check`
+- Notes: Added `commit_active_task_and_advance(...)` for the final per-Task happy path. The controller now commits only from `commit_ready` after latest passing tests and reviewer approval, stages all non-ignored Target Repository changes, records the commit SHA, marks the Task completed, marks the run completed when no Tasks remain, and activates the next Task only after enforcing Target Repository cleanliness. Commit messages use `Task ID: title`. No post-review test rerun, drift check, branch/worktree creation, push, PR, or revert behavior was added.

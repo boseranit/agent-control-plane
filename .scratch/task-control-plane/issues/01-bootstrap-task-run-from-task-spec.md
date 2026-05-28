@@ -31,3 +31,13 @@ This slice should establish the core runtime shape without real Codex calls. It 
 ## Blocked by
 
 None - can start immediately
+
+## Comments
+
+### Implementation
+
+- Commit: `894b6f33eda228761b08d259eae91bbaa899ca8d`
+- Tests run:
+  - `pixi run -e dev ruff check .`
+  - `pixi run -e dev pytest`
+- Notes: Bootstrapped the workflow-specific Task Control Plane package, `run` CLI, Task Spec loading/defaulting/validation, Task Run snapshot/state/context artifacts, and clean Target Repository enforcement. Codex, resume, command execution, review, and commit behavior remain intentionally out of scope for later issues.

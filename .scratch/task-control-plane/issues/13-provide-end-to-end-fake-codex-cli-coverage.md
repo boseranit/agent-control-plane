@@ -42,3 +42,14 @@ This issue should not add new product behavior. It should harden the already-bui
 - `.scratch/task-control-plane/issues/10-commit-approved-task-changes-and-advance.md`
 - `.scratch/task-control-plane/issues/11-resume-task-run-from-task-state.md`
 - `.scratch/task-control-plane/issues/12-sleep-through-codex-usage-limits.md`
+
+## Comments
+
+### Implementation
+
+- Commit: `c114eec50be5825ab8951d15bf90de5db9c467fe`
+- Tests run:
+  - `pixi run -e dev ruff check .`
+  - `pixi run -e dev pytest`
+  - `git diff --check`
+- Notes: Added end-to-end fake-Codex regression coverage in `tests/test_task_control_plane_e2e.py`. The tests exercise CLI `run` plus injected `resume`, happy path completion, planner questions with Context Agent and human answers, failed-test repair on the same Implementer Agent, reviewer rejection with verbatim feedback and later approval, multi-Task sequential commits, resume from saved state without rerunning completed phases, max-iteration failure with dirty Target Repository preservation, and controller-level usage-limit sleeper injection. No product code changes were needed.

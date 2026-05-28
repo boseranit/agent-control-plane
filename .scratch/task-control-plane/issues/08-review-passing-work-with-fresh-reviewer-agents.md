@@ -33,3 +33,14 @@ This slice establishes the independent review boundary and reviewer output seman
 ## Blocked by
 
 - `.scratch/task-control-plane/issues/06-execute-test-commands-with-streaming-command-log.md`
+
+## Comments
+
+### Implementation
+
+- Commit: `1a1c84ddb90aa53c746ef37896254ade7ecde226`
+- Tests run:
+  - `pixi run -e dev ruff check .`
+  - `pixi run -e dev pytest`
+  - `git diff --check`
+- Notes: Added the Reviewer Agent prompt and schema, fresh reviewer thread creation with `deny_all` and read-only sandbox, reviewer turn input with artifact paths and no embedded diff, SDK `output_schema` usage, JSONL review log appends, passing-test guard, and `commit_ready` routing for approved reviews including advisory non-blocking issues. The schema/prompt also include `requested_changes` for the upcoming rejection loop.

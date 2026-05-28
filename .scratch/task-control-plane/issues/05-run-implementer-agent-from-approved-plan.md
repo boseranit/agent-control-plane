@@ -31,3 +31,14 @@ This slice stops after a single Implementer Agent turn. Test execution and revie
 ## Blocked by
 
 - `.scratch/task-control-plane/issues/04-approve-plans-through-approved-plan-markdown.md`
+
+## Comments
+
+### Implementation
+
+- Commit: `f1cd6ad6d93da5b1499e8071aa846ee7a039cb3f`
+- Tests run:
+  - `pixi run -e dev ruff check .`
+  - `pixi run -e dev pytest`
+  - `git diff --check`
+- Notes: Added the source-controlled Implementer Agent prompt and result schema, persistent implementer thread start/resume with workspace-write sandbox and `auto_review`, SDK `output_schema` use, implementer thread ID persistence, approved-plan-only turn input, latest implementation result overwrite, and `ready_for_tests` state transition. Deterministic tests, retries, review, and commit behavior remain out of scope for later issues.

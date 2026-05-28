@@ -29,3 +29,14 @@ If the shared iteration cap is reached, the Controller should mark the Task fail
 ## Blocked by
 
 - `.scratch/task-control-plane/issues/06-execute-test-commands-with-streaming-command-log.md`
+
+## Comments
+
+### Implementation
+
+- Commit: `75ee576332ffbd34f327b26dc16f6e84c672e434`
+- Tests run:
+  - `pixi run -e dev ruff check .`
+  - `pixi run -e dev pytest`
+  - `git diff --check`
+- Notes: Added `run_active_task_failed_test_repair(...)` for failed deterministic test repair. The controller increments the shared Task iteration counter, bypasses review, sends the command log path and Approved Plan path back to the same Implementer Agent thread, overwrites the latest implementation result, and marks the Task Run failed at the iteration cap without reverting dirty Target Repository changes. Reviewer behavior remains out of scope for issue 08.

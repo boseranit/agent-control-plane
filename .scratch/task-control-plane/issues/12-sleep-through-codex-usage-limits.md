@@ -29,3 +29,14 @@ The sleep behavior must be injectable in tests so tests do not wait for real tim
 ## Blocked by
 
 - `.scratch/task-control-plane/issues/02-plan-task-with-persistent-planner-agent.md`
+
+## Comments
+
+### Implementation
+
+- Commit: `8ada70d3b9f8eb07630d0fc1f5a0a6c03bfd1704`
+- Tests run:
+  - `pixi run -e dev ruff check .`
+  - `pixi run -e dev pytest`
+  - `git diff --check`
+- Notes: Added a shared workflow-specific usage-limit wrapper around Planner, Context, Implementer, and Reviewer `Thread.run(...)` calls. The wrapper parses representative absolute, relative, and local time-of-day retry suggestions, records waits in Task State and active Task State, uses injectable clock/sleeper hooks, clamps negative waits to zero, retries the same Codex call after sleeping, and lets non-usage errors propagate normally.

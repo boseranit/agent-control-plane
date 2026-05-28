@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ContextAnswersOutput",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "answers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "question_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["answered", "unresolved"]
+          },
+          "answer": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": ["question_id", "status", "reason"],
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "answered"
+                }
+              }
+            },
+            "then": {
+              "required": ["answer"]
+            }
+          }
+        ]
+      }
+    }
+  },
+  "required": ["answers"]
+}
