@@ -10,6 +10,7 @@ import jsonschema
 import pytest
 
 from agent_control_plane.task_control_plane.cli import main
+from agent_control_plane.task_control_plane.agent_runtime import AgentRunConfig
 from agent_control_plane.task_control_plane.controller import (
     CONTEXT_ANSWERS_SCHEMA_PATH,
     CONTEXT_PROMPT_PATH,
@@ -64,6 +65,12 @@ class FakeCodexClient:
         self.threads_by_role: dict[str, FakeCodexThread] = {}
         self.thread_history_by_role: dict[str, list[FakeCodexThread]] = {}
 
+    def open_thread(self, config: AgentRunConfig) -> "FakeCodexThread":
+        kwargs = thread_call_from_config(config)
+        if config.thread_id:
+            return self.thread_resume(config.thread_id, **kwargs)
+        return self.thread_start(**kwargs)
+
     def thread_start(self, **kwargs: object) -> "FakeCodexThread":
         self.started_threads.append(kwargs)
         role = self._role(kwargs)
@@ -116,7 +123,8 @@ class FakeCodexThread:
         self.outputs = outputs
         self.run_calls: list[dict[str, object]] = []
 
-    def run(self, input: str, **kwargs: object) -> object:
+    def run(self, input: str, config: AgentRunConfig) -> object:
+        kwargs = run_call_from_config(config)
         self.run_calls.append({"input": input, **kwargs})
         if not self.outputs:
             raise AssertionError(f"No queued output for thread {self.id}.")
@@ -137,6 +145,35 @@ class FakeCodexTurnResult:
 
 def sdk_value(value: object) -> object:
     return getattr(value, "value", value)
+
+
+class FakeSandboxPolicy:
+    def __init__(self, type: str) -> None:
+        self.type = type
+
+
+def thread_call_from_config(config: AgentRunConfig) -> dict[str, object]:
+    return {
+        "approval_mode": "deny_all" if config.role == "reviewer" else "auto_review",
+        "cwd": str(config.cwd),
+        "developer_instructions": config.developer_instructions,
+        "model": config.model,
+        "sandbox": ("workspace-write" if config.role == "implementer" else "read-only"),
+    }
+
+
+def run_call_from_config(config: AgentRunConfig) -> dict[str, object]:
+    sandbox_policy_type = (
+        "workspaceWrite" if config.role == "implementer" else "readOnly"
+    )
+    return {
+        "approval_mode": "deny_all" if config.role == "reviewer" else "auto_review",
+        "cwd": str(config.cwd),
+        "effort": config.effort,
+        "model": config.model,
+        "output_schema": config.output_schema,
+        "sandbox_policy": FakeSandboxPolicy(sandbox_policy_type),
+    }
 
 
 def configure_git_identity(repository: Path) -> None:

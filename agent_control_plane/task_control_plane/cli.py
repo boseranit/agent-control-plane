@@ -6,6 +6,7 @@ from collections.abc import Callable
 from collections.abc import Sequence
 from typing import Any
 
+from agent_control_plane.task_control_plane.agent_runtime import AgentRuntime
 from agent_control_plane.task_control_plane.controller import (
     TaskRunError,
     resume_task_run,
@@ -59,6 +60,11 @@ def _resume(
     run_id: str, *, codex_client_factory: Callable[[], Any] | None = None
 ) -> int:
     try:
+        approval_result = _bridge_plan_approval_if_pending(run_id)
+        if approval_result is not None:
+            print(f"Plan Approval Event Sent: {run_id}")
+            print(f"Status: {approval_result.get('approval_status')}")
+            return 0
         codex_client = (codex_client_factory or _default_codex_client_factory)()
         result = resume_task_run(run_id, codex_client)
     except (OSError, TaskSpecError, TaskRunError) as exc:
@@ -71,6 +77,12 @@ def _resume(
 
 
 def _default_codex_client_factory() -> Any:
-    from openai_codex import Codex
+    return AgentRuntime()
 
-    return Codex()
+
+def _bridge_plan_approval_if_pending(run_id: str) -> dict[str, Any] | None:
+    from agent_control_plane.task_control_plane.hatchet_workflow import (
+        bridge_plan_approval_if_pending,
+    )
+
+    return bridge_plan_approval_if_pending(run_id)
