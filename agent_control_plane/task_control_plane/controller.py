@@ -15,14 +15,10 @@ from datetime import UTC, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from typing import Any, BinaryIO, TextIO
 
-from openai_codex import ApprovalMode
-from openai_codex.generated.v2_all import (
-    ReadOnlySandboxPolicy,
-    ReasoningEffort,
-    SandboxMode,
-    WorkspaceWriteSandboxPolicy,
+from agent_control_plane.task_control_plane.agent_runtime import (
+    AgentRole,
+    AgentRunConfig,
 )
-
 from agent_control_plane.task_control_plane.task_spec import (
     Task,
     TaskSpec,
@@ -278,12 +274,14 @@ def plan_active_task(
         raise TaskRunError(
             "Cannot resume Planner Agent questions without a saved Planner Agent thread ID."
         )
-    thread = _planner_thread(
-        codex_client=codex_client,
-        task_state=active_task_state,
+    thread = _agent_thread(
+        agent_runtime=codex_client,
+        role="planner",
         target_repository=target_repository,
         developer_instructions=planner_developer_instructions,
         model=task_spec.codex.model,
+        thread_id=_planner_thread_id(active_task_state),
+        session_db_path=_agent_session_db_path(active_task_state),
     )
 
     _persist_planner_thread_id(active_task_state, thread.id)
@@ -297,7 +295,8 @@ def plan_active_task(
                 "Saved planning phase requires latest Planner Agent output to need answers."
             )
     else:
-        turn_result = _run_planner_thread(
+        turn_result = _run_agent_thread(
+            role="planner",
             thread=thread,
             turn_input=_planner_turn_input(task_context_path, task_context),
             target_repository=target_repository,
@@ -326,18 +325,21 @@ def plan_active_task(
                 encoding="utf-8"
             )
             context_answers_schema = _read_json(CONTEXT_ANSWERS_SCHEMA_PATH)
-            context_thread = _context_thread(
-                codex_client=codex_client,
-                task_state=active_task_state,
+            context_thread = _agent_thread(
+                agent_runtime=codex_client,
+                role="context",
                 target_repository=target_repository,
                 developer_instructions=context_developer_instructions,
                 model=task_spec.codex.model,
+                thread_id=_context_thread_id(active_task_state),
+                session_db_path=_agent_session_db_path(active_task_state),
             )
             _persist_context_thread_id(active_task_state, context_thread.id)
             _write_json(task_state_file, state)
 
         questions = _planner_questions(planner_output)
-        context_turn_result = _run_context_thread(
+        context_turn_result = _run_agent_thread(
+            role="context",
             thread=context_thread,
             turn_input=_context_turn_input(
                 questions=questions,
@@ -378,7 +380,8 @@ def plan_active_task(
             human_answers=human_answers,
         )
 
-        turn_result = _run_planner_thread(
+        turn_result = _run_agent_thread(
+            role="planner",
             thread=thread,
             turn_input=_planner_follow_up_turn_input(
                 task_context_path=task_context_path,
@@ -583,18 +586,21 @@ def _run_active_task_implementer_turn(
         encoding="utf-8"
     )
     implementer_result_schema = _read_json(IMPLEMENTER_RESULT_SCHEMA_PATH)
-    thread = _implementer_thread(
-        codex_client=codex_client,
-        task_state=active_task_state,
+    thread = _agent_thread(
+        agent_runtime=codex_client,
+        role="implementer",
         target_repository=target_repository,
         developer_instructions=implementer_developer_instructions,
         model=task_spec.codex.model,
+        thread_id=_implementer_thread_id(active_task_state),
+        session_db_path=_agent_session_db_path(active_task_state),
     )
 
     _persist_implementer_thread_id(active_task_state, thread.id)
     _write_json(task_state_file, state)
 
-    turn_result = _run_implementer_thread(
+    turn_result = _run_agent_thread(
+        role="implementer",
         thread=thread,
         turn_input=turn_input,
         target_repository=target_repository,
@@ -659,14 +665,17 @@ def run_active_task_reviewer(
 
     reviewer_developer_instructions = REVIEWER_PROMPT_PATH.read_text(encoding="utf-8")
     reviewer_output_schema = _read_json(REVIEWER_OUTPUT_SCHEMA_PATH)
-    thread = _reviewer_thread(
-        codex_client=codex_client,
+    thread = _agent_thread(
+        agent_runtime=codex_client,
+        role="reviewer",
         target_repository=target_repository,
         developer_instructions=reviewer_developer_instructions,
         model=task_spec.codex.model,
+        session_db_path=_agent_session_db_path(active_task_state),
     )
 
-    turn_result = _run_reviewer_thread(
+    turn_result = _run_agent_thread(
+        role="reviewer",
         thread=thread,
         turn_input=_reviewer_turn_input(
             task_spec=task_spec,
@@ -1483,29 +1492,36 @@ def _task_artifacts(task_state: Mapping[str, Any]) -> dict[str, str]:
     return artifacts
 
 
-def _planner_thread(
+def _agent_session_db_path(task_state: Mapping[str, Any]) -> Path:
+    task_context_path = Path(_task_artifacts(task_state)["task_context"])
+    return task_context_path.parent.parent.parent / "agent-sessions.sqlite3"
+
+
+def _agent_thread(
     *,
-    codex_client: Any,
-    task_state: dict[str, Any],
+    agent_runtime: Any,
+    role: AgentRole,
     target_repository: Path,
     developer_instructions: str,
     model: str | None,
+    session_db_path: Path,
+    thread_id: str | None = None,
 ) -> Any:
-    planner_thread_id = _planner_thread_id(task_state)
-    thread_kwargs = {
-        "approval_mode": ApprovalMode.auto_review,
-        "cwd": str(target_repository),
-        "developer_instructions": developer_instructions,
-        "model": model,
-        "sandbox": SandboxMode.read_only,
-    }
-    if planner_thread_id:
-        return codex_client.thread_resume(planner_thread_id, **thread_kwargs)
-    return codex_client.thread_start(**thread_kwargs)
+    return agent_runtime.open_thread(
+        AgentRunConfig(
+            role=role,
+            cwd=target_repository,
+            developer_instructions=developer_instructions,
+            model=model,
+            thread_id=thread_id,
+            session_db_path=session_db_path,
+        )
+    )
 
 
-def _run_planner_thread(
+def _run_agent_thread(
     *,
+    role: AgentRole,
     thread: Any,
     turn_input: str,
     target_repository: Path,
@@ -1518,8 +1534,8 @@ def _run_planner_thread(
     usage_clock: UsageLimitClock | None,
     usage_sleep: UsageLimitSleeper | None,
 ) -> Any:
-    return _run_codex_thread_with_usage_limit(
-        role="planner",
+    return _run_agent_thread_with_usage_limit(
+        role=role,
         task_state_file=task_state_file,
         state=state,
         active_task_state=active_task_state,
@@ -1527,12 +1543,13 @@ def _run_planner_thread(
         usage_sleep=usage_sleep,
         run=lambda: thread.run(
             turn_input,
-            approval_mode=ApprovalMode.auto_review,
-            cwd=str(target_repository),
-            effort=_reasoning_effort(effort),
-            model=model,
-            output_schema=output_schema,
-            sandbox_policy=ReadOnlySandboxPolicy(type="readOnly"),
+            AgentRunConfig(
+                role=role,
+                cwd=target_repository,
+                effort=effort,
+                model=model,
+                output_schema=output_schema,
+            ),
         ),
     )
 
@@ -1558,60 +1575,6 @@ def _persist_planner_thread_id(task_state: dict[str, Any], thread_id: Any) -> No
     threads["planner"] = thread_id
 
 
-def _context_thread(
-    *,
-    codex_client: Any,
-    task_state: dict[str, Any],
-    target_repository: Path,
-    developer_instructions: str,
-    model: str | None,
-) -> Any:
-    context_thread_id = _context_thread_id(task_state)
-    thread_kwargs = {
-        "approval_mode": ApprovalMode.auto_review,
-        "cwd": str(target_repository),
-        "developer_instructions": developer_instructions,
-        "model": model,
-        "sandbox": SandboxMode.read_only,
-    }
-    if context_thread_id:
-        return codex_client.thread_resume(context_thread_id, **thread_kwargs)
-    return codex_client.thread_start(**thread_kwargs)
-
-
-def _run_context_thread(
-    *,
-    thread: Any,
-    turn_input: str,
-    target_repository: Path,
-    effort: str | None,
-    model: str | None,
-    output_schema: dict[str, Any],
-    task_state_file: Path,
-    state: dict[str, Any],
-    active_task_state: dict[str, Any],
-    usage_clock: UsageLimitClock | None,
-    usage_sleep: UsageLimitSleeper | None,
-) -> Any:
-    return _run_codex_thread_with_usage_limit(
-        role="context",
-        task_state_file=task_state_file,
-        state=state,
-        active_task_state=active_task_state,
-        usage_clock=usage_clock,
-        usage_sleep=usage_sleep,
-        run=lambda: thread.run(
-            turn_input,
-            approval_mode=ApprovalMode.auto_review,
-            cwd=str(target_repository),
-            effort=_reasoning_effort(effort),
-            model=model,
-            output_schema=output_schema,
-            sandbox_policy=ReadOnlySandboxPolicy(type="readOnly"),
-        ),
-    )
-
-
 def _context_thread_id(task_state: Mapping[str, Any]) -> str | None:
     threads = task_state.get("threads")
     if not isinstance(threads, dict):
@@ -1631,60 +1594,6 @@ def _persist_context_thread_id(task_state: dict[str, Any], thread_id: Any) -> No
     if not isinstance(threads, dict):
         raise TaskRunError("Task State field 'threads' must be a mapping.")
     threads["context"] = thread_id
-
-
-def _implementer_thread(
-    *,
-    codex_client: Any,
-    task_state: dict[str, Any],
-    target_repository: Path,
-    developer_instructions: str,
-    model: str | None,
-) -> Any:
-    implementer_thread_id = _implementer_thread_id(task_state)
-    thread_kwargs = {
-        "approval_mode": ApprovalMode.auto_review,
-        "cwd": str(target_repository),
-        "developer_instructions": developer_instructions,
-        "model": model,
-        "sandbox": SandboxMode.workspace_write,
-    }
-    if implementer_thread_id:
-        return codex_client.thread_resume(implementer_thread_id, **thread_kwargs)
-    return codex_client.thread_start(**thread_kwargs)
-
-
-def _run_implementer_thread(
-    *,
-    thread: Any,
-    turn_input: str,
-    target_repository: Path,
-    effort: str | None,
-    model: str | None,
-    output_schema: dict[str, Any],
-    task_state_file: Path,
-    state: dict[str, Any],
-    active_task_state: dict[str, Any],
-    usage_clock: UsageLimitClock | None,
-    usage_sleep: UsageLimitSleeper | None,
-) -> Any:
-    return _run_codex_thread_with_usage_limit(
-        role="implementer",
-        task_state_file=task_state_file,
-        state=state,
-        active_task_state=active_task_state,
-        usage_clock=usage_clock,
-        usage_sleep=usage_sleep,
-        run=lambda: thread.run(
-            turn_input,
-            approval_mode=ApprovalMode.auto_review,
-            cwd=str(target_repository),
-            effort=_reasoning_effort(effort),
-            model=model,
-            output_schema=output_schema,
-            sandbox_policy=WorkspaceWriteSandboxPolicy(type="workspaceWrite"),
-        ),
-    )
 
 
 def _implementer_thread_id(task_state: Mapping[str, Any]) -> str | None:
@@ -1712,56 +1621,7 @@ def _persist_implementer_thread_id(task_state: dict[str, Any], thread_id: Any) -
     threads["implementer"] = thread_id
 
 
-def _reviewer_thread(
-    *,
-    codex_client: Any,
-    target_repository: Path,
-    developer_instructions: str,
-    model: str | None,
-) -> Any:
-    return codex_client.thread_start(
-        approval_mode=ApprovalMode.deny_all,
-        cwd=str(target_repository),
-        developer_instructions=developer_instructions,
-        model=model,
-        sandbox=SandboxMode.read_only,
-    )
-
-
-def _run_reviewer_thread(
-    *,
-    thread: Any,
-    turn_input: str,
-    target_repository: Path,
-    effort: str | None,
-    model: str | None,
-    output_schema: dict[str, Any],
-    task_state_file: Path,
-    state: dict[str, Any],
-    active_task_state: dict[str, Any],
-    usage_clock: UsageLimitClock | None,
-    usage_sleep: UsageLimitSleeper | None,
-) -> Any:
-    return _run_codex_thread_with_usage_limit(
-        role="reviewer",
-        task_state_file=task_state_file,
-        state=state,
-        active_task_state=active_task_state,
-        usage_clock=usage_clock,
-        usage_sleep=usage_sleep,
-        run=lambda: thread.run(
-            turn_input,
-            approval_mode=ApprovalMode.deny_all,
-            cwd=str(target_repository),
-            effort=_reasoning_effort(effort),
-            model=model,
-            output_schema=output_schema,
-            sandbox_policy=ReadOnlySandboxPolicy(type="readOnly"),
-        ),
-    )
-
-
-def _run_codex_thread_with_usage_limit(
+def _run_agent_thread_with_usage_limit(
     *,
     role: str,
     task_state_file: Path,
@@ -2136,12 +1996,6 @@ def _reviewer_turn_input(
             f"Review log artifact: {artifacts['review_log']}",
         ]
     )
-
-
-def _reasoning_effort(effort: str | None) -> ReasoningEffort | None:
-    if effort is None:
-        return None
-    return ReasoningEffort(effort)
 
 
 def _parse_planner_output(turn_result: Any) -> dict[str, Any]:

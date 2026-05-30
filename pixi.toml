@@ -26,13 +26,8 @@ filelock = ">=3,<4"
 psutil = ">=6,<8"
 
 [pypi-dependencies]
-openai-codex = { git = "https://github.com/openai/codex.git", tag = "rust-v0.133.0", subdirectory = "sdk/python" }
 hatchet-sdk = { version = ">=1.33.6, <2", extras = ["openai"] }
-
-[pypi-options.dependency-overrides]
-# The SDK source tree keeps a stale template runtime pin; the 0.133.0
-# release publishes matching glibc Linux and Windows runtime wheels.
-openai-codex-cli-bin = "==0.133.0"
+openai-agents = ">=0.17.4, <1"
 
 [feature.dev.dependencies]
 pytest = ">=8,<9"
@@ -41,4 +36,5 @@ ruff = ">=0.15.14,<0.16"
 [feature.dev.tasks]
 test = "pytest"
 format = "ruff format . && ruff check . --fix"
-sdk-check = "python -c \"import importlib.metadata as m, jsonschema, mlflow, yaml; print('sdk environment ok', m.version('openai-codex'), m.version('openai-codex-cli-bin'))\""
+sdk-check = "python -c \"import importlib.metadata as m, agents, hatchet_sdk, jsonschema, mlflow, yaml; print('sdk environment ok', m.version('openai-agents'), m.version('hatchet-sdk'))\""
+task-control-worker = "python -m agent_control_plane.task_control_plane.hatchet_worker"

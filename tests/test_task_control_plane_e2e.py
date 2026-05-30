@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from agent_control_plane.task_control_plane.cli import main
+from agent_control_plane.task_control_plane.agent_runtime import AgentRunConfig
 from agent_control_plane.task_control_plane.controller import (
     TaskRun,
     plan_active_task,
@@ -37,6 +38,12 @@ class FakeCodexClient:
         self.resumed_threads: list[dict[str, object]] = []
         self.thread_history_by_role: dict[str, list[FakeCodexThread]] = {}
         self.events: list[tuple[str, str, str]] = []
+
+    def open_thread(self, config: AgentRunConfig) -> "FakeCodexThread":
+        kwargs = thread_call_from_config(config)
+        if config.thread_id:
+            return self.thread_resume(config.thread_id, **kwargs)
+        return self.thread_start(**kwargs)
 
     def thread_start(self, **kwargs: object) -> "FakeCodexThread":
         role = self._role(kwargs)
@@ -82,7 +89,8 @@ class FakeCodexThread:
         self.id = thread_id
         self.run_calls: list[dict[str, object]] = []
 
-    def run(self, input: str, **kwargs: object) -> "FakeCodexTurnResult":
+    def run(self, input: str, config: AgentRunConfig) -> "FakeCodexTurnResult":
+        kwargs = run_call_from_config(config)
         self.run_calls.append({"input": input, **kwargs})
         self.client.events.append(("run", self.role, self.id))
         turns = self.client.turns_by_role[self.role]
@@ -102,9 +110,39 @@ class FakeCodexTurnResult:
         self.final_response = output if isinstance(output, str) else json.dumps(output)
 
 
+class FakeSandboxPolicy:
+    def __init__(self, type: str) -> None:
+        self.type = type
+
+
+def thread_call_from_config(config: AgentRunConfig) -> dict[str, object]:
+    return {
+        "approval_mode": "deny_all" if config.role == "reviewer" else "auto_review",
+        "cwd": str(config.cwd),
+        "developer_instructions": config.developer_instructions,
+        "model": config.model,
+        "sandbox": ("workspace-write" if config.role == "implementer" else "read-only"),
+    }
+
+
+def run_call_from_config(config: AgentRunConfig) -> dict[str, object]:
+    sandbox_policy_type = (
+        "workspaceWrite" if config.role == "implementer" else "readOnly"
+    )
+    return {
+        "approval_mode": "deny_all" if config.role == "reviewer" else "auto_review",
+        "cwd": str(config.cwd),
+        "effort": config.effort,
+        "model": config.model,
+        "output_schema": config.output_schema,
+        "sandbox_policy": FakeSandboxPolicy(sandbox_policy_type),
+    }
+
+
 def codex_turn(
     output: object,
-    side_effect: Callable[[str, dict[str, object], FakeCodexThread], None] | None = None,
+    side_effect: Callable[[str, dict[str, object], FakeCodexThread], None]
+    | None = None,
 ) -> Callable[[str, dict[str, object], FakeCodexThread], object]:
     def run_turn(
         turn_input: str, run_kwargs: dict[str, object], thread: FakeCodexThread
@@ -291,7 +329,9 @@ def assert_compact_artifacts(
         assert artifact_path.stat().st_size < 20_000, artifact_path
 
     artifact_files = [
-        path for path in Path(artifacts["task_context"]).parent.iterdir() if path.is_file()
+        path
+        for path in Path(artifacts["task_context"]).parent.iterdir()
+        if path.is_file()
     ]
     assert len(artifact_files) <= len(allowed_names)
     assert {path.name for path in artifact_files} <= allowed_names
@@ -369,7 +409,9 @@ def test_resume_task_run_answers_planner_questions_with_context_and_human_inputs
     task_run = start_run(
         tmp_path,
         target_repository,
-        test_commands=[("unit", file_content_test_command("question.txt", "answered\n"))],
+        test_commands=[
+            ("unit", file_content_test_command("question.txt", "answered\n"))
+        ],
     )
     first_planner_output = {
         "status": "needs_answers",
@@ -445,8 +487,9 @@ def test_resume_task_run_answers_planner_questions_with_context_and_human_inputs
         first_planner_output,
         final_planner_output,
     ]
-    assert planning_artifact["answer_batches"][0]["context_answers"] == (
-        context_output["answers"]
+    assert (
+        planning_artifact["answer_batches"][0]["context_answers"]
+        == (context_output["answers"])
     )
     assert planning_artifact["answer_batches"][0]["human_answers"] == [
         {"question_id": "q2", "answer": "Keep the automated plan."}
@@ -464,10 +507,14 @@ def test_resume_task_run_failed_tests_bypass_review_and_retry_same_implementer(
         test_commands=[("unit", file_content_test_command("status.txt", "fixed\n"))],
     )
     fake_codex = FakeCodexClient(
-        planner_turns=[{"status": "planned", "plan_markdown": "Repair until tests pass."}],
+        planner_turns=[
+            {"status": "planned", "plan_markdown": "Repair until tests pass."}
+        ],
         implementer_turns=[
             codex_turn(
-                implementation_result("Initial implementation is incomplete.", ["status.txt"]),
+                implementation_result(
+                    "Initial implementation is incomplete.", ["status.txt"]
+                ),
                 write_target_file("status.txt", "broken\n"),
             ),
             codex_turn(
@@ -640,7 +687,9 @@ def test_resume_task_run_continues_from_saved_state_without_rerunning_completed_
     interrupted_state = read_state(task_run)
     assert interrupted_state["phase"] == "ready_for_tests"
 
-    resume_codex = FakeCodexClient(reviewer_turns=[approved_review("Saved work is ready.")])
+    resume_codex = FakeCodexClient(
+        reviewer_turns=[approved_review("Saved work is ready.")]
+    )
     result = resume_task_run(
         task_run.run_id, resume_codex, runtime_root=tmp_path / "runs"
     )
