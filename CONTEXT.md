@@ -16,6 +16,18 @@ _Avoid_: Loop, cycle, experiment
 The **Control-Plane Workflow** whose canonical work unit is a **Task**.
 _Avoid_: Agent Control Plane
 
+**Research Experiment Controller**:
+The workflow-specific **Controller** for research-oriented control-plane runs. A **Research Experiment Controller** produces inspectable research outcomes rather than final **Task** commits.
+_Avoid_: Research Orchestrator, Global Orchestrator
+
+**Research Experiment**:
+The canonical work unit coordinated by a **Research Experiment Controller**. One **Research Experiment** has a selected research direction, agent-produced artifacts, deterministic command evidence, and a terminal research outcome; it does not imply a final commit.
+_Avoid_: Task, Loop, Cycle
+
+**Research Brief**:
+The human-authored research direction used by a **Research Experiment Controller**. A **Research Brief** states the research focus, current plan, constraints, available evidence, and preferred success signals.
+_Avoid_: Loop Spec, Theme, Research Plan
+
 **Task ID**:
 A stable human-supplied identifier for one **Task**. The **Task ID** is the durable key for task state, agent conversations, artifacts, resume behavior, and final commit messages.
 _Avoid_: Auto-number, Generated ID
@@ -33,7 +45,7 @@ One execution of a **Task Spec** by the **Controller**. A **Task Run** stores an
 _Avoid_: Session, Batch
 
 **Controller**:
-The deterministic coordinator for **Tasks**. It owns task ordering, approval gates, agent handoffs, command execution, state recording, and the final commit boundary.
+The deterministic coordinator for a **Control-Plane Workflow**. Each **Controller** owns workflow ordering, gates, agent handoffs, command execution, state recording, and the workflow's completion boundary.
 _Avoid_: Orchestrator
 
 **Target Repository**:
@@ -73,3 +85,11 @@ Domain Expert: "Yes. Each task gets its own planner conversation, implementation
 Developer: "Can I fix a stuck task by editing the state file?"
 
 Domain Expert: "No. Task state is owned by the controller; change the manifest or respond at an approval gate instead."
+
+Developer: "Should a research run become a Task before it writes MLflow artifacts?"
+
+Domain Expert: "No. A Research Experiment is a separate work unit; it records research outcomes and evidence without implying a final Task commit."
+
+Developer: "Where do I put the research direction versus the run controls?"
+
+Domain Expert: "Put the direction in the Research Brief and the run controls in the Research Run Spec."

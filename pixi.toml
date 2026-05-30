@@ -27,6 +27,7 @@ psutil = ">=6,<8"
 
 [pypi-dependencies]
 openai-codex = { git = "https://github.com/openai/codex.git", tag = "rust-v0.133.0", subdirectory = "sdk/python" }
+hatchet-sdk = { version = ">=1.33.6, <2", extras = ["openai"] }
 
 [pypi-options.dependency-overrides]
 # The SDK source tree keeps a stale template runtime pin; the 0.133.0
