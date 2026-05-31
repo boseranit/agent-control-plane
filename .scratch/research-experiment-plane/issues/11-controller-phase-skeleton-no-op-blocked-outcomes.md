@@ -1,6 +1,6 @@
 # Controller phase skeleton and no-op/blocked outcomes
 
-Status: ready-for-agent
+Status: completed
 Label: ready-for-agent
 
 ## Parent
@@ -13,11 +13,11 @@ Implement the minimal Research Experiment Controller loop and one bounded Resear
 
 ## Acceptance criteria
 
-- [ ] One Research Run can iterate up to `max_experiments`.
-- [ ] One Research Experiment has at most one selected plan and one terminal Research Outcome.
-- [ ] `no_op` means no admissible experiment selected.
-- [ ] Selected-plan-without-deterministic-command is not classified as healthy `no_op`.
-- [ ] Tests cover loop bounds and terminal outcome routing.
+- [x] One Research Run can iterate up to `max_experiments`.
+- [x] One Research Experiment has at most one selected plan and one terminal Research Outcome.
+- [x] `no_op` means no admissible experiment selected.
+- [x] Selected-plan-without-deterministic-command is not classified as healthy `no_op`.
+- [x] Tests cover loop bounds and terminal outcome routing.
 
 ## Blocked by
 
@@ -26,3 +26,7 @@ Implement the minimal Research Experiment Controller loop and one bounded Resear
 - `.scratch/research-experiment-plane/issues/09-deterministic-context-pack-prior-run-synthesis.md`
 - `.scratch/research-experiment-plane/issues/10-research-agents-prompt-boundaries.md`
 
+## Comments
+
+- Implemented loop skeleton, per-experiment flow boundary, and no-op/blocked/run-failed outcome routing.
+- Verified with `pixi run test`.
