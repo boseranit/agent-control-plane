@@ -21,23 +21,35 @@ from agent_control_plane.research_experiment_controller.agents import (
     open_critic_thread,
     open_evaluator_thread,
     open_implementer_thread,
+    open_strategist_thread,
 )
 from agent_control_plane.research_experiment_controller.artifacts import (
     AnalysisLedger,
     ConfirmatoryEvaluationResult,
     Critique,
     ExperimentDesign,
+    EmpiricalCritique,
     FeatureSpecs,
+    Implementation,
+    ImplementationDiffSummary,
     ExploratoryDiagnosticsResult,
+    PlanUpdate,
+    Proposal,
     ResearchOutcome,
     ResearchSpec,
     SelectedPlan,
     Summary,
 )
+from agent_control_plane.research_experiment_controller.context import (
+    write_context_outputs,
+)
 from agent_control_plane.research_experiment_controller.evaluation import (
     EvaluationBoundaryError,
     create_evaluator_workspace,
     run_evaluation_boundary_audit,
+)
+from agent_control_plane.research_experiment_controller.implementation_boundary import (
+    audit_implementation_paths,
 )
 from agent_control_plane.research_experiment_controller.outcomes import (
     classify_invalid,
@@ -107,6 +119,9 @@ def run_experiment_flow(
 ) -> dict[str, Any]:
     experiment_dir = Path(request.experiment_directory)
     experiment_dir.mkdir(parents=True, exist_ok=True)
+    if selection is None and agent_runtime is not None:
+        return _run_agent_driven_flow(request, agent_runtime)
+
     selection = selection or _default_no_op_selection()
     _write_artifact_once(
         experiment_dir / "selected_plan.json",
@@ -176,11 +191,22 @@ def run_experiment_flow(
                 worktree=worktree,
                 agent_runtime=agent_runtime,
             )
-            if verification_result is not None:
-                if verification_result["status"] == "failed":
-                    summary_model = _summary_from_result(verification_result)
-                else:
-                    summary_model = None
+            boundary_summary = _audit_implementation_boundary(
+                request=request,
+                experiment_design=experiment_design,
+                worktree=worktree,
+                replace_existing=(
+                    request.experiment_directory
+                    / "implementation_diff_summary.json"
+                ).exists(),
+            )
+            if boundary_summary is not None:
+                summary_model = boundary_summary
+            elif (
+                verification_result is not None
+                and verification_result["status"] == "failed"
+            ):
+                summary_model = _summary_from_result(verification_result)
             if summary_model is None:
                 summary_model = _run_evaluation_if_needed(
                     request=request,
@@ -203,6 +229,448 @@ def run_experiment_flow(
         "experiment_id": request.experiment_id,
         **summary,
     }
+
+
+def _run_agent_driven_flow(
+    request: ExperimentFlowRequest,
+    agent_runtime: Any,
+) -> dict[str, Any]:
+    write_context_outputs(
+        request.run_directory,
+        output_directory=request.experiment_directory,
+        current_experiment_id=request.experiment_id,
+    )
+
+    strategist = open_strategist_thread(
+        agent_runtime,
+        request.state,
+        request.experiment_directory,
+        model=request.spec.codex.model,
+        effort=request.spec.codex.effort,
+    )
+    proposal = _run_agent_model(
+        thread=strategist,
+        role=ResearchAgentRole.STRATEGIST,
+        cwd=request.experiment_directory,
+        request=request,
+        model_cls=Proposal,
+        turn_input=(
+            "Read context_pack.md and return proposal.json for the next bounded "
+            f"Research Experiment {request.experiment_id}."
+        ),
+    )
+    _write_model_artifact(request.experiment_directory / "proposal.json", proposal)
+    research_spec = _run_agent_model(
+        thread=strategist,
+        role=ResearchAgentRole.STRATEGIST,
+        cwd=request.experiment_directory,
+        request=request,
+        model_cls=ResearchSpec,
+        turn_input="Return locked research_spec.json for the selected proposal.",
+    )
+    _write_model_artifact(
+        request.experiment_directory / "research_spec.json",
+        research_spec,
+    )
+    experiment_design = _run_agent_model(
+        thread=strategist,
+        role=ResearchAgentRole.STRATEGIST,
+        cwd=request.experiment_directory,
+        request=request,
+        model_cls=ExperimentDesign,
+        turn_input="Return experiment_design.json with deterministic commands.",
+    )
+    _write_model_artifact(
+        request.experiment_directory / "experiment_design.json",
+        experiment_design,
+    )
+    selected_plan = _run_agent_model(
+        thread=strategist,
+        role=ResearchAgentRole.STRATEGIST,
+        cwd=request.experiment_directory,
+        request=request,
+        model_cls=SelectedPlan,
+        turn_input="Return selected_plan.json for exactly one admissible plan.",
+    )
+    _write_model_artifact(
+        request.experiment_directory / "selected_plan.json",
+        selected_plan,
+    )
+
+    selection_summary = _selection_failure_summary(
+        ExperimentFlowSelection(
+            selected_plan=selected_plan,
+            experiment_design=experiment_design,
+            research_spec=research_spec,
+        )
+    )
+    if selection_summary is not None:
+        return _complete_with_summary(request, selection_summary)
+
+    critique = _run_design_critique(
+        request=request,
+        agent_runtime=agent_runtime,
+    )
+    if _critic_blocks_experiment(critique):
+        return _complete_with_summary(
+            request,
+            classify_invalid(
+                "Critic rejected selected design.",
+                failed_stage="critic_review",
+                failure_classification="critic_rejected_design",
+            ),
+        )
+
+    policy_failure = _worktree_policy_failure(request.spec, experiment_design)
+    if policy_failure is not None:
+        return _complete_with_summary(request, policy_failure)
+
+    data_audit_result = run_data_audit_phase(
+        PrerequisiteAuditRequest(
+            data_root=request.spec.data_root,
+            prerequisite_commands=experiment_design.prerequisite_commands,
+            data_audit_commands=experiment_design.data_audit_commands,
+            cwd=request.spec.target_repository,
+            run_dir=request.experiment_directory,
+            timeout_seconds=_data_audit_timeout_seconds(
+                request.spec, experiment_design
+            ),
+        )
+    )
+    _write_artifact_once(
+        request.experiment_directory / "data_audit.json",
+        request.experiment_id,
+        data_audit_result["data_audit"],
+    )
+    if data_audit_result.get("status") == "experiment_completed":
+        return _complete_with_summary(
+            request,
+            _summary_from_result(data_audit_result),
+        )
+
+    worktree = _prepare_experiment_worktree_if_needed(
+        request.spec, request, experiment_design
+    )
+    implementation_summary = _run_implementation_phase(
+        request=request,
+        experiment_design=experiment_design,
+        worktree=worktree,
+        agent_runtime=agent_runtime,
+    )
+    if implementation_summary is not None:
+        return _complete_with_summary(request, implementation_summary)
+
+    verification_result = _run_verification_if_needed(
+        request=request,
+        experiment_design=experiment_design,
+        worktree=worktree,
+        agent_runtime=agent_runtime,
+    )
+    post_verification_boundary_summary = _audit_implementation_boundary(
+        request=request,
+        experiment_design=experiment_design,
+        worktree=worktree,
+        replace_existing=True,
+    )
+    if post_verification_boundary_summary is not None:
+        return _complete_with_summary(request, post_verification_boundary_summary)
+    if verification_result is not None and verification_result["status"] == "failed":
+        return _complete_with_summary(
+            request, _summary_from_result(verification_result)
+        )
+
+    evaluation_summary = _run_evaluation_if_needed(
+        request=request,
+        experiment_design=experiment_design,
+        worktree=worktree,
+        agent_runtime=agent_runtime,
+    )
+    if evaluation_summary is None:
+        evaluation_summary = classify_invalid(
+            "Agent-driven selected plan did not produce evaluation results.",
+            failure_classification="missing_evaluation_result",
+            failed_stage="evaluation",
+        )
+    if evaluation_summary.outcome not in _COMPLETED_RESEARCH_OUTCOMES:
+        return _complete_with_summary(request, evaluation_summary)
+
+    _run_empirical_critique(
+        request=request,
+        agent_runtime=agent_runtime,
+    )
+    closeout_summary = _run_strategist_closeout(
+        request=request,
+        agent_runtime=agent_runtime,
+        official_summary=evaluation_summary,
+    )
+    return _complete_with_summary(request, closeout_summary)
+
+
+def _complete_with_summary(
+    request: ExperimentFlowRequest,
+    summary_model: Summary,
+) -> dict[str, Any]:
+    summary = summary_model.model_dump(mode="json")
+    _write_artifact_once(
+        request.experiment_directory / "summary.json",
+        request.experiment_id,
+        summary,
+    )
+    _mirror_experiment_if_enabled(request, summary_model)
+    return {
+        "status": "experiment_completed",
+        "experiment_id": request.experiment_id,
+        **summary,
+    }
+
+
+def _run_design_critique(
+    *,
+    request: ExperimentFlowRequest,
+    agent_runtime: Any,
+) -> Critique:
+    thread = open_critic_thread(
+        agent_runtime,
+        request.state,
+        request.experiment_directory,
+        model=request.spec.codex.model,
+        effort=request.spec.codex.effort,
+    )
+    append_ledger_event(
+        request.ledger_path,
+        event_type="design_critique",
+        research_run_id=request.research_run_id,
+        experiment_id=request.experiment_id,
+        critic_thread_id=thread.id,
+    )
+    critique = _run_agent_model(
+        thread=thread,
+        role=ResearchAgentRole.CRITIC,
+        cwd=request.experiment_directory,
+        request=request,
+        model_cls=Critique,
+        turn_input=(
+            "Review proposal.json, research_spec.json, experiment_design.json, "
+            "and selected_plan.json. Return critique.json."
+        ),
+    )
+    _write_model_artifact(request.experiment_directory / "critique.json", critique)
+    return critique
+
+
+def _run_implementation_phase(
+    *,
+    request: ExperimentFlowRequest,
+    experiment_design: ExperimentDesign,
+    worktree: ExperimentWorktree | None,
+    agent_runtime: Any,
+) -> Summary | None:
+    if worktree is None:
+        _write_model_artifact(
+            request.experiment_directory / "implementation.json",
+            Implementation(
+                status="skipped",
+                summary="No Experiment Worktree required.",
+                changed_files=[],
+            ),
+        )
+        _write_model_artifact(
+            request.experiment_directory / "implementation_diff_summary.json",
+            ImplementationDiffSummary(changed_files=[]),
+        )
+        return None
+
+    thread = open_implementer_thread(
+        agent_runtime,
+        request.state,
+        worktree.path,
+        model=request.spec.codex.model,
+        effort=request.spec.codex.effort,
+    )
+    append_ledger_event(
+        request.ledger_path,
+        event_type="implementation_attempt",
+        research_run_id=request.research_run_id,
+        experiment_id=request.experiment_id,
+        implementer_thread_id=thread.id,
+        worktree=str(worktree.path),
+    )
+    implementation = _run_agent_model(
+        thread=thread,
+        role=ResearchAgentRole.IMPLEMENTER,
+        cwd=worktree.path,
+        request=request,
+        model_cls=Implementation,
+        turn_input=(
+            "Implement the selected plan in the Experiment Worktree. "
+            "Return implementation.json."
+        ),
+    )
+    _write_model_artifact(
+        request.experiment_directory / "implementation.json",
+        implementation,
+    )
+    return _audit_implementation_boundary(
+        request=request,
+        experiment_design=experiment_design,
+        worktree=worktree,
+        replace_existing=False,
+    )
+
+
+def _audit_implementation_boundary(
+    *,
+    request: ExperimentFlowRequest,
+    experiment_design: ExperimentDesign,
+    worktree: ExperimentWorktree | None,
+    replace_existing: bool,
+) -> Summary | None:
+    if worktree is None:
+        if not replace_existing:
+            _write_model_artifact(
+                request.experiment_directory / "implementation_diff_summary.json",
+                ImplementationDiffSummary(changed_files=[]),
+            )
+        return None
+    changed_files = sorted(git_snapshot(worktree.path).changed_files)
+    audit = audit_implementation_paths(
+        changed_files=changed_files,
+        allowed_write_paths=experiment_design.allowed_write_paths,
+    )
+    path = request.experiment_directory / "implementation_diff_summary.json"
+    if replace_existing:
+        write_json(path, audit.diff_summary.model_dump(mode="json"))
+    else:
+        _write_model_artifact(path, audit.diff_summary)
+    return audit.failure_summary
+
+
+def _run_empirical_critique(
+    *,
+    request: ExperimentFlowRequest,
+    agent_runtime: Any,
+) -> EmpiricalCritique:
+    thread = open_critic_thread(
+        agent_runtime,
+        request.state,
+        request.experiment_directory,
+        model=request.spec.codex.model,
+        effort=request.spec.codex.effort,
+    )
+    append_ledger_event(
+        request.ledger_path,
+        event_type="empirical_critique",
+        research_run_id=request.research_run_id,
+        experiment_id=request.experiment_id,
+        critic_thread_id=thread.id,
+    )
+    critique = _run_agent_model(
+        thread=thread,
+        role=ResearchAgentRole.CRITIC,
+        cwd=request.experiment_directory,
+        request=request,
+        model_cls=EmpiricalCritique,
+        turn_input=(
+            "Review confirmatory_evaluation_result.json and "
+            "exploratory_diagnostics_result.json. Return empirical_critique.json."
+        ),
+    )
+    _write_model_artifact(
+        request.experiment_directory / "empirical_critique.json",
+        critique,
+    )
+    return critique
+
+
+def _run_strategist_closeout(
+    *,
+    request: ExperimentFlowRequest,
+    agent_runtime: Any,
+    official_summary: Summary,
+) -> Summary:
+    thread = open_strategist_thread(
+        agent_runtime,
+        request.state,
+        request.experiment_directory,
+        model=request.spec.codex.model,
+        effort=request.spec.codex.effort,
+    )
+    try:
+        summary = _run_agent_model(
+            thread=thread,
+            role=ResearchAgentRole.STRATEGIST,
+            cwd=request.experiment_directory,
+            request=request,
+            model_cls=Summary,
+            turn_input=(
+                "Use empirical_critique.json and evaluation artifacts. "
+                "Return summary.json."
+            ),
+        )
+    except (KeyError, TypeError, ValueError, ValidationError):
+        summary = official_summary
+    plan_update = _run_agent_model(
+        thread=thread,
+        role=ResearchAgentRole.STRATEGIST,
+        cwd=request.experiment_directory,
+        request=request,
+        model_cls=PlanUpdate,
+        turn_input="Return plan_update.json for future Research Experiments.",
+    )
+    _write_model_artifact(
+        request.experiment_directory / "plan_update.json",
+        plan_update,
+    )
+    return _preserve_official_outcome(official_summary, summary)
+
+
+def _preserve_official_outcome(
+    official_summary: Summary,
+    closeout_summary: Summary,
+) -> Summary:
+    return Summary(
+        outcome=official_summary.outcome,
+        outcome_reason=official_summary.outcome_reason,
+        failed_stage=official_summary.failed_stage,
+        failure_classification=official_summary.failure_classification,
+        summary=closeout_summary.summary,
+        confirmatory_findings=official_summary.confirmatory_findings,
+        exploratory_findings=official_summary.exploratory_findings,
+    )
+
+
+def _run_agent_model(
+    *,
+    thread: Any,
+    role: ResearchAgentRole,
+    cwd: str | Path,
+    request: ExperimentFlowRequest,
+    model_cls: Any,
+    turn_input: str,
+) -> Any:
+    turn_result = _run_agent_turn_with_usage_limit(
+        role=role,
+        run=lambda: thread.run(
+            turn_input,
+            agent_config(
+                role,
+                cwd,
+                model=request.spec.codex.model,
+                effort=request.spec.codex.effort,
+                output_schema=model_cls.model_json_schema(),
+            ),
+        ),
+    )
+    final_response = getattr(turn_result, "final_response", None)
+    if isinstance(final_response, model_cls):
+        return final_response
+    return model_cls.model_validate(_response_mapping(final_response))
+
+
+def _write_model_artifact(path: Path, model: Any) -> None:
+    if path.exists():
+        raise ExperimentFlowError(f"Research Experiment already has {path.name}.")
+    write_json(path, model.model_dump(mode="json"))
 
 
 def _run_material_revision_review_if_needed(
@@ -323,20 +791,7 @@ def _material_revision_payload(
 
 
 def _material_revision_rejection_summary(critique: Critique) -> Summary | None:
-    decision = _normalized_critic_decision(critique.decision)
-    if (
-        decision
-        not in {
-            "fatal",
-            "reject",
-            "rejected",
-            "revise",
-            "requires_revision",
-            "revision_required",
-        }
-        and not critique.fatal_issues
-        and not critique.required_revisions
-    ):
+    if not _critic_blocks_experiment(critique):
         return None
     details = [*critique.fatal_issues, *critique.required_revisions]
     reason = "Material revision Critic rejected revision."
@@ -346,6 +801,35 @@ def _material_revision_rejection_summary(critique: Critique) -> Summary | None:
         reason,
         failed_stage="critic_review",
         failure_classification="material_revision_rejected",
+    )
+
+
+_BLOCKING_CRITIC_DECISIONS = frozenset(
+    {
+        "fatal",
+        "reject",
+        "rejected",
+        "revise",
+        "requires_revision",
+        "revision_required",
+    }
+)
+
+
+_COMPLETED_RESEARCH_OUTCOMES = frozenset(
+    {
+        ResearchOutcome.completed_rejected,
+        ResearchOutcome.completed_inconclusive,
+        ResearchOutcome.completed_candidate,
+    }
+)
+
+
+def _critic_blocks_experiment(critique: Critique) -> bool:
+    return (
+        _normalized_critic_decision(critique.decision) in _BLOCKING_CRITIC_DECISIONS
+        or bool(critique.fatal_issues)
+        or bool(critique.required_revisions)
     )
 
 

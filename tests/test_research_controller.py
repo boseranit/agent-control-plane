@@ -177,6 +177,23 @@ class FlowFakeRuntime:
         return thread
 
 
+class BoundaryViolatingRepairThread(FlowFakeThread):
+    def run(self, input: str, config) -> object:
+        (Path(config.cwd) / "outside.py").write_text("VALUE = 1\n", encoding="utf-8")
+        return super().run(input, config)
+
+
+class BoundaryViolatingRepairRuntime(FlowFakeRuntime):
+    def open_thread(self, config) -> BoundaryViolatingRepairThread:
+        self.configs.append(config)
+        thread_id = config.thread_id or "research-implementer-thread-1"
+        thread = self.threads.get(thread_id)
+        if thread is None:
+            thread = BoundaryViolatingRepairThread(thread_id)
+            self.threads[thread_id] = thread
+        return thread
+
+
 class EvaluationFakeThread:
     def __init__(self, thread_id: str) -> None:
         self.id = thread_id
@@ -1631,6 +1648,53 @@ def test_verification_repairs_reuse_same_implementer_thread_until_limit(
             "implementer_thread_id": "research-implementer-thread-1",
         },
     ]
+
+
+def test_selection_path_audits_repair_boundary_before_verification_failure(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    spec_path = write_minimal_research_run_spec(tmp_path, repo, max_repairs=1)
+    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    runtime = BoundaryViolatingRepairRuntime()
+
+    def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        return run_experiment_flow(
+            request,
+            selection=ExperimentFlowSelection(
+                selected_plan=SelectedPlan(
+                    selected=True,
+                    plan_id="editing-plan",
+                    rationale="Needs implementation.",
+                ),
+                experiment_design=ExperimentDesign(
+                    allowed_write_paths=["src"],
+                    verification_commands=[
+                        {
+                            "name": "unit",
+                            "argv": [sys.executable, "-c", "raise SystemExit(4)"],
+                        }
+                    ],
+                ),
+            ),
+            agent_runtime=runtime,
+        )
+
+    run_research_loop(
+        run.research_run_id,
+        runtime_root=tmp_path / "runs",
+        experiment_runner=experiment_runner,
+    )
+
+    experiment_dir = run.experiments_directory / "EXP-0001"
+    summary = read_json_object(experiment_dir / "summary.json")
+    diff_summary = read_json_object(experiment_dir / "implementation_diff_summary.json")
+
+    assert summary["outcome"] == "run_failed"
+    assert summary["failed_stage"] == "implementation_boundary_audit"
+    assert summary["failure_classification"] == "allowed_path_violation"
+    assert diff_summary["allowed_path_violations"] == ["outside.py"]
 
 
 def test_evaluator_runs_in_workspace_and_writes_result_artifacts(

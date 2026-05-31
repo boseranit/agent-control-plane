@@ -36,3 +36,13 @@ This is a large feature. If assigned as smaller AFK work, split this issue into 
 None.
 
 ## Comments
+
+Trace 2026-05-31:
+- Spec/snapshot/state/ledger/resume: issues 06, 08.
+- Shared primitives/runtime/commands/boundaries: issues 02, 03, 04, 05.
+- Loop/outcomes/data stop policy: issues 11, 12, 19.
+- Agent roles/thread bounds/e2e fake runtime: issues 10, 19.
+- Artifacts/materiality/feature specs: issues 07, 18.
+- Worktree/repair/evaluator boundary: issues 13, 14.
+- Mirror/Hatchet/CLI boundaries: issues 15, 16, 17, 19.
+- Full PRD coverage verified by issue 19 boundary scans and `pixi run test -q`.
