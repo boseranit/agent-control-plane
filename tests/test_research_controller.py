@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -40,7 +41,10 @@ def write_minimal_research_run_spec(
     max_experiments: int = 1,
     data_root: Path | None = None,
     stop_on_prerequisites_failed: bool = True,
+    worktree_create: bool = True,
+    max_repairs: int = 3,
 ) -> Path:
+    init_repo_if_needed(repo)
     path = tmp_path / f"{research_run_id}.yaml"
     data_root_value = data_root or tmp_path / "data"
     if data_root is None:
@@ -59,11 +63,72 @@ budgets:
     month_end: "2026-01"
     max_runtime_minutes: 5
 data_root: {data_root_value}
+worktree:
+  create: {str(worktree_create).lower()}
+  root: .worktrees
+implementation:
+  max_repairs: {max_repairs}
 stop_on_prerequisites_failed: {str(stop_on_prerequisites_failed).lower()}
 """,
         encoding="utf-8",
     )
     return path
+
+
+def init_repo_if_needed(path: Path) -> None:
+    if (path / ".git").exists():
+        return
+    subprocess.run(["git", "init"], cwd=path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=path, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.test"],
+        cwd=path,
+        check=True,
+    )
+    (path / "README.md").write_text("ready\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=path, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "initial"],
+        cwd=path,
+        check=True,
+        capture_output=True,
+    )
+
+
+class FlowFakeThread:
+    def __init__(self, thread_id: str) -> None:
+        self.id = thread_id
+        self.run_inputs: list[str] = []
+
+    def run(self, input: str, config) -> object:
+        del config
+        self.run_inputs.append(input)
+        return type(
+            "TurnResult",
+            (),
+            {
+                "final_response": {
+                    "repair_attempt": len(self.run_inputs),
+                    "summary": "Tried repair.",
+                    "changed_files": [],
+                }
+            },
+        )()
+
+
+class FlowFakeRuntime:
+    def __init__(self) -> None:
+        self.configs = []
+        self.threads: dict[str, FlowFakeThread] = {}
+
+    def open_thread(self, config) -> FlowFakeThread:
+        self.configs.append(config)
+        thread_id = config.thread_id or "research-implementer-thread-1"
+        thread = self.threads.get(thread_id)
+        if thread is None:
+            thread = FlowFakeThread(thread_id)
+            self.threads[thread_id] = thread
+        return thread
 
 
 def test_start_research_run_creates_run_layout(tmp_path: Path) -> None:
@@ -207,7 +272,9 @@ def test_run_research_loop_repeats_until_max_experiments(tmp_path: Path) -> None
                     rationale="Admissible bounded experiment.",
                 ),
                 experiment_design=ExperimentDesign(
-                    verification_commands=[{"name": "unit", "argv": ["pytest", "-q"]}],
+                    verification_commands=[
+                        {"name": "unit", "argv": [sys.executable, "-c", "pass"]}
+                    ],
                 ),
                 terminal_summary=Summary(
                     outcome=ResearchOutcome.completed_rejected,
@@ -372,7 +439,9 @@ def test_selected_plan_cannot_return_no_op_terminal_summary(tmp_path: Path) -> N
                     rationale="Plan selected.",
                 ),
                 experiment_design=ExperimentDesign(
-                    verification_commands=[{"name": "unit", "argv": ["pytest", "-q"]}],
+                    verification_commands=[
+                        {"name": "unit", "argv": [sys.executable, "-c", "pass"]}
+                    ],
                 ),
                 terminal_summary=Summary(
                     outcome=ResearchOutcome.no_op,
@@ -581,6 +650,265 @@ def test_stop_on_prerequisites_failed_false_continues_to_max_experiments(
     assert state["status"] == "completed"
     assert state["experiments"]["EXP-0001"]["outcome"] == "prerequisites_failed"
     assert state["experiments"]["EXP-0002"]["outcome"] == "prerequisites_failed"
+
+
+def test_worktree_create_false_rejects_selected_design_that_needs_edits(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    spec_path = write_minimal_research_run_spec(
+        tmp_path,
+        repo,
+        worktree_create=False,
+    )
+    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+
+    def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        return run_experiment_flow(
+            request,
+            selection=ExperimentFlowSelection(
+                selected_plan=SelectedPlan(
+                    selected=True,
+                    plan_id="editing-plan",
+                    rationale="Needs implementation.",
+                ),
+                experiment_design=ExperimentDesign(
+                    allowed_write_paths=["src"],
+                    verification_commands=[
+                        {"name": "unit", "argv": [sys.executable, "-c", "pass"]}
+                    ],
+                ),
+            ),
+        )
+
+    run_research_loop(
+        run.research_run_id,
+        runtime_root=tmp_path / "runs",
+        experiment_runner=experiment_runner,
+    )
+
+    summary = read_json_object(run.experiments_directory / "EXP-0001" / "summary.json")
+    assert summary["outcome"] == "invalid"
+    assert summary["failed_stage"] == "implementation"
+    assert summary["failure_classification"] == "worktree_disabled_for_editing"
+    assert not (repo / ".worktrees").exists()
+
+
+def test_worktree_create_false_allows_read_only_selected_design(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    spec_path = write_minimal_research_run_spec(
+        tmp_path,
+        repo,
+        worktree_create=False,
+    )
+    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+
+    def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        return run_experiment_flow(
+            request,
+            selection=ExperimentFlowSelection(
+                selected_plan=SelectedPlan(
+                    selected=True,
+                    plan_id="read-only-plan",
+                    rationale="Evaluate locked artifacts only.",
+                ),
+                experiment_design=ExperimentDesign(
+                    confirmatory_commands=[
+                        {"name": "eval", "argv": [sys.executable, "-c", "pass"]}
+                    ],
+                ),
+                terminal_summary=Summary(
+                    outcome=ResearchOutcome.completed_inconclusive,
+                    outcome_reason="Read-only evaluation inconclusive.",
+                    failed_stage=None,
+                    failure_classification=None,
+                    summary="Read-only evaluation inconclusive.",
+                ),
+            ),
+        )
+
+    run_research_loop(
+        run.research_run_id,
+        runtime_root=tmp_path / "runs",
+        experiment_runner=experiment_runner,
+    )
+
+    summary = read_json_object(run.experiments_directory / "EXP-0001" / "summary.json")
+    assert summary["outcome"] == "completed_inconclusive"
+    assert not (repo / ".worktrees").exists()
+
+
+def test_selected_confirmatory_only_experiment_gets_default_worktree(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    spec_path = write_minimal_research_run_spec(tmp_path, repo)
+    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+
+    def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        return run_experiment_flow(
+            request,
+            selection=ExperimentFlowSelection(
+                selected_plan=SelectedPlan(
+                    selected=True,
+                    plan_id="confirmatory-plan",
+                    rationale="Run locked confirmatory commands.",
+                ),
+                experiment_design=ExperimentDesign(
+                    confirmatory_commands=[
+                        {"name": "eval", "argv": [sys.executable, "-c", "pass"]}
+                    ],
+                ),
+                terminal_summary=Summary(
+                    outcome=ResearchOutcome.completed_candidate,
+                    outcome_reason="Confirmatory result passed.",
+                    failed_stage=None,
+                    failure_classification=None,
+                    summary="Confirmatory result passed.",
+                ),
+            ),
+        )
+
+    run_research_loop(
+        run.research_run_id,
+        runtime_root=tmp_path / "runs",
+        experiment_runner=experiment_runner,
+    )
+
+    worktree = repo / ".worktrees" / "peer-residual-v1" / "EXP-0001"
+    assert worktree.is_dir()
+
+
+def test_selected_editable_experiment_gets_preserved_worktree_by_default(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    spec_path = write_minimal_research_run_spec(tmp_path, repo)
+    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+
+    def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        return run_experiment_flow(
+            request,
+            selection=ExperimentFlowSelection(
+                selected_plan=SelectedPlan(
+                    selected=True,
+                    plan_id="editing-plan",
+                    rationale="Needs implementation.",
+                ),
+                experiment_design=ExperimentDesign(
+                    allowed_write_paths=["src"],
+                    verification_commands=[
+                        {"name": "unit", "argv": [sys.executable, "-c", "pass"]}
+                    ],
+                ),
+                terminal_summary=Summary(
+                    outcome=ResearchOutcome.completed_candidate,
+                    outcome_reason="Verification passed.",
+                    failed_stage=None,
+                    failure_classification=None,
+                    summary="Candidate ready.",
+                ),
+            ),
+        )
+
+    run_research_loop(
+        run.research_run_id,
+        runtime_root=tmp_path / "runs",
+        experiment_runner=experiment_runner,
+    )
+
+    worktree = repo / ".worktrees" / "peer-residual-v1" / "EXP-0001"
+    summary = read_json_object(run.experiments_directory / "EXP-0001" / "summary.json")
+    assert summary["outcome"] == "completed_candidate"
+    assert worktree.is_dir()
+    assert (worktree / "README.md").read_text(encoding="utf-8") == "ready\n"
+
+
+def test_verification_repairs_reuse_same_implementer_thread_until_limit(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    spec_path = write_minimal_research_run_spec(tmp_path, repo, max_repairs=2)
+    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    runtime = FlowFakeRuntime()
+
+    def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        return run_experiment_flow(
+            request,
+            selection=ExperimentFlowSelection(
+                selected_plan=SelectedPlan(
+                    selected=True,
+                    plan_id="editing-plan",
+                    rationale="Needs implementation.",
+                ),
+                experiment_design=ExperimentDesign(
+                    allowed_write_paths=["src"],
+                    verification_commands=[
+                        {
+                            "name": "unit",
+                            "argv": [sys.executable, "-c", "raise SystemExit(4)"],
+                        }
+                    ],
+                ),
+            ),
+            agent_runtime=runtime,
+        )
+
+    run_research_loop(
+        run.research_run_id,
+        runtime_root=tmp_path / "runs",
+        experiment_runner=experiment_runner,
+    )
+
+    experiment_dir = run.experiments_directory / "EXP-0001"
+    summary = read_json_object(experiment_dir / "summary.json")
+    metrics = read_json_object(experiment_dir / "command_metrics.json")
+    events = read_ledger_events(run.ledger_path)
+    implementer_thread = runtime.threads["research-implementer-thread-1"]
+
+    assert summary["outcome"] == "run_failed"
+    assert summary["failed_stage"] == "verification"
+    assert summary["failure_classification"] == "verification_command_failed"
+    assert metrics["command_count"] == 3
+    assert metrics["failed_count"] == 3
+    assert [config.thread_id for config in runtime.configs] == [
+        None,
+        "research-implementer-thread-1",
+    ]
+    assert len(implementer_thread.run_inputs) == 2
+    assert "Verification failed for EXP-0001" in implementer_thread.run_inputs[0]
+    repair_events = [
+        event
+        for event in events
+        if event["event_type"] == "implementation_repair_attempt"
+    ]
+    assert repair_events == [
+        {
+            "event_type": "implementation_repair_attempt",
+            "research_run_id": "peer-residual-v1",
+            "experiment_id": "EXP-0001",
+            "repair_attempt": 1,
+            "verification_attempt": 0,
+            "failed_command_count": 1,
+            "implementer_thread_id": "research-implementer-thread-1",
+        },
+        {
+            "event_type": "implementation_repair_attempt",
+            "research_run_id": "peer-residual-v1",
+            "experiment_id": "EXP-0001",
+            "repair_attempt": 2,
+            "verification_attempt": 1,
+            "failed_command_count": 1,
+            "implementer_thread_id": "research-implementer-thread-1",
+        },
+    ]
 
 
 def test_terminal_summary_routes_to_experiment_state(tmp_path: Path) -> None:

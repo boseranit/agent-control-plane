@@ -1,6 +1,6 @@
 # Experiment Worktree and implementation repair path
 
-Status: ready-for-agent
+Status: completed
 Label: ready-for-agent
 
 ## Parent
@@ -13,11 +13,11 @@ Implement preserved Experiment Worktree creation/reuse validation and the bounde
 
 ## Acceptance criteria
 
-- [ ] One selected Research Experiment gets one preserved Experiment Worktree by default.
-- [ ] Dirty existing Experiment Worktrees are rejected.
-- [ ] `worktree.create: false` is allowed only for no-edit/read-only paths.
-- [ ] Verification retries up to `implementation.max_repairs`.
-- [ ] Tests cover worktree creation, dirty reuse rejection, pass/repair/exhaustion behavior.
+- [x] One selected Research Experiment gets one preserved Experiment Worktree by default.
+- [x] Dirty existing Experiment Worktrees are rejected.
+- [x] `worktree.create: false` is allowed only for no-edit/read-only paths.
+- [x] Verification retries up to `implementation.max_repairs`.
+- [x] Tests cover worktree creation, dirty reuse rejection, pass/repair/exhaustion behavior.
 
 ## Blocked by
 
@@ -26,3 +26,7 @@ Implement preserved Experiment Worktree creation/reuse validation and the bounde
 - `.scratch/research-experiment-plane/issues/10-research-agents-prompt-boundaries.md`
 - `.scratch/research-experiment-plane/issues/11-controller-phase-skeleton-no-op-blocked-outcomes.md`
 
+## Comments
+
+- Implemented preserved worktrees, verification repair retries, same-Implementer repair callback, and repair ledger events.
+- Verified with `pixi run test`.
