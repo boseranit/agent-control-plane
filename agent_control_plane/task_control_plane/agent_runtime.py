@@ -51,7 +51,9 @@ class AgentRuntime:
 
     def open_thread(self, config: AgentRunConfig) -> AgentThread:
         return AgentThread(
-            self._runtime.open_thread(_shared_config(config, _policy_for_role(config.role)))
+            self._runtime.open_thread(
+                _shared_config(config, _policy_for_role(config.role))
+            )
         )
 
 
@@ -64,7 +66,9 @@ class AgentThread:
         return self._thread.id
 
     def run(self, input: str, config: AgentRunConfig) -> AgentTurnResult:
-        return self._thread.run(input, _shared_config(config, _policy_for_role(config.role)))
+        return self._thread.run(
+            input, _shared_config(config, _policy_for_role(config.role))
+        )
 
 
 def _shared_config(

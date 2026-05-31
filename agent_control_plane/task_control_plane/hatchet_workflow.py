@@ -14,12 +14,12 @@ from agent_control_plane.task_control_plane.controller import (
     TaskRunError,
     _active_task_state,
     _check_loaded_task_run_state,
+    _confirm_approved_plan,
     _load_existing_task_run,
     _open_approved_plan_in_editor,
-    _confirm_approved_plan,
     _read_json,
     _record_plan_approval,
-    _require_clean_target_repository,
+    _require_clean_state_target_repository,
     _require_resume_can_continue_from_phase,
     _resume_after_dirty_before_next_task,
     _task_artifacts,
@@ -28,8 +28,8 @@ from agent_control_plane.task_control_plane.controller import (
     plan_active_task,
     run_active_task_failed_test_repair,
     run_active_task_implementer,
-    run_active_task_reviewer,
     run_active_task_review_rejection_repair,
+    run_active_task_reviewer,
     run_active_task_tests,
 )
 
@@ -280,10 +280,7 @@ def _run_current_phase_with_runtime(
 ) -> dict[str, Any]:
     state = _read_json(task_state_path)
     if phase in {"ready_for_planning", "planning_needs_answers"}:
-        _require_clean_target_repository(
-            Path(state["target_repository"]).resolve(),
-            "before resuming planning",
-        )
+        _require_clean_state_target_repository(state, "before resuming planning")
         return plan_active_task(
             task_state_path,
             agent_runtime,
@@ -292,10 +289,7 @@ def _run_current_phase_with_runtime(
             usage_sleep=_raise_usage_limit_wait,
         )
     if phase == "plan_approved":
-        _require_clean_target_repository(
-            Path(state["target_repository"]).resolve(),
-            "before resuming implementation",
-        )
+        _require_clean_state_target_repository(state, "before resuming implementation")
         return run_active_task_implementer(
             task_state_path,
             agent_runtime,

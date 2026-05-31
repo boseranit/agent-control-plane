@@ -93,6 +93,14 @@ _Avoid_: Task Config, Manifest
 The human-managed input document for a **Task Control Plane** run. A **Task Spec** names the **Target Repository**, declares **Tasks**, provides run-level policy, and is scoped to the target branch it is intended to advance.
 _Avoid_: Task Manifest, Task State
 
+**Task Source**:
+A human-managed input accepted by the **Task Control Plane** `run` command and normalized into a snapshotted **Task Spec** before execution. In v1 a **Task Source** may be a **Task Spec** YAML file or an **Issue Directory**.
+_Avoid_: Config Adapter, Import Wrapper
+
+**Issue Directory**:
+A local markdown directory used as a **Task Source**. `README.md` provides PRD/run context, and each non-README markdown issue file becomes one **Task** in lexical order. The **Controller** snapshots the generated **Task Spec** before planning starts. Untracked files under an **Issue Directory** inside the **Target Repository** are treated as run input rather than implementation changes.
+_Avoid_: PRD Folder, Agent-Generated Config
+
 **Task Run**:
 One execution of a **Task Spec** by the **Controller**. A **Task Run** stores an immutable copy of the **Task Spec**, controller-owned state, and task artifacts under the control-plane runtime root.
 _Avoid_: Session, Batch

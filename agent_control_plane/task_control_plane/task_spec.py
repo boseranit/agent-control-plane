@@ -6,7 +6,6 @@ from typing import Any
 
 import yaml
 
-
 UNSUPPORTED_TOP_LEVEL_FIELDS = frozenset(
     {
         "env",
@@ -69,13 +68,41 @@ class TaskSpec:
     tasks: tuple[Task, ...]
 
 
+@dataclass(frozen=True)
+class TaskSource:
+    task_spec: TaskSpec
+    snapshot_text: str
+    untracked_source_root: str | None = None
+
+
 class TaskSpecError(ValueError):
     """Raised when a Task Spec cannot be loaded."""
 
 
+def load_task_source(
+    path: str | Path, *, repo_path: str | Path | None = None
+) -> TaskSource:
+    source_path = Path(path).expanduser()
+    if source_path.is_dir():
+        return _load_issue_directory_source(source_path, repo_path=repo_path)
+    if repo_path is not None:
+        raise TaskSpecError(
+            "Task Source --repo is only supported for issue directories."
+        )
+    task_spec = load_task_spec(source_path)
+    return TaskSource(
+        task_spec=task_spec,
+        snapshot_text=task_spec.source_path.read_text(encoding="utf-8"),
+    )
+
+
 def load_task_spec(path: str | Path) -> TaskSpec:
-    source_path = Path(path)
+    source_path = Path(path).expanduser()
     data = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+    return _load_task_spec_data(data, source_path=source_path.resolve())
+
+
+def _load_task_spec_data(data: Any, *, source_path: Path) -> TaskSpec:
     if not isinstance(data, dict):
         raise TaskSpecError("Task Spec must be a mapping.")
     _reject_unsupported_fields(data, UNSUPPORTED_TOP_LEVEL_FIELDS, "Task Spec")
@@ -87,7 +114,7 @@ def load_task_spec(path: str | Path) -> TaskSpec:
     _reject_unsupported_fields(codex_data, UNSUPPORTED_CODEX_FIELDS, "Codex")
 
     return TaskSpec(
-        source_path=source_path.resolve(),
+        source_path=source_path,
         target_repository=target_repository,
         description=_optional_string(data, "description"),
         context=_optional_string(data, "context"),
@@ -100,6 +127,99 @@ def load_task_spec(path: str | Path) -> TaskSpec:
         test_commands=_load_test_commands(data.get("test_commands", [])),
         tasks=_load_tasks(data.get("tasks")),
     )
+
+
+def _load_issue_directory_source(
+    source_path: Path, *, repo_path: str | Path | None
+) -> TaskSource:
+    issue_directory = source_path.resolve()
+    target_repository = (
+        Path(repo_path).expanduser().resolve()
+        if repo_path is not None
+        else _infer_target_repository(issue_directory)
+    )
+    issue_files = sorted(
+        path
+        for path in issue_directory.glob("*.md")
+        if path.name.lower() != "readme.md"
+    )
+    if not issue_files:
+        raise TaskSpecError(
+            f"Issue Directory has no issue markdown files: {issue_directory}"
+        )
+
+    readme_path = issue_directory / "README.md"
+    if readme_path.exists() and not readme_path.is_file():
+        raise TaskSpecError(f"Issue Directory README is not a file: {readme_path}")
+    readme_text = (
+        readme_path.read_text(encoding="utf-8").strip() if readme_path.exists() else ""
+    )
+
+    tasks = []
+    for issue_file in issue_files:
+        issue_text = issue_file.read_text(encoding="utf-8").strip()
+        title = _first_markdown_title(issue_text)
+        if title is None:
+            raise TaskSpecError(
+                f"Issue file requires a top-level markdown title: {issue_file}"
+            )
+        tasks.append(
+            {
+                "id": issue_file.stem,
+                "title": title,
+                "prompt": f"{issue_text}\n",
+                "context": f"Imported from issue file: {issue_file}",
+            }
+        )
+
+    context_parts = [
+        "Task Source: Issue Directory",
+        f"Issue directory: {issue_directory}",
+    ]
+    if readme_text:
+        context_parts.extend(["", "README:", readme_text])
+
+    data = {
+        "target_repository": str(target_repository),
+        "description": _first_markdown_title(readme_text)
+        or f"Imported issue directory: {issue_directory.name}",
+        "context": "\n".join(context_parts) + "\n",
+        "tasks": tasks,
+    }
+    return TaskSource(
+        task_spec=_load_task_spec_data(data, source_path=issue_directory),
+        snapshot_text=yaml.safe_dump(data, sort_keys=False, allow_unicode=False),
+        untracked_source_root=_untracked_source_root(
+            issue_directory, target_repository
+        ),
+    )
+
+
+def _first_markdown_title(text: str) -> str | None:
+    for line in text.splitlines():
+        if line.startswith("# "):
+            title = line[2:].strip()
+            if title:
+                return title
+    return None
+
+
+def _infer_target_repository(issue_directory: Path) -> Path:
+    for candidate in (issue_directory, *issue_directory.parents):
+        if (candidate / ".git").exists():
+            return candidate.resolve()
+    raise TaskSpecError(
+        "Issue Directory target repository could not be inferred; pass --repo."
+    )
+
+
+def _untracked_source_root(
+    issue_directory: Path, target_repository: Path
+) -> str | None:
+    if not issue_directory.is_relative_to(target_repository):
+        return None
+    source_root = issue_directory.relative_to(target_repository).as_posix().rstrip("/")
+    return source_root if source_root and source_root != "." else None
 
 
 def _reject_unsupported_fields(

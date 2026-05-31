@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from collections.abc import Callable
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from agent_control_plane.task_control_plane.agent_runtime import AgentRuntime
@@ -24,9 +23,16 @@ def main(
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     run_parser = subparsers.add_parser(
-        "run", help="Start a Task Run from an explicit Task Spec path."
+        "run", help="Start a Task Run from a Task Spec YAML file or issue directory."
     )
-    run_parser.add_argument("task_spec_path", help="Path to the Task Spec YAML file.")
+    run_parser.add_argument(
+        "task_source_path", help="Path to a Task Spec YAML file or issue directory."
+    )
+    run_parser.add_argument(
+        "--repo",
+        dest="repo_path",
+        help="Target Repository override for issue directory Task Sources.",
+    )
 
     resume_parser = subparsers.add_parser(
         "resume", help="Resume an existing Task Run from saved Task State."
@@ -35,16 +41,16 @@ def main(
 
     args = parser.parse_args(argv)
     if args.command == "run":
-        return _run(args.task_spec_path)
+        return _run(args.task_source_path, repo_path=args.repo_path)
     if args.command == "resume":
         return _resume(args.run_id, codex_client_factory=codex_client_factory)
     parser.error(f"Unsupported command: {args.command}")
     return 2
 
 
-def _run(task_spec_path: str) -> int:
+def _run(task_source_path: str, *, repo_path: str | None = None) -> int:
     try:
-        task_run = start_task_run(task_spec_path)
+        task_run = start_task_run(task_source_path, repo_path=repo_path)
     except (OSError, TaskSpecError, TaskRunError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

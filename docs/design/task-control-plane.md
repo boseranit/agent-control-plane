@@ -1,9 +1,10 @@
 # Task Control Plane Design Spec
 
-Status: draft-ready for implementation planning  
-Last updated: 2026-05-27  
-Primary glossary: [CONTEXT.md](../../CONTEXT.md)  
+Status: draft-ready for implementation planning
+Last updated: 2026-06-01
+Primary glossary: [CONTEXT.md](../../CONTEXT.md)
 SDK reference: [OpenAI Codex Python SDK API Reference](https://github.com/openai/codex/blob/main/sdk/python/docs/api-reference.md)
+Usage: [Task Control Plane Usage](../usage/task-control-plane.md)
 
 ## 1. Purpose
 
@@ -19,6 +20,7 @@ The canonical work unit is a Task. One Task proceeds through planning, optional 
 
 - A synchronous CLI-driven Task Control Plane workflow.
 - Explicit Task Spec input.
+- Local markdown Issue Directory input normalized into a snapshotted Task Spec.
 - A deterministic Controller state machine.
 - One Target Repository per Task Run.
 - Sequential Task execution in Task Spec order.
@@ -51,31 +53,17 @@ The canonical work unit is a Task. One Task proceeds through planning, optional 
 - Final post-review test rerun.
 - Post-review drift checks.
 - A separate command-runner agent.
-- Automatic Task Spec generation from rough notes, except as a future helper.
+- Agent-based Task Spec generation from rough notes.
 
 ## 3. Existing Repository State
 
-The repo already contains an early Task Control Plane skeleton under:
+The repo contains the Task Control Plane implementation under:
 
 ```text
 agent_control_plane/task_control_plane/
 ```
 
-It includes partial Task Spec loading, run creation, Planner Agent and Context Agent prompt/schema files, and early tests. That skeleton is useful, but several names and artifact shapes should be aligned with the decisions from the grill session before implementation continues.
-
-Important current mismatches to correct:
-
-- Current code uses `target_repository`; the agreed Task Spec field is `repo`.
-- Current run snapshot file is `task-spec.yaml`; the agreed file is `task_spec.yaml`.
-- Current state file is `task-state.json`; the agreed file is `state.yaml`.
-- Current task context is `context.json`; the agreed artifact is `context.md`.
-- Current planning artifact is `planning.json`; the agreed artifact is `plan.json`.
-- Current approved plan artifact is `approved-plan.md`; the agreed artifact is `approved_plan.md`.
-- Current implementation artifact is `implementation-result.json`; the agreed artifact is `implementation.json`.
-- Current review artifact is `review.log`; the agreed artifact is `review.jsonl`.
-- Current planner question field uses `context`; the original requested planner question field is `question_context`.
-
-These should be treated as normal implementation alignment work, not as a change in product direction.
+It includes Task Spec and Task Source loading, run creation/resume, Planner/Context/Implementer/Reviewer prompt/schema files, deterministic test execution, review repair, commit advance, and Hatchet entrypoints. Runtime state is JSON, and artifact names use the existing hyphenated filenames listed in this document.
 
 ## 4. Core Terms
 
@@ -102,11 +90,12 @@ The target loop is:
 
 ```text
 with Codex() as codex:
-    task_spec = load_task_spec(task_spec_path)
+    task_source = load_task_source(task_source_path)
+    task_spec = task_source.task_spec
     run = create_or_resume_run(task_spec)
 
     for task in remaining_tasks(run):
-        require_clean_target_repo_unless_resuming_active_task(run, task)
+        require_clean_target_repository_unless_resuming_active_task(run, task)
 
         task_state = create_or_resume_task_state(run, task)
         context_path = write_task_context_once(run, task)
@@ -115,29 +104,29 @@ with Codex() as codex:
         context_thread = create_or_resume_context_thread(...)
 
         planner_output = run_planner(...)
-        append_planner_output(plan_json, planner_output)
+        append_planner_output(planning_artifact, planner_output)
 
         while planner_output.status == "needs_answers":
             context_answers = run_context_agent(...)
-            record_answers(plan_json, context_answers)
+            record_answers(planning_artifact, context_answers)
 
             unresolved = unresolved_questions(context_answers)
             if unresolved:
                 human_answers = ask_human_for_answers(unresolved)
-                record_answers(plan_json, human_answers)
+                record_answers(planning_artifact, human_answers)
 
             planner_output = run_planner_followup(...)
-            append_planner_output(plan_json, planner_output)
+            append_planner_output(planning_artifact, planner_output)
 
-        write_pending_approved_plan_md(planner_output.plan_markdown)
+        write_approved_plan_candidate(planner_output.plan_markdown)
         if task_spec.require_plan_approval:
-            open_editor(approved_plan_md)
-            require_human_approval(approved_plan_md)
-        mark_plan_approved(plan_json, approved_plan_md)
+            open_editor(approved_plan_path)
+            require_human_approval(approved_plan_path)
+        mark_plan_approved(planning_artifact, approved_plan_path)
 
         implementer_thread = create_or_resume_implementer_thread(...)
         implementer_result = run_implementer(...)
-        write_json(implementation_json, implementer_result)
+        write_json(implementation_result_path, implementer_result)
 
         approved = False
         while not approved:
@@ -145,50 +134,68 @@ with Codex() as codex:
             increment_iteration()
 
             test_result = run_test_commands_streaming_to_command_log(...)
-            record_test_status(state_yaml, test_result)
+            record_test_status(task_state, test_result)
 
             if not test_result.passed:
                 implementer_result = run_implementer_with_failed_tests(...)
-                write_json(implementation_json, implementer_result)
+                write_json(implementation_result_path, implementer_result)
                 continue
 
             reviewer_thread = create_fresh_reviewer_thread(...)
             review = run_reviewer(...)
-            append_jsonl(review_jsonl, review)
+            append_review_output(review_log, review)
 
             if review.status == "approved":
                 approved = True
                 break
 
             implementer_result = run_implementer_with_reviewer_json_verbatim(...)
-            write_json(implementation_json, implementer_result)
+            write_json(implementation_result_path, implementer_result)
 
-        commit_sha = commit_all_target_repo_changes(...)
-        mark_task_completed(state_yaml, commit_sha)
+        commit_sha = commit_all_target_repository_changes(...)
+        mark_task_completed(task_state, commit_sha)
 ```
 
-## 6. Task Spec
+## 6. Task Sources
+
+The Controller runtime still uses a snapshotted Task Spec as the canonical input for resume. The `run` command can now accept either:
+
+- a Task Spec YAML file;
+- an Issue Directory containing local markdown issue files.
+
+An Issue Directory import is deterministic. `README.md`, when present, is PRD/run context. Each non-README `*.md` file becomes one Task in lexical order. The file stem becomes the Task ID, the first `#` heading becomes the title, and the full markdown file becomes the prompt.
+
+If an Issue Directory is inside the Target Repository and is untracked, those source files are ignored for clean checks and excluded from Task commits. Tracked or staged changes to the source files still make the Target Repository dirty before a Task starts.
+
+Example:
+
+```text
+task-control run .planning/issues/cross-sectional-samples-collapse
+task-control run /tmp/issue-breakdown --repo /path/to/target/repo
+```
+
+## 7. Task Spec
 
 ### Authoring Location
 
 Task Specs are authored by convention at:
 
 ```text
-task_specs/<target-branch-name>/task_spec.yaml
+task_specs/<target-branch-name>/task-spec.yaml
 ```
 
 The branch name is the Target Repository branch name, sanitized for filesystem use by the future authoring helper. The Controller does not infer this path and does not validate the path against the current target branch in v1.
 
-The CLI must receive an explicit Task Spec path:
+The CLI must receive an explicit Task Source path. YAML Task Spec paths are still accepted:
 
 ```text
-task-control run task_specs/<branch>/task_spec.yaml
+task-control run task_specs/<branch>/task-spec.yaml
 ```
 
 ### Required Fields
 
 ```yaml
-repo: /absolute/or/relative/path/to/target/repo
+target_repository: /absolute/or/relative/path/to/target/repo
 tasks:
   - id: task-001
     title: Add batch runtime
@@ -196,7 +203,7 @@ tasks:
       Implement the batch runtime entrypoint.
 ```
 
-`repo` is required. It resolves to the single Target Repository for the entire Task Run.
+`target_repository` is required. It resolves to the single Target Repository for the entire Task Run.
 
 Each Task requires:
 
@@ -276,22 +283,22 @@ Rules:
 - Always run every declared test command. Do not stop at the first failure.
 - The Implementer Agent receives the aggregate command result after all commands finish.
 
-## 7. Runtime Layout
+## 8. Runtime Layout
 
 Task Runs live under the top-level runtime root:
 
 ```text
 runs/
   RUN-2026-05-27-104500/
-    task_spec.yaml
-    state.yaml
+    task-spec.yaml
+    task-state.json
     tasks/
       task-001/
-        context.md
-        plan.json
-        approved_plan.md
-        implementation.json
-        review.jsonl
+        context.json
+        planning.json
+        approved-plan.md
+        implementation-result.json
+        review.log
         command.log
 ```
 
@@ -312,63 +319,49 @@ If an override is provided, fail if the run directory already exists.
 On `run`, copy the explicit input file to:
 
 ```text
-runs/<run-id>/task_spec.yaml
+runs/<run-id>/task-spec.yaml
 ```
 
-Resume uses only this snapshot and `state.yaml`. It does not re-read or trust the original Task Spec path.
+Resume uses only this snapshot and `task-state.json`. It does not re-read or trust the original Task Spec path.
 
-## 8. Task State
+## 9. Task State
 
-`state.yaml` is Controller-owned and authoritative. Humans do not edit it.
+`task-state.json` is Controller-owned and authoritative. Humans do not edit it.
 
-Recommended shape:
+Current shape:
 
-```yaml
-run_id: RUN-2026-05-27-104500
-status: running
-phase: implementing
-created_at: "2026-05-27T10:45:00+10:00"
-updated_at: "2026-05-27T10:55:00+10:00"
-task_spec_path: /home/boser/agent-control-plane/runs/RUN-.../task_spec.yaml
-target_repo: /home/boser/project
-current_task_id: task-001
-codex:
-  model: gpt-5.5
-  effort: high
-tasks:
-  - id: task-001
-    title: Add batch runtime
-    status: active
-    phase: implementing
-    iterations: 2
-    threads:
-      planner: thread-id
-      context_agent: thread-id
-      implementer: thread-id
-    artifacts:
-      context: /abs/runs/.../tasks/task-001/context.md
-      plan: /abs/runs/.../tasks/task-001/plan.json
-      approved_plan: /abs/runs/.../tasks/task-001/approved_plan.md
-      implementation: /abs/runs/.../tasks/task-001/implementation.json
-      review_log: /abs/runs/.../tasks/task-001/review.jsonl
-      command_log: /abs/runs/.../tasks/task-001/command.log
-    latest_test:
-      status: passed
-      completed_at: "2026-05-27T10:54:00+10:00"
-    commit_sha: null
-  - id: task-002
-    title: Next task
-    status: pending
-    phase: pending
-    iterations: 0
+```json
+{
+  "run_id": "run-20260531T104500Z-abc12345",
+  "phase": "ready_for_planning",
+  "active_task_id": "task-001",
+  "active_task": {"id": "task-001", "title": "Add batch runtime"},
+  "target_repository": "/home/boser/project",
+  "run_directory": "/abs/runs/run-...",
+  "task_spec_snapshot_path": "/abs/runs/run-.../task-spec.yaml",
+  "task_state_path": "/abs/runs/run-.../task-state.json",
+  "task_source_untracked_root": ".planning/issues/cross-sectional-samples-collapse",
+  "tasks": [
+    {
+      "id": "task-001",
+      "title": "Add batch runtime",
+      "status": "active",
+      "phase": "ready_for_planning",
+      "iterations": 0,
+      "artifacts": {
+        "task_context": "/abs/runs/.../tasks/task-001/context.json",
+        "planning": "/abs/runs/.../tasks/task-001/planning.json",
+        "approved_plan": "/abs/runs/.../tasks/task-001/approved-plan.md",
+        "implementation_result": "/abs/runs/.../tasks/task-001/implementation-result.json",
+        "review_log": "/abs/runs/.../tasks/task-001/review.log",
+        "command_log": "/abs/runs/.../tasks/task-001/command.log"
+      }
+    }
+  ]
+}
 ```
 
-### Run Status Values
-
-- `running`
-- `waiting_for_usage_limit`
-- `failed`
-- `completed`
+The top-level `phase` is the run status.
 
 ### Task Status Values
 
@@ -382,27 +375,28 @@ tasks:
 Use phases as implementation state-machine labels, not as user-facing domain language:
 
 - `pending`
-- `context_written`
-- `planning`
+- `ready_for_planning`
 - `planning_needs_answers`
 - `plan_ready`
-- `awaiting_plan_approval`
+- `plan_pending_approval`
 - `plan_approved`
-- `implementing`
-- `testing`
+- `plan_approval_declined`
+- `failed_test_repair_pending`
+- `review_rejection_repair_pending`
+- `ready_for_tests`
 - `tests_failed`
-- `reviewing`
+- `tests_passed`
 - `review_rejected`
-- `review_approved`
-- `committing`
+- `commit_ready`
+- `target_repository_dirty_before_next_task`
 - `completed`
 - `failed`
 
 The exact names can change during implementation, but they must support deterministic resume without inferring progress from artifacts.
 
-## 9. Task Artifacts
+## 10. Task Artifacts
 
-### `context.md`
+### `context.json`
 
 Generated once before planning. Keep it stable and small.
 
@@ -413,7 +407,6 @@ It should include:
 - Target Repository absolute path.
 - Task Run path.
 - Absolute paths to the Task artifacts.
-- Current target repo branch and starting SHA/status summary.
 
 It should not automatically embed:
 
@@ -427,7 +420,7 @@ It should not automatically embed:
 
 Agents run with `cwd` set to the Target Repository and may inspect relevant files directly.
 
-### `plan.json`
+### `planning.json`
 
 Planning metadata and history. It is not the authoritative Approved Plan content.
 
@@ -437,9 +430,15 @@ Recommended shape:
 {
   "planner_outputs": [],
   "answer_batches": [],
-  "approved_plan_path": "/abs/.../approved_plan.md",
-  "approved_by": "human",
-  "approved_at": "2026-05-27T10:50:00+10:00"
+  "approved_plan": {
+    "path": "/abs/.../approved-plan.md",
+    "approval": {
+      "status": "approved",
+      "mode": "human",
+      "approved_plan_path": "/abs/.../approved-plan.md",
+      "approved_at": "2026-05-27T10:50:00+10:00"
+    }
+  }
 }
 ```
 
@@ -452,7 +451,7 @@ Recommended shape:
   "questions": [
     {
       "id": "Q1",
-      "question_context": "Need to know the expected test location.",
+      "context": "Need to know the expected test location.",
       "question": "Where should tests for this feature live?",
       "type": "repo_context"
     }
@@ -469,7 +468,7 @@ Recommended shape:
 }
 ```
 
-### `approved_plan.md`
+### `approved-plan.md`
 
 The authoritative Approved Plan.
 
@@ -488,7 +487,7 @@ If plan approval is disabled:
 
 The Implementer Agent receives this path, not raw planner output.
 
-### `implementation.json`
+### `implementation-result.json`
 
 Latest Implementer Agent result only. Overwrite after each implementer turn.
 
@@ -496,23 +495,18 @@ Suggested output shape:
 
 ```json
 {
-  "status": "ready_for_tests",
+  "status": "implementation_complete",
   "summary": "Implemented the requested change.",
   "changed_files": ["path/to/file.py"],
-  "commands_run": [],
-  "risks": [],
-  "notes": "..."
+  "recommended_commands": []
 }
 ```
 
 Allowed status values:
 
-- `ready_for_tests`: Controller proceeds to test commands.
-- `blocked`: Controller pauses for human input or fails the Task depending on the blocker.
+- `implementation_complete`: Controller proceeds to test commands.
 
-For v1, `ready_for_tests` is the normal path. If `blocked` is returned, the Controller should not open a new Context Agent loop; it should surface the blocker to the human and continue only after explicit human input is passed back to the same Implementer Agent.
-
-### `review.jsonl`
+### `review.log`
 
 Append-only review history. One JSON object per Reviewer Agent attempt.
 
@@ -549,7 +543,7 @@ status: passed
 
 The Controller tells the Reviewer Agent where this log is; it does not embed log contents in the review prompt by default.
 
-## 10. Codex SDK Integration
+## 11. Codex SDK Integration
 
 Use the synchronous SDK.
 
@@ -632,22 +626,17 @@ The Controller should parse `final_response` and perform only routing checks:
 
 Do not implement a separate strict validation layer beyond what the Controller needs to route safely.
 
-## 11. Role Prompt Requirements
+## 12. Role Prompt Requirements
 
 Prompt files:
 
 ```text
 agent_control_plane/task_control_plane/prompts/
-  planner.md
-  context_agent.md
-  implementer.md
-  reviewer.md
+  planner-agent.md
+  context-agent.md
+  implementer-agent.md
+  reviewer-agent.md
 ```
-
-Existing skeleton prompt names can be migrated:
-
-- `planner-agent.md` -> `planner.md`
-- `context-agent.md` -> `context_agent.md`
 
 ### Planner Agent Prompt
 
@@ -710,7 +699,7 @@ Must say:
 - `non_blocking_issues` do not prevent commit when `status` is `approved`.
 - Do not modify files.
 
-## 12. Planner And Context Loop
+## 13. Planner And Context Loop
 
 ### Initial Planner Input
 
@@ -724,9 +713,9 @@ Task title: Add batch runtime
 Task prompt: ...
 Task context: ...
 
-Task context artifact: /abs/.../context.md
-Plan artifact: /abs/.../plan.json
-Approved Plan artifact: /abs/.../approved_plan.md
+Task context artifact: /abs/.../context.json
+Plan artifact: /abs/.../planning.json
+Approved Plan artifact: /abs/.../approved-plan.md
 ```
 
 ### Planner Output: Planned
@@ -747,13 +736,13 @@ Approved Plan artifact: /abs/.../approved_plan.md
   "questions": [
     {
       "id": "Q1",
-      "question_context": "Need to preserve API compatibility.",
+      "context": "Need to preserve API compatibility.",
       "question": "Should compute_batch preserve the current artifact API?",
       "type": "design_decision"
     },
     {
       "id": "Q2",
-      "question_context": "Need to know local test placement.",
+      "context": "Need to know local test placement.",
       "question": "Where should tests for feature runtime live?",
       "type": "repo_context"
     }
@@ -783,7 +772,7 @@ Approved Plan artifact: /abs/.../approved_plan.md
 
 ### Human Answers
 
-Unresolved questions are batched for the human. The Controller records answers in `plan.json` and passes the latest answer batch back to the Planner Agent.
+Unresolved questions are batched for the human. The Controller records answers in `planning.json` and passes the latest answer batch back to the Planner Agent.
 
 Human answers should use the same question IDs:
 
@@ -796,21 +785,21 @@ Human answers should use the same question IDs:
 ]
 ```
 
-## 13. Plan Approval
+## 14. Plan Approval
 
-The Controller writes the Planner Agent `plan_markdown` to `approved_plan.md`.
+The Controller writes the Planner Agent `plan_markdown` to `approved-plan.md`.
 
 If `require_plan_approval: false`:
 
-- Mark `approved_by: controller`.
+- Mark approval mode `automatic`.
 - Continue to implementation.
 
 If `require_plan_approval: true`:
 
-- Mark Task phase `awaiting_plan_approval`.
-- Open `$EDITOR` for `approved_plan.md`.
+- Mark Task phase `plan_pending_approval`.
+- Open `$EDITOR` for `approved-plan.md`.
 - After editor exits, ask for explicit approval.
-- If approved, mark `approved_by: human`.
+- If approved, mark approval mode `human`.
 - If not approved, do not continue. The first version can abort with a resumable state rather than adding a plan-revision UI.
 
 Editor behavior:
@@ -819,7 +808,7 @@ Editor behavior:
 - Fall back to a clear error telling the user to set `$EDITOR`.
 - Do not force the human to edit JSON.
 
-## 14. Implementation And Test Loop
+## 15. Implementation And Test Loop
 
 ### Initial Implementer Input
 
@@ -830,9 +819,9 @@ Task ID: task-001
 Task title: Add batch runtime
 Task prompt: ...
 
-Task context artifact: /abs/.../context.md
-Approved Plan: /abs/.../approved_plan.md
-Implementation result artifact: /abs/.../implementation.json
+Task context artifact: /abs/.../context.json
+Approved Plan: /abs/.../approved-plan.md
+Implementation result artifact: /abs/.../implementation-result.json
 Command log: /abs/.../command.log
 ```
 
@@ -840,11 +829,11 @@ Command log: /abs/.../command.log
 
 The Controller:
 
-1. Writes the latest `implementation.json`.
+1. Writes the latest `implementation-result.json`.
 2. Increments the Task iteration counter before the gate cycle.
 3. Runs all `test_commands`.
 4. Streams output into `command.log`.
-5. Records pass/fail status in `state.yaml`.
+5. Records pass/fail status in `task-state.json`.
 
 If tests fail:
 
@@ -857,7 +846,7 @@ Failed-tests input:
 ```text
 The deterministic test commands failed.
 
-Approved Plan: /abs/.../approved_plan.md
+Approved Plan: /abs/.../approved-plan.md
 Command log: /abs/.../command.log
 
 Inspect the command log, fix the implementation, and return a new implementation result.
@@ -881,7 +870,7 @@ If the limit is reached:
 - Do not revert.
 - Do not skip to the next Task.
 
-## 15. Review Loop
+## 16. Review Loop
 
 Reviewer Agent starts only after the latest Controller-run tests pass.
 
@@ -894,10 +883,10 @@ Task ID: task-001
 Task title: Add batch runtime
 Task prompt: ...
 
-Task context artifact: /abs/.../context.md
-Approved Plan: /abs/.../approved_plan.md
+Task context artifact: /abs/.../context.json
+Approved Plan: /abs/.../approved-plan.md
 Command log: /abs/.../command.log
-Review log: /abs/.../review.jsonl
+Review log: /abs/.../review.log
 
 Inspect the Target Repository directly as needed. Approval means the Controller will commit all current Target Repository changes for this Task.
 ```
@@ -934,7 +923,7 @@ or:
 
 On rejection:
 
-- Append full review JSON to `review.jsonl`.
+- Append full review JSON to `review.log`.
 - Send full review JSON verbatim to the Implementer Agent.
 - Do not summarize or reinterpret the review.
 
@@ -949,10 +938,10 @@ Reviewer output:
 
 On approval:
 
-- Append full review JSON to `review.jsonl`.
+- Append full review JSON to `review.log`.
 - Commit all current Target Repository changes.
 
-## 16. Commit Boundary
+## 17. Commit Boundary
 
 The Controller commits only when:
 
@@ -972,6 +961,7 @@ git rev-parse HEAD
 ```
 
 The commit includes all current non-ignored Target Repository changes.
+With an ignored untracked Issue Directory source, the Controller first stages tracked updates with `git add --update`, then stages non-source untracked files with an exclude pathspec.
 
 If there are no changes to commit:
 
@@ -986,27 +976,27 @@ After commit:
 - Move to the next Task.
 - Require Target Repository clean before starting the next Task.
 
-## 17. Resume Behavior
+## 18. Resume Behavior
 
 CLI commands:
 
 ```text
-task-control run path/to/task_spec.yaml
+task-control run TASK_SOURCE_PATH
 task-control resume RUN-2026-05-27-104500
 ```
 
 `run`:
 
-- Loads the explicit Task Spec path.
+- Loads the explicit Task Source path.
 - Requires Target Repository clean.
 - Creates new Task Run.
-- Snapshots Task Spec.
+- Snapshots the normalized Task Spec.
 - Starts from first pending Task.
 
 `resume`:
 
-- Loads `runs/<run-id>/task_spec.yaml`.
-- Loads `runs/<run-id>/state.yaml`.
+- Loads `runs/<run-id>/task-spec.yaml`.
+- Loads `runs/<run-id>/task-state.json`.
 - Does not accept a new Task Spec path.
 - Continues the active Task from the state phase.
 - Allows dirty Target Repository only when resuming the active Task.
@@ -1014,10 +1004,10 @@ task-control resume RUN-2026-05-27-104500
 The first resume implementation can be conservative. It should avoid duplicating irreversible completed work. For example:
 
 - If `plan_approved`, do not rerun planning.
-- If `review_approved` but not committed, proceed to commit after checking state.
+- If `commit_ready`, proceed to commit after checking state.
 - If an agent turn was interrupted before output was recorded, rerun that turn on the same persistent thread where possible.
 
-## 18. Usage-Limit Handling
+## 19. Usage-Limit Handling
 
 The Controller must not retry every few seconds after Codex usage-limit errors.
 
@@ -1035,7 +1025,7 @@ Behavior:
 4. Parse suggested retry time, for example:
    - `try again at 11:14 AM`
    - future absolute timestamps, if SDK returns them later.
-5. Record waiting state in `state.yaml`.
+5. Record waiting state in `task-state.json`.
 6. Sleep until the suggested time, plus a small buffer.
 7. Record wake-up.
 8. Retry the same operation.
@@ -1050,7 +1040,7 @@ Time parsing:
 - Interpret time-only strings in the user's local timezone.
 - If the parsed local time is already in the past, treat it as the next day.
 
-## 19. Git And Target Repository Rules
+## 20. Git And Target Repository Rules
 
 Before starting a new Task:
 
@@ -1071,17 +1061,20 @@ Never in v1:
 - automatic cleanup of untracked files.
 
 Reviewer approval applies to all current changes that `git add --all` will stage.
+For an Issue Directory Task Source inside the Target Repository, untracked source files under that directory are not staged or committed. Tracked modifications under that directory still follow normal git behavior.
 
-## 20. CLI Design
+## 21. CLI Design
 
 Use Typer or argparse. The current Pixi environment includes Typer and Rich, but argparse is acceptable if the CLI stays small.
 
 Target commands:
 
 ```text
-task-control run TASK_SPEC_PATH [--run-id RUN_ID]
+task-control run TASK_SOURCE_PATH [--repo TARGET_REPOSITORY]
 task-control resume RUN_ID
 ```
+
+`TASK_SOURCE_PATH` may be a Task Spec YAML file or an Issue Directory. `--repo` is only needed when an Issue Directory is outside the Target Repository.
 
 Future helper command, not part of the Controller loop:
 
@@ -1092,12 +1085,12 @@ task-control init-spec --repo /path/to/target
 The helper may write:
 
 ```text
-task_specs/<sanitized-target-branch>/task_spec.yaml
+task_specs/<sanitized-target-branch>/task-spec.yaml
 ```
 
-But the `run` command must still receive an explicit Task Spec path.
+But the `run` command must still receive an explicit Task Source path.
 
-## 21. Proposed Package Structure
+## 22. Proposed Package Structure
 
 The current repo uses:
 
@@ -1142,7 +1135,7 @@ Responsibilities:
 
 - `cli.py`: parse `run` and `resume`; call Controller.
 - `task_spec.py`: load and validate human-managed Task Spec.
-- `run_state.py`: read/write `state.yaml`, phase transitions, thread IDs.
+- `run_state.py`: read/write `task-state.json`, phase transitions, thread IDs.
 - `artifacts.py`: paths and artifact read/write helpers.
 - `codex_sdk.py`: Codex client/thread adapter and role config.
 - `commands.py`: run test commands with streaming command log.
@@ -1154,33 +1147,32 @@ Responsibilities:
 
 Avoid building a generic workflow framework in v1.
 
-## 22. Implementation Plan
+## 23. Implementation Plan
 
-### Phase 1: Align Names And Artifact Layout
+### Phase 1: Runtime Names And Artifact Layout
 
-Goal: make the existing skeleton match the agreed contract before adding more behavior.
+Goal: keep the implementation-backed runtime contract stable.
 
 Tasks:
 
-1. Rename Task Spec field `target_repository` to `repo`.
-2. Update tests and fixtures to use `repo`.
-3. Rename snapshot file from `task-spec.yaml` to `task_spec.yaml`.
-4. Replace `task-state.json` with `state.yaml`.
-5. Replace `context.json` with `context.md`.
-6. Replace `planning.json` with `plan.json`.
-7. Replace `approved-plan.md` with `approved_plan.md`.
-8. Replace `implementation-result.json` with `implementation.json`.
-9. Replace `review.log` with `review.jsonl`.
-10. Rename prompt and schema files to underscore style.
-11. Update planner schema from `context` to `question_context`.
+1. Task Spec YAML uses `target_repository`.
+2. Task Run snapshots to `task-spec.yaml`.
+3. Controller state is `task-state.json`.
+4. Task context is `context.json`.
+5. Planning history is `planning.json`.
+6. Approved Plan is `approved-plan.md`.
+7. Latest implementer result is `implementation-result.json`.
+8. Review history is `review.log`.
+9. Prompt and schema files keep `*-agent` naming.
+10. Planner questions use `context`.
 
 Tests:
 
-- Task Spec loads `repo`.
+- Task Spec loads `target_repository`.
 - Unsupported fields still reject.
 - New run writes agreed paths.
-- `state.yaml` is YAML and has expected fields.
-- `context.md` contains minimal path-oriented context.
+- `task-state.json` is JSON and has expected fields.
+- `context.json` contains minimal path-oriented context.
 
 ### Phase 2: State Model And Run/Resume CLI
 
@@ -1194,9 +1186,9 @@ Tasks:
    - write temporary file.
    - fsync if practical.
    - replace target.
-4. Implement `task-control run TASK_SPEC_PATH`.
+4. Implement `task-control run TASK_SOURCE_PATH`.
 5. Implement `task-control resume RUN_ID`.
-6. Ensure `resume` loads saved `task_spec.yaml`, not original path.
+6. Ensure `resume` loads saved `task-spec.yaml`, not original path.
 7. Store absolute artifact paths in state.
 8. Store created/updated timestamps.
 
@@ -1223,7 +1215,7 @@ Tasks:
    - `commit_all`.
 2. Enforce clean Target Repository before new Task.
 3. Allow dirty Target Repository only when resuming active Task.
-4. Implement one-time `context.md` writing per Task.
+4. Implement one-time `context.json` writing per Task.
 
 Tests:
 
@@ -1268,7 +1260,7 @@ Goal: complete Planner/Context/human answer cycle.
 Tasks:
 
 1. Implement initial planner turn input.
-2. Append planner outputs to `plan.json`.
+2. Append planner outputs to `planning.json`.
 3. Implement needs-answers loop.
 4. Implement Context Agent turn input.
 5. Record context answers.
@@ -1279,7 +1271,7 @@ Tasks:
 
 Tests:
 
-- planned output writes `plan.json`.
+- planned output writes `planning.json`.
 - needs-answers output starts Context Agent.
 - context answered questions recorded.
 - unresolved questions sent to human provider.
@@ -1294,11 +1286,11 @@ Goal: authoritative Approved Plan Markdown.
 
 Tasks:
 
-1. Write `approved_plan.md` from planner `plan_markdown`.
+1. Write `approved-plan.md` from planner `plan_markdown`.
 2. If approval disabled, mark approved by controller.
 3. If approval enabled, open `$EDITOR`.
 4. Require explicit approval after editor returns.
-5. Record approval metadata in `plan.json`.
+5. Record approval metadata in `planning.json`.
 6. Do not let implementer start before plan approval.
 
 Tests:
@@ -1306,7 +1298,7 @@ Tests:
 - approval disabled writes plan and proceeds.
 - approval enabled invokes editor callback.
 - approval rejection stops/resumes safely.
-- `plan.json` references `approved_plan.md`.
+- `planning.json` references `approved-plan.md`.
 - implementer input does not include raw planner drafts.
 
 ### Phase 7: Implementer Agent
@@ -1318,8 +1310,8 @@ Tasks:
 1. Add implementer prompt and schema.
 2. Create/resume Implementer Agent thread.
 3. Build initial implementation input with Task/context/Approved Plan paths.
-4. Write latest `implementation.json`.
-5. Handle `blocked` implementer status through human escalation or clear failure.
+4. Write latest `implementation-result.json`.
+5. Accept only `implementation_complete` output before deterministic tests.
 
 Tests:
 
@@ -1327,7 +1319,7 @@ Tests:
 - implementation result overwrites previous result.
 - initial input includes Approved Plan path.
 - initial input excludes raw planner history.
-- blocked output does not start Context Agent.
+- unknown implementer status is rejected.
 
 ### Phase 8: Streaming Test Commands
 
@@ -1360,7 +1352,7 @@ Tasks:
 1. Add reviewer prompt and schema.
 2. Start fresh Reviewer Agent per attempt.
 3. Build review input with artifact paths.
-4. Append review JSON to `review.jsonl`.
+4. Append review JSON to `review.log`.
 5. If rejected, send reviewer JSON verbatim to Implementer Agent.
 6. If approved, proceed to commit.
 7. Count both test failures and reviewer rejections toward `max_iterations`.
@@ -1406,7 +1398,7 @@ Tasks:
 1. Implement message extraction from SDK exceptions and TurnResult errors.
 2. Detect usage-limit messages.
 3. Parse suggested retry time.
-4. Record wait state in `state.yaml`.
+4. Record wait state in `task-state.json`.
 5. Sleep until retry time plus small buffer.
 6. Retry the same operation.
 7. Fail clearly if no retry time can be parsed.
@@ -1443,7 +1435,7 @@ Tests:
 - CLI tests for `run` and `resume`.
 - Ruff check.
 
-## 23. Testing Strategy
+## 24. Testing Strategy
 
 Testing should use real temporary git repositories and fake Codex clients.
 
@@ -1463,7 +1455,7 @@ Recommended test layers:
 
 Avoid tests that require real Codex calls.
 
-## 24. Risks And Design Tradeoffs
+## 25. Risks And Design Tradeoffs
 
 ### SDK Output Schema Does Not Replace Routing Checks
 
@@ -1493,13 +1485,13 @@ Failed Tasks leave useful dirty state for inspection. This is useful but require
 
 Keeping everything under Task Control Plane may duplicate ideas from the future research workflow. That is acceptable until there is real second-workflow duplication.
 
-## 25. Acceptance Criteria For v1
+## 26. Acceptance Criteria For v1
 
 The v1 workflow is complete when:
 
-1. `task-control run path/to/task_spec.yaml` can run a Task Spec with one or more Tasks.
+1. `task-control run TASK_SOURCE_PATH` can run a Task Spec YAML file or an Issue Directory with one or more Tasks.
 2. The Target Repository must be clean before a new Task starts.
-3. A Task Run snapshots `task_spec.yaml` and writes `state.yaml`.
+3. A Task Run snapshots `task-spec.yaml` and writes `task-state.json`.
 4. Each Task writes the agreed compact artifact set.
 5. Planner Agent can return either `planned` or `needs_answers`.
 6. Context Agent can answer planner questions and escalate unresolved questions to the human.
@@ -1518,9 +1510,9 @@ The v1 workflow is complete when:
 19. Usage-limit messages with suggested retry times sleep until that time and continue.
 20. The workflow has unit/integration coverage with fake Codex clients and temporary git repos.
 
-## 26. Deferred Work
+## 27. Deferred Work
 
-- Task Spec authoring helper under `task_specs/<target-branch>/task_spec.yaml`.
+- Task Spec authoring helper under `task_specs/<target-branch>/task-spec.yaml`.
 - Better human UI for plan rejection and replanning.
 - Optional no-op Task mode.
 - Optional timeout support for long test commands.

@@ -66,9 +66,7 @@ def test_usage_limit_runner_records_wait_sleeps_and_retries_once() -> None:
         ),
     ],
 )
-def test_usage_limit_parser_handles_retry_forms(
-    message: str, expected: str
-) -> None:
+def test_usage_limit_parser_handles_retry_forms(message: str, expected: str) -> None:
     retry_at = usage_limit_retry_at(
         message,
         datetime.fromisoformat("2026-05-27T14:00:00+10:00"),
@@ -97,8 +95,7 @@ def test_usage_limit_runner_never_sleeps_negative_seconds() -> None:
         attempts += 1
         if attempts == 1:
             raise RuntimeError(
-                "Usage limit reached. Please try again at "
-                "2026-05-27T13:59:30+10:00."
+                "Usage limit reached. Please try again at 2026-05-27T13:59:30+10:00."
             )
         return "ok"
 
