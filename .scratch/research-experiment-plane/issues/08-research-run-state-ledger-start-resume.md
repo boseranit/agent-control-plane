@@ -1,6 +1,6 @@
 # Research Run state, ledger, start/resume
 
-Status: ready-for-agent
+Status: completed
 Label: ready-for-agent
 
 ## Parent
@@ -13,10 +13,10 @@ Implement Research Run startup and resume foundations: run directory layout, res
 
 ## Acceptance criteria
 
-- [ ] Starting a Research Run copies the resolved spec into the run directory.
-- [ ] State records run id, phase, active experiment, experiment count, and thread ids where relevant.
-- [ ] Ledger records phase and artifact events as JSONL.
-- [ ] Resume reads the run snapshot/state, not the mutable source spec.
+- [x] Starting a Research Run copies the resolved spec into the run directory.
+- [x] State records run id, phase, active experiment, experiment count, and thread ids where relevant.
+- [x] Ledger records phase and artifact events as JSONL.
+- [x] Resume reads the run snapshot/state, not the mutable source spec.
 
 ## Blocked by
 
@@ -24,3 +24,7 @@ Implement Research Run startup and resume foundations: run directory layout, res
 - `.scratch/research-experiment-plane/issues/06-research-run-spec-loader-snapshot-model.md`
 - `.scratch/research-experiment-plane/issues/07-research-artifact-models-outcome-enum.md`
 
+## Comments
+
+- Added Research Run state, ledger, and start/load foundations.
+- Verified with `pixi run test` (`166 passed`).
