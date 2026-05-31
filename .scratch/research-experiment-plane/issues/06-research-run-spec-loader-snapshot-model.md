@@ -1,6 +1,6 @@
 # Research Run Spec loader and snapshot model
 
-Status: ready-for-agent
+Status: completed
 Label: ready-for-agent
 
 ## Parent
@@ -13,12 +13,16 @@ Implement the single-file Research Run Spec loader, including Research Brief, ru
 
 ## Acceptance criteria
 
-- [ ] Loader accepts the PRD's minimal YAML shape and validates required fields.
-- [ ] Selected Research Budget exposes data window and default command timeout.
-- [ ] Snapshot-ready resolved spec data is deterministic.
-- [ ] Tests cover defaults, invalid specs, selected budget lookup, and stop policy.
+- [x] Loader accepts the PRD's minimal YAML shape and validates required fields.
+- [x] Selected Research Budget exposes data window and default command timeout.
+- [x] Snapshot-ready resolved spec data is deterministic.
+- [x] Tests cover defaults, invalid specs, selected budget lookup, and stop policy.
 
 ## Blocked by
 
 - `.scratch/research-experiment-plane/issues/02-shared-artifact-state-primitives.md`
 
+## Comments
+
+- Added Research Run Spec loader and deterministic resolved snapshot data.
+- Verified with `pixi run test` (`149 passed`).
