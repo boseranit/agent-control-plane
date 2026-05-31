@@ -2,70 +2,50 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
-from agent_control_plane.control_plane import agent_runtime
 from agent_control_plane.control_plane.agent_runtime import (
     AgentRunConfig,
     AgentRuntime,
+    RuntimeApproval,
     RuntimePolicy,
 )
 
 
-class FakeAgent:
-    calls: list[dict[str, object]] = []
-
-    def __init__(self, **kwargs: object) -> None:
-        self.kwargs = kwargs
-        self.calls.append(kwargs)
-
-
-class FakeSession:
-    calls: list[dict[str, object]] = []
-
-    def __init__(self, session_id: str, db_path: str | Path) -> None:
-        self.session_id = session_id
-        self.db_path = db_path
+class FakeCodex:
+    def __init__(self) -> None:
+        self.started_threads: list[dict[str, object]] = []
+        self.resumed_threads: list[dict[str, object]] = []
         self.closed = False
-        self.calls.append({"session_id": session_id, "db_path": db_path})
+
+    def thread_start(self, **kwargs: object) -> "FakeCodexThread":
+        self.started_threads.append(kwargs)
+        return FakeCodexThread(f"thread-{len(self.started_threads)}")
+
+    def thread_resume(self, thread_id: str, **kwargs: object) -> "FakeCodexThread":
+        self.resumed_threads.append({"thread_id": thread_id, **kwargs})
+        return FakeCodexThread(thread_id)
 
     def close(self) -> None:
         self.closed = True
 
 
-class FakeRunResult:
-    def __init__(self, final_output: object) -> None:
-        self.final_output = final_output
+class FakeCodexThread:
+    def __init__(self, thread_id: str) -> None:
+        self.id = thread_id
+        self.run_calls: list[dict[str, object]] = []
+
+    def run(self, input: str, **kwargs: object) -> object:
+        self.run_calls.append({"input": input, **kwargs})
+        return type("TurnResult", (), {"final_response": '{"status": "ok"}'})()
 
 
-class FakeRunner:
-    calls: list[dict[str, object]] = []
-    final_output: object = {"status": "ok"}
-
-    @classmethod
-    def run_sync(cls, agent: FakeAgent, input: str, **kwargs: object) -> FakeRunResult:
-        cls.calls.append({"agent": agent, "input": input, **kwargs})
-        return FakeRunResult(cls.final_output)
+def sdk_value(value: object) -> object:
+    return getattr(value, "value", value)
 
 
-@pytest.fixture(autouse=True)
-def fake_agents(monkeypatch: pytest.MonkeyPatch) -> None:
-    FakeAgent.calls = []
-    FakeSession.calls = []
-    FakeRunner.calls = []
-    FakeRunner.final_output = {"status": "ok"}
-    monkeypatch.setattr(agent_runtime, "Agent", FakeAgent)
-    monkeypatch.setattr(agent_runtime, "Runner", FakeRunner)
-    monkeypatch.setattr(agent_runtime, "SQLiteSession", FakeSession)
-
-
-def test_shared_agent_runtime_accepts_arbitrary_read_only_role(
-    tmp_path: Path,
-) -> None:
-    runtime = AgentRuntime(
-        thread_id_factory=lambda role: f"{role}-thread-1",
-        session_db_path=tmp_path / "sessions.sqlite3",
-    )
+def test_shared_agent_runtime_starts_read_only_codex_thread(tmp_path: Path) -> None:
+    codex = FakeCodex()
+    runtime = AgentRuntime(codex_client=codex)
+    schema = {"title": "StrategistOutput", "type": "object"}
 
     thread = runtime.open_thread(
         AgentRunConfig(
@@ -76,56 +56,80 @@ def test_shared_agent_runtime_accepts_arbitrary_read_only_role(
             policy=RuntimePolicy.READ_ONLY,
         )
     )
-    result = thread.run("plan", AgentRunConfig(role="strategist", cwd=tmp_path))
+    result = thread.run(
+        "plan",
+        AgentRunConfig(
+            role="strategist",
+            cwd=tmp_path,
+            effort="high",
+            output_schema=schema,
+        ),
+    )
 
     assert result.final_response == '{"status": "ok"}'
-    assert thread.id == "strategist-thread-1"
-    assert FakeSession.calls == [
-        {"session_id": "strategist-thread-1", "db_path": tmp_path / "sessions.sqlite3"}
-    ]
-    agent_call = FakeAgent.calls[0]
-    assert agent_call["name"] == "control-plane-strategist"
-    assert "Strategist Agent" in str(agent_call["instructions"])
-    assert [tool.name for tool in agent_call["tools"]] == [
-        "read_file",
-        "list_files",
-        "search_text",
-    ]
+    assert thread.id == "thread-1"
+    assert len(codex.started_threads) == 1
+    start_call = codex.started_threads[0]
+    assert start_call["cwd"] == str(tmp_path.resolve())
+    assert start_call["developer_instructions"] == "# Strategist Agent"
+    assert start_call["model"] == "gpt-5-codex"
+    assert sdk_value(start_call["approval_mode"]) == "auto_review"
+    assert sdk_value(start_call["sandbox"]) == "read-only"
+
+    run_call = thread._thread.run_calls[0]
+    assert run_call["input"] == "plan"
+    assert sdk_value(run_call["approval_mode"]) == "auto_review"
+    assert run_call["cwd"] == str(tmp_path.resolve())
+    assert sdk_value(run_call["effort"]) == "high"
+    assert run_call["model"] == "gpt-5-codex"
+    assert run_call["output_schema"] == schema
+    assert run_call["sandbox_policy"].type == "readOnly"
 
 
-def test_shared_agent_runtime_enables_workspace_write_policy(
-    tmp_path: Path,
-) -> None:
-    thread = AgentRuntime(thread_id_factory=lambda _role: "evaluator-new").open_thread(
+def test_shared_agent_runtime_resumes_workspace_write_thread(tmp_path: Path) -> None:
+    codex = FakeCodex()
+    runtime = AgentRuntime(codex_client=codex)
+
+    thread = runtime.open_thread(
         AgentRunConfig(
             role="evaluator",
             cwd=tmp_path,
             thread_id="evaluator-existing",
             policy=RuntimePolicy.WORKSPACE_WRITE,
+            approval=RuntimeApproval.DENY_ALL,
         )
     )
-
-    thread.run("evaluate", AgentRunConfig(role="evaluator", cwd=tmp_path))
+    thread.run(
+        "evaluate",
+        AgentRunConfig(
+            role="evaluator",
+            cwd=tmp_path,
+            effort="xhigh",
+            policy=RuntimePolicy.WORKSPACE_WRITE,
+            approval=RuntimeApproval.DENY_ALL,
+        ),
+    )
 
     assert thread.id == "evaluator-existing"
-    assert [tool.name for tool in FakeAgent.calls[0]["tools"]] == [
-        "read_file",
-        "list_files",
-        "search_text",
-        "shell",
-        "apply_patch",
-    ]
+    assert codex.started_threads == []
+    resume_call = codex.resumed_threads[0]
+    assert resume_call["thread_id"] == "evaluator-existing"
+    assert sdk_value(resume_call["approval_mode"]) == "deny_all"
+    assert sdk_value(resume_call["sandbox"]) == "workspace-write"
+
+    run_call = thread._thread.run_calls[0]
+    assert sdk_value(run_call["approval_mode"]) == "deny_all"
+    assert sdk_value(run_call["effort"]) == "xhigh"
+    assert run_call["sandbox_policy"].type == "workspaceWrite"
 
 
 def test_shared_agent_runtime_run_config_can_override_thread_policy(
     tmp_path: Path,
 ) -> None:
-    thread = AgentRuntime(thread_id_factory=lambda role: f"{role}-thread").open_thread(
-        AgentRunConfig(
-            role="critic",
-            cwd=tmp_path,
-            policy=RuntimePolicy.READ_ONLY,
-        )
+    codex = FakeCodex()
+    runtime = AgentRuntime(codex_client=codex)
+    thread = runtime.open_thread(
+        AgentRunConfig(role="critic", cwd=tmp_path, policy=RuntimePolicy.READ_ONLY)
     )
 
     thread.run(
@@ -137,11 +141,14 @@ def test_shared_agent_runtime_run_config_can_override_thread_policy(
         ),
     )
 
-    assert thread.id == "critic-thread"
-    assert [tool.name for tool in FakeAgent.calls[0]["tools"]] == [
-        "read_file",
-        "list_files",
-        "search_text",
-        "shell",
-        "apply_patch",
-    ]
+    assert sdk_value(codex.started_threads[0]["sandbox"]) == "read-only"
+    assert thread._thread.run_calls[0]["sandbox_policy"].type == "workspaceWrite"
+
+
+def test_shared_agent_runtime_closes_owned_codex_client(tmp_path: Path) -> None:
+    codex = FakeCodex()
+
+    with AgentRuntime(codex_factory=lambda: codex) as runtime:
+        runtime.open_thread(AgentRunConfig(role="strategist", cwd=tmp_path))
+
+    assert codex.closed is True

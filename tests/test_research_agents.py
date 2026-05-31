@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agent_control_plane.control_plane.agent_runtime import RuntimePolicy
+from agent_control_plane.control_plane.agent_runtime import (
+    RuntimeApproval,
+    RuntimePolicy,
+)
 from agent_control_plane.research_experiment_controller.agents import (
     ResearchAgentRole,
     agent_config,
@@ -37,6 +40,7 @@ def test_research_agent_config_uses_current_runtime_api(tmp_path: Path) -> None:
         ResearchAgentRole.STRATEGIST
     )
     assert config.policy is RuntimePolicy.READ_ONLY
+    assert config.approval is RuntimeApproval.AUTO_REVIEW
 
 
 def test_research_agent_roles_have_expected_runtime_policies(
