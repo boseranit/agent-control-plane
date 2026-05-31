@@ -1,6 +1,6 @@
 # Research Run Mirror and MLflow adapter wiring
 
-Status: ready-for-agent
+Status: completed
 Label: ready-for-agent
 
 ## Parent
@@ -13,14 +13,20 @@ Implement the provider-neutral Research Run Mirror request, best-effort ledger w
 
 ## Acceptance criteria
 
-- [ ] Controller/experiment flow imports only the provider-neutral mirror interface.
-- [ ] MLflow SDK imports live only in the MLflow adapter module.
-- [ ] Mirror logs approved params/tags, numeric metrics, and all run-directory artifacts recursively.
-- [ ] Mirror failures append ledger events and do not change control flow.
-- [ ] Tests cover success, failure, metric extraction, and recursive artifact logging.
+- [x] Controller/experiment flow imports only the provider-neutral mirror interface.
+- [x] MLflow SDK imports live only in the MLflow adapter module.
+- [x] Mirror logs approved params/tags, numeric metrics, and all run-directory artifacts recursively.
+- [x] Mirror failures append ledger events and do not change control flow.
+- [x] Tests cover success, failure, metric extraction, and recursive artifact logging.
+
+## Completion notes
+
+- Added provider-neutral mirror request/wrapper and MLflow adapter.
+- Wired best-effort mirroring after experiment summary write.
+- Added mirror success/failure/import-boundary tests.
+- Verified with `pixi run test` (`236 passed`).
 
 ## Blocked by
 
 - `.scratch/research-experiment-plane/issues/08-research-run-state-ledger-start-resume.md`
 - `.scratch/research-experiment-plane/issues/14-evaluator-workspace-boundary-audit.md`
-

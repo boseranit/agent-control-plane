@@ -42,6 +42,10 @@ from agent_control_plane.research_experiment_controller.prerequisites import (
     PrerequisiteAuditRequest,
     run_data_audit_phase,
 )
+from agent_control_plane.research_experiment_controller.research_run_mirror import (
+    ResearchRunMirrorRequest,
+    mirror_research_run,
+)
 from agent_control_plane.research_experiment_controller.research_run_spec import (
     ResearchRunSpec,
 )
@@ -154,6 +158,7 @@ def run_experiment_flow(
         request.experiment_id,
         summary,
     )
+    _mirror_experiment_if_enabled(request, summary_model)
     return {
         "status": "experiment_completed",
         "experiment_id": request.experiment_id,
@@ -536,3 +541,32 @@ def _write_artifact_once(
             f"Research Experiment {experiment_id} already has {path.name}."
         )
     write_json(path, data)
+
+
+def _mirror_experiment_if_enabled(
+    request: ExperimentFlowRequest,
+    summary: Summary,
+) -> None:
+    if not request.spec.mlflow.enabled:
+        return
+    mirror_research_run(
+        ResearchRunMirrorRequest(
+            run_dir=request.experiment_directory,
+            tracking_uri=request.spec.mlflow.tracking_uri,
+            experiment_name=request.spec.mlflow.experiment_name,
+            research_run_id=request.research_run_id,
+            experiment_id=request.experiment_id,
+            outcome=summary.outcome.value,
+            failed_stage=summary.failed_stage,
+            failure_classification=summary.failure_classification,
+            git_sha=_mirror_git_sha(request.spec.target_repository),
+        ),
+        ledger_path=request.ledger_path,
+    )
+
+
+def _mirror_git_sha(repo: Path) -> str:
+    try:
+        return git_snapshot(repo).head or ""
+    except Exception:
+        return ""
