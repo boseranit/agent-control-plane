@@ -3,11 +3,12 @@ Have a look at the orchestator logic in ~/HyperliquidMomentum/research. I want t
   want to migrate over here.
 
   You should be aware of the requirements and old issues that are specified in ~/HyperliquidMoment/docs/architecture/research-orchestrator-prd.md. These gaps have mostly been fixed now, but they are
-  good for guiding what the requirements are when you implement it here so make sure to read all of it first. 
+  good for guiding the behaviour and pitfalls when you implement it here so make sure to read all of it first. 
   You can get multiple gpt-5.3-codex-spark xhigh subagents to summarise the code in the HyperliquidMomentum repo - do not read python files in that repo yourself.
 
-Throughput is not a concern and my primary goals are low setup burden and maximum flexibility to tweak code, so I think  Hatchet is almost certainly the best choice for this specific project. Hatchet runs on an incredibly simple stack: a Go-based engine binary and a standard PostgreSQL database. Hatchet functions more like a DAG or a state-machine engine. You define your workflow steps as individual Python functions decorated with @hatchet.step(). State is passed explicitly via function arguments and JSON payloads. If you want to change step 5, add an audit check between steps 6 and 7, or modify your loop logic, you just change the Python code and restart your worker. Hatchet doesn't care about past determinism; it just executes the new graph definition for the next run.
+Throughput is not a concern and my primary goals are low setup burden and maximum flexibility to tweak code, so I think  Hatchet is the best choice for this specific project. Hatchet runs on a simple stack: a Go-based engine binary and a standard PostgreSQL database. Hatchet functions more like a DAG or a state-machine engine. You define your workflow steps as individual Python functions decorated with @hatchet.step(). State is passed explicitly via function arguments and JSON payloads. E.g. if you want to change step 5, add an audit check between steps 6 and 7, or modify your loop logic, you just change the Python code and restart your worker. Hatchet doesn't care about past determinism; it just executes the new graph definition for the next run.
 https://github.com/hatchet-dev/hatchet
+I want the hatchet code to be isolated from the other SDK code - and a big priority is for the hatchet orchestration layer to be extremely minimal. Just the bare minimum to get this running as specified.
 
 
 This is the actual workflow that I want to implement; you should note that it is different from the Hyperliquid research version in several ways but one key way being that the roles are collapsed based on conversation durability.
@@ -86,7 +87,7 @@ Key Design Rules
 7. Every signal must prove point-in-time validity before empirical claims are
 trusted.
 
-This is a simplified sketch to illustrate how your workflow translates to Hatchet. The full implementation would include all error handling, retry limits, and artifact production.
+This is a simplified sketch to illustrate how your workflow translates to Hatchet. The full implementation would include and artifact production for example.
 
 ```python
 from hatchet import Hatchet, DurableContext, EmptyModel
@@ -103,61 +104,61 @@ class ResearchSpec(BaseModel): ...
 # ... define all other artifact models
 
 @hatchet.durable_task(name="research_cycle")
-async def research_cycle(input: EmptyModel, ctx: DurableContext) -> dict:
+def research_cycle(input: EmptyModel, ctx: DurableContext) -> dict:
     # 1. Context Build (Controller logic, could be a separate task or part of this)
     context_pack = build_context_pack()  # Your deterministic function
-    await ctx.log("Context pack built")
+    ctx.log("Context pack built")
     
     # 2. Strategic Planning
-    context_summary, proposal = await run_strategist(context_pack)
+    context_summary, proposal = run_strategist(context_pack)
     # 3. Research Specification And Experiment Design
-    research_spec, experiment_design = await run_strategist(context_summary, proposal)
+    research_spec, experiment_design = run_strategist(context_summary, proposal)
     
     # 4. Independent Design Critique (Fresh thread per critique)
-    critique = await run_critic(proposal, research_spec, experiment_design, context_summary)
+    critique = run_critic(proposal, research_spec, experiment_design, context_summary)
     
     # 5. Design Revision And Selection (Logic to handle material revisions)
     if needs_revision(critique):
-        research_spec, experiment_design = await run_strategist(research_spec, experiment_design, critique)
-        critique = await run_critic(research_spec, experiment_design)  # Second Critic pass
+        research_spec, experiment_design = run_strategist(research_spec, experiment_design, critique)
+        critique = run_critic(research_spec, experiment_design)  # Second Critic pass
     selected_plan = select_plan(research_spec, experiment_design, critique)
     
     # 6. Data And Prerequisite Audit
-    data_audit, prereq_ok = await run_data_audit(selected_plan)
+    data_audit, prereq_ok = run_data_audit(selected_plan)
     if not prereq_ok:
         return {"status": "blocked", "reason": "Data audit failed"}
     
     # 7. Implementation
-    implementation_result = await run_implementer(selected_plan, data_audit)
+    implementation_result = run_implementer(selected_plan, data_audit)
     
     # 8. Verification and repair loop
     verification_ok = False
     retries = 0
     while not verification_ok and retries < MAX_RETRIES:
-        verification_ok, verification_logs = await run_verification(implementation_result)
+        verification_ok, verification_logs = run_verification(implementation_result)
         if not verification_ok:
-            implementation_result = await run_implementer(implementation_result, verification_logs)
+            implementation_result = run_implementer(implementation_result, verification_logs)
             retries += 1
     
     if not verification_ok:
         return {"status": "implementation_failure", "retries": retries}
     
     # 9. Implementation Diff Audit (Fresh Critic pass if high-risk)
-    diff_audit = await run_diff_audit(implementation_result, verification_logs)
+    diff_audit = run_diff_audit(implementation_result, verification_logs)
     if diff_audit.high_risk:
-        critique = await run_critic(diff_audit)  # Fresh Critic for diff
+        critique = run_critic(diff_audit)  # Fresh Critic for diff
     
     # 10. Locked Confirmatory Evaluation
-    confirmatory_result = await run_evaluator(selected_plan, implementation_result, diff_audit)
+    confirmatory_result = run_evaluator(selected_plan, implementation_result, diff_audit)
     
     # 11. Exploratory Diagnostics
-    exploratory_results = await run_evaluator(confirmatory_result, exploratory=True)
+    exploratory_results = run_evaluator(confirmatory_result, exploratory=True)
     
     # 13. Independent Empirical Critique
-    empirical_critique = await run_critic(confirmatory_result, exploratory_results)
+    empirical_critique = run_critic(confirmatory_result, exploratory_results)
     
     # 14. Strategic Closeout
-    summary, plan_update = await run_strategist(confirmatory_result, empirical_critique)
+    summary, plan_update = run_strategist(confirmatory_result, empirical_critique)
     
     # 15. Ledger And MLflow (Controller logs to MLflow and PostgreSQL here)
     log_to_ledger(ctx, all_artifacts)
@@ -166,8 +167,9 @@ async def research_cycle(input: EmptyModel, ctx: DurableContext) -> dict:
     return {"status": confirmatory_result.status, "summary": summary}
 ```
 
+Note that you should use Pydantic, but only at artifact boundaries. Do not make the whole workflow Pydantic-heavy. Use it to define and validate the canonical json artifacts agents produce like research_spec.json from the Strategist. Use Pydantic as a thin contract layer.
 
-this should land as a new sibling Control-Plane Workflow rather than as a mode of the existing Task Control Plane.
+This workflow should land as a new sibling Control-Plane Workflow rather than as a mode of the existing Task Control Plane.
 
 Add a Research Experiment Plane with its own work unit and controller, reusing shared helpers
   where sensible. The imported loop preserves experiment worktrees, records no_op/candidate/failed outcomes, runs
