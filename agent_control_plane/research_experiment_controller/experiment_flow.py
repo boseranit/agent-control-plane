@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,11 @@ from pydantic import ValidationError
 
 from agent_control_plane.control_plane.boundary_audit import git_snapshot
 from agent_control_plane.control_plane.json_artifacts import write_json
+from agent_control_plane.control_plane.usage_limit import (
+    UsageLimitEvent,
+    UsageLimitWait,
+    run_with_usage_limit_retry,
+)
 from agent_control_plane.research_experiment_controller.agents import (
     ResearchAgentRole,
     agent_config,
@@ -298,19 +304,24 @@ def _run_evaluation_if_needed(
             evaluator_thread_id=thread.id,
             evaluator_workspace=str(workspace.path),
         )
-        turn_result = thread.run(
-            _evaluation_input(request, workspace.manifest_path),
-            agent_config(
-                ResearchAgentRole.EVALUATOR,
-                workspace.path,
-                model=request.spec.codex.model,
-                effort=request.spec.codex.effort,
+        turn_result = _run_agent_turn_with_usage_limit(
+            role=ResearchAgentRole.EVALUATOR,
+            run=lambda: thread.run(
+                _evaluation_input(request, workspace.manifest_path),
+                agent_config(
+                    ResearchAgentRole.EVALUATOR,
+                    workspace.path,
+                    model=request.spec.codex.model,
+                    effort=request.spec.codex.effort,
+                ),
             ),
         )
         summary = _write_evaluation_artifacts(
             request.experiment_directory,
             _response_mapping(getattr(turn_result, "final_response", None)),
         )
+    except UsageLimitWait:
+        raise
     except (KeyError, TypeError, ValueError, ValidationError) as exc:
         summary = classify_run_failed(
             str(exc) or type(exc).__name__,
@@ -452,13 +463,16 @@ def _repair_callback(
             failed_command_count=len(repair_request.failed_results),
             implementer_thread_id=thread.id,
         )
-        turn_result = thread.run(
-            _verification_repair_input(request, repair_request),
-            agent_config(
-                ResearchAgentRole.IMPLEMENTER,
-                worktree.path,
-                model=request.spec.codex.model,
-                effort=request.spec.codex.effort,
+        turn_result = _run_agent_turn_with_usage_limit(
+            role=ResearchAgentRole.IMPLEMENTER,
+            run=lambda: thread.run(
+                _verification_repair_input(request, repair_request),
+                agent_config(
+                    ResearchAgentRole.IMPLEMENTER,
+                    worktree.path,
+                    model=request.spec.codex.model,
+                    effort=request.spec.codex.effort,
+                ),
             ),
         )
         final_response = getattr(turn_result, "final_response", None)
@@ -470,6 +484,44 @@ def _repair_callback(
             )
 
     return repair
+
+
+def _run_agent_turn_with_usage_limit(
+    *,
+    role: ResearchAgentRole,
+    run: Callable[[], Any],
+) -> Any:
+    try:
+        return run()
+    except UsageLimitWait:
+        raise
+    except Exception as exc:
+        first_exception: Exception | None = exc
+
+    wait_event: UsageLimitEvent | None = None
+
+    def replay_first_exception_then_run() -> Any:
+        nonlocal first_exception
+        if first_exception is not None:
+            exc = first_exception
+            first_exception = None
+            raise exc
+        return run()
+
+    def record_wait(event: UsageLimitEvent) -> None:
+        nonlocal wait_event
+        wait_event = event
+
+    def propagate_wait(_sleep_seconds: float) -> None:
+        if wait_event is not None:
+            raise UsageLimitWait(wait_event)
+
+    return run_with_usage_limit_retry(
+        role=f"research-{role.value}",
+        run=replay_first_exception_then_run,
+        record_wait=record_wait,
+        sleep=propagate_wait,
+    )
 
 
 def _verification_repair_input(

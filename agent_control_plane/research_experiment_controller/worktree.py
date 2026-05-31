@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,6 +43,43 @@ def prepare_experiment_worktree(
         detail = result.stderr.strip() or result.stdout.strip()
         raise ExperimentWorktreeError(detail or f"Could not create {path}")
     return ExperimentWorktree(path=path, branch=branch, created=True)
+
+
+def cleanup_experiment_worktree(
+    *,
+    target_repository: str | Path,
+    worktree_root: str | Path,
+    research_run_id: str,
+    experiment_id: str,
+) -> None:
+    repo = Path(target_repository).resolve()
+    path = _worktree_path(repo, worktree_root, research_run_id, experiment_id)
+    branch = _branch_name(research_run_id, experiment_id)
+
+    if path.exists():
+        result = subprocess.run(
+            ["git", "worktree", "remove", "--force", str(path)],
+            cwd=repo,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0 and path.exists():
+            shutil.rmtree(path)
+    subprocess.run(
+        ["git", "worktree", "prune"],
+        cwd=repo,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "branch", "-D", branch],
+        cwd=repo,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
 
 
 def _worktree_path(

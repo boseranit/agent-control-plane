@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -10,6 +11,7 @@ from agent_control_plane.control_plane.json_artifacts import (
     read_json_object,
     write_json,
 )
+from agent_control_plane.control_plane.usage_limit import UsageLimitWait
 from agent_control_plane.research_experiment_controller.experiment_flow import (
     ExperimentFlowRequest,
     run_experiment_flow,
@@ -32,6 +34,9 @@ from agent_control_plane.research_experiment_controller.state import (
     next_experiment_id,
     record_terminal_experiment,
     research_run_directory,
+)
+from agent_control_plane.research_experiment_controller.worktree import (
+    cleanup_experiment_worktree,
 )
 
 
@@ -268,6 +273,14 @@ def run_current_phase_once(
     )
     try:
         result = runner(request)
+    except UsageLimitWait as exc:
+        return _propagate_usage_limit_wait(
+            phase_input,
+            state,
+            experiment_id=experiment_id,
+            experiment_dir=experiment_dir,
+            sleep_seconds=exc.event.sleep_seconds,
+        )
     except Exception as exc:
         terminal_summary = classify_run_failed(
             str(exc) or type(exc).__name__,
@@ -279,6 +292,15 @@ def run_current_phase_once(
             state,
             experiment_id=experiment_id,
             experiment_dir=experiment_dir,
+        )
+
+    if result.get("status") == "usage_limit_wait":
+        return _propagate_usage_limit_wait(
+            phase_input,
+            state,
+            experiment_id=experiment_id,
+            experiment_dir=experiment_dir,
+            sleep_seconds=float(result["sleep_seconds"]),
         )
 
     if result.get("status") != "experiment_completed":
@@ -300,6 +322,44 @@ def run_current_phase_once(
         experiment_id=experiment_id,
         experiment_dir=experiment_dir,
     )
+
+
+def _propagate_usage_limit_wait(
+    phase_input: ResearchPhaseInput,
+    state: dict[str, Any],
+    *,
+    experiment_id: str,
+    experiment_dir: Path,
+    sleep_seconds: float,
+) -> dict[str, Any]:
+    state["active_experiment_id"] = None
+    state["current_phase"] = "ready_for_experiment"
+    write_json(phase_input.state_path, state)
+    if experiment_dir.exists():
+        shutil.rmtree(experiment_dir)
+    spec = load_research_run_spec(phase_input.spec_snapshot_path)
+    if spec.worktree.create:
+        cleanup_experiment_worktree(
+            target_repository=spec.target_repository,
+            worktree_root=spec.worktree.root,
+            research_run_id=phase_input.research_run_id,
+            experiment_id=experiment_id,
+        )
+    append_ledger_event(
+        phase_input.ledger_path,
+        event_type="usage_limit_wait",
+        research_run_id=phase_input.research_run_id,
+        experiment_id=experiment_id,
+        sleep_seconds=max(sleep_seconds, 0.0),
+    )
+    return {
+        "status": "usage_limit_wait",
+        "research_run_id": phase_input.research_run_id,
+        "experiment_id": experiment_id,
+        "current_phase": state["current_phase"],
+        "controller_state_version": state.get("controller_state_version"),
+        "sleep_seconds": max(sleep_seconds, 0.0),
+    }
 
 
 def _record_terminal_result(
