@@ -131,6 +131,146 @@ class FlowFakeRuntime:
         return thread
 
 
+class EvaluationFakeThread:
+    def __init__(self, thread_id: str) -> None:
+        self.id = thread_id
+        self.run_inputs: list[str] = []
+
+    def run(self, input: str, config) -> object:
+        del config
+        self.run_inputs.append(input)
+        return type(
+            "TurnResult",
+            (),
+            {
+                "final_response": {
+                    "confirmatory_evaluation_result": {
+                        "outcome": "completed_candidate",
+                        "outcome_reason": "Locked gates passed.",
+                        "failed_stage": None,
+                        "failure_classification": None,
+                        "metrics": {"ic": 0.04},
+                        "gate_results": {"ic": "passed"},
+                        "pre_registered_evidence": ["confirmatory command eval"],
+                    },
+                    "exploratory_diagnostics_result": {
+                        "findings": ["turnover stable"],
+                        "metrics": {"turnover": 0.2},
+                        "plots": ["eval_outputs/turnover.png"],
+                        "future_experiment_ideas": ["lock turnover gate"],
+                    },
+                    "analysis_ledger": {
+                        "entries": [{"phase": "evaluation", "status": "completed"}]
+                    },
+                }
+            },
+        )()
+
+
+class EvaluationFakeRuntime:
+    def __init__(self) -> None:
+        self.configs = []
+        self.threads: dict[str, EvaluationFakeThread] = {}
+
+    def open_thread(self, config) -> EvaluationFakeThread:
+        self.configs.append(config)
+        thread_id = config.thread_id or f"{config.role}-thread-{len(self.configs)}"
+        thread = self.threads.get(thread_id)
+        if thread is None:
+            thread = EvaluationFakeThread(thread_id)
+            self.threads[thread_id] = thread
+        return thread
+
+
+class FailingEvaluationThread:
+    def __init__(self, thread_id: str) -> None:
+        self.id = thread_id
+
+    def run(self, input: str, config) -> object:
+        del input, config
+        raise RuntimeError("evaluation crashed")
+
+
+class FailingEvaluationRuntime:
+    def __init__(self) -> None:
+        self.configs = []
+
+    def open_thread(self, config) -> FailingEvaluationThread:
+        self.configs.append(config)
+        return FailingEvaluationThread(
+            config.thread_id or f"{config.role}-thread-{len(self.configs)}"
+        )
+
+
+class MutatingEvaluationThread(EvaluationFakeThread):
+    def run(self, input: str, config) -> object:
+        manifest = read_json_object(Path(config.cwd) / "manifest.json")
+        selected_plan = Path(manifest["canonical_artifacts"]["selected_plan"])
+        selected_plan.write_text('{"selected": false}\n', encoding="utf-8")
+        return super().run(input, config)
+
+
+class MutatingEvaluationRuntime:
+    def __init__(self) -> None:
+        self.configs = []
+
+    def open_thread(self, config) -> MutatingEvaluationThread:
+        self.configs.append(config)
+        return MutatingEvaluationThread(
+            config.thread_id or f"{config.role}-thread-{len(self.configs)}"
+        )
+
+
+class MutatingCrashingEvaluationThread:
+    def __init__(self, thread_id: str) -> None:
+        self.id = thread_id
+
+    def run(self, input: str, config) -> object:
+        del input
+        manifest = read_json_object(Path(config.cwd) / "manifest.json")
+        selected_plan = Path(manifest["canonical_artifacts"]["selected_plan"])
+        selected_plan.write_text('{"selected": false}\n', encoding="utf-8")
+        raise RuntimeError("evaluation crashed after mutation")
+
+
+class MutatingCrashingEvaluationRuntime:
+    def __init__(self) -> None:
+        self.configs = []
+
+    def open_thread(self, config) -> MutatingCrashingEvaluationThread:
+        self.configs.append(config)
+        return MutatingCrashingEvaluationThread(
+            config.thread_id or f"{config.role}-thread-{len(self.configs)}"
+        )
+
+
+class MutatingMalformedEvaluationThread:
+    def __init__(self, thread_id: str) -> None:
+        self.id = thread_id
+
+    def run(self, input: str, config) -> object:
+        del input
+        manifest = read_json_object(Path(config.cwd) / "manifest.json")
+        selected_plan = Path(manifest["canonical_artifacts"]["selected_plan"])
+        selected_plan.write_text('{"selected": false}\n', encoding="utf-8")
+        return type(
+            "TurnResult",
+            (),
+            {"final_response": "{not-json"},
+        )()
+
+
+class MutatingMalformedEvaluationRuntime:
+    def __init__(self) -> None:
+        self.configs = []
+
+    def open_thread(self, config) -> MutatingMalformedEvaluationThread:
+        self.configs.append(config)
+        return MutatingMalformedEvaluationThread(
+            config.thread_id or f"{config.role}-thread-{len(self.configs)}"
+        )
+
+
 def test_start_research_run_creates_run_layout(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -909,6 +1049,227 @@ def test_verification_repairs_reuse_same_implementer_thread_until_limit(
             "implementer_thread_id": "research-implementer-thread-1",
         },
     ]
+
+
+def test_evaluator_runs_in_workspace_and_writes_result_artifacts(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    spec_path = write_minimal_research_run_spec(tmp_path, repo)
+    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    runtime = EvaluationFakeRuntime()
+
+    def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        return run_experiment_flow(
+            request,
+            selection=ExperimentFlowSelection(
+                selected_plan=SelectedPlan(
+                    selected=True,
+                    plan_id="confirmatory-plan",
+                    rationale="Run locked evaluation.",
+                ),
+                experiment_design=ExperimentDesign(
+                    confirmatory_commands=[
+                        {"name": "eval", "argv": [sys.executable, "eval.py"]}
+                    ],
+                    exploratory_commands=[
+                        {"name": "diag", "argv": [sys.executable, "diag.py"]}
+                    ],
+                ),
+            ),
+            agent_runtime=runtime,
+        )
+
+    run_research_loop(
+        run.research_run_id,
+        runtime_root=tmp_path / "runs",
+        experiment_runner=experiment_runner,
+    )
+
+    experiment_dir = run.experiments_directory / "EXP-0001"
+    evaluation_dir = experiment_dir / "evaluation"
+    summary = read_json_object(experiment_dir / "summary.json")
+    confirmatory = read_json_object(
+        experiment_dir / "confirmatory_evaluation_result.json"
+    )
+    exploratory = read_json_object(
+        experiment_dir / "exploratory_diagnostics_result.json"
+    )
+    analysis_ledger = read_json_object(experiment_dir / "analysis_ledger.json")
+
+    assert [config.role for config in runtime.configs] == ["research-evaluator"]
+    assert runtime.configs[0].cwd == evaluation_dir
+    assert confirmatory["outcome"] == "completed_candidate"
+    assert exploratory["findings"] == ["turnover stable"]
+    assert analysis_ledger["entries"][0]["phase"] == "evaluation"
+    assert summary["outcome"] == "completed_candidate"
+    assert summary["confirmatory_findings"] == ["confirmatory command eval"]
+    assert summary["exploratory_findings"] == ["turnover stable"]
+
+
+def test_evaluation_runtime_defect_records_run_failed_without_implementer_reroute(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    spec_path = write_minimal_research_run_spec(tmp_path, repo)
+    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    runtime = FailingEvaluationRuntime()
+
+    def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        return run_experiment_flow(
+            request,
+            selection=ExperimentFlowSelection(
+                selected_plan=SelectedPlan(
+                    selected=True,
+                    plan_id="confirmatory-plan",
+                    rationale="Run locked evaluation.",
+                ),
+                experiment_design=ExperimentDesign(
+                    confirmatory_commands=[
+                        {"name": "eval", "argv": [sys.executable, "eval.py"]}
+                    ],
+                ),
+            ),
+            agent_runtime=runtime,
+        )
+
+    run_research_loop(
+        run.research_run_id,
+        runtime_root=tmp_path / "runs",
+        experiment_runner=experiment_runner,
+    )
+
+    summary = read_json_object(run.experiments_directory / "EXP-0001" / "summary.json")
+    assert [config.role for config in runtime.configs] == ["research-evaluator"]
+    assert summary["outcome"] == "run_failed"
+    assert summary["failed_stage"] == "evaluation"
+    assert summary["failure_classification"] == "evaluation_runtime_defect"
+    assert summary["outcome_reason"] == "evaluation crashed"
+
+
+def test_evaluation_boundary_failure_records_run_failed(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    spec_path = write_minimal_research_run_spec(tmp_path, repo)
+    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    runtime = MutatingEvaluationRuntime()
+
+    def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        return run_experiment_flow(
+            request,
+            selection=ExperimentFlowSelection(
+                selected_plan=SelectedPlan(
+                    selected=True,
+                    plan_id="confirmatory-plan",
+                    rationale="Run locked evaluation.",
+                ),
+                experiment_design=ExperimentDesign(
+                    confirmatory_commands=[
+                        {"name": "eval", "argv": [sys.executable, "eval.py"]}
+                    ],
+                ),
+            ),
+            agent_runtime=runtime,
+        )
+
+    run_research_loop(
+        run.research_run_id,
+        runtime_root=tmp_path / "runs",
+        experiment_runner=experiment_runner,
+    )
+
+    experiment_dir = run.experiments_directory / "EXP-0001"
+    summary = read_json_object(experiment_dir / "summary.json")
+    confirmatory = read_json_object(
+        experiment_dir / "confirmatory_evaluation_result.json"
+    )
+    assert [config.role for config in runtime.configs] == ["research-evaluator"]
+    assert confirmatory["outcome"] == "completed_candidate"
+    assert summary["outcome"] == "run_failed"
+    assert summary["failed_stage"] == "evaluation_boundary_audit"
+    assert summary["failure_classification"] == "evaluation_boundary_violation"
+
+
+def test_evaluation_boundary_failure_wins_after_malformed_evaluator_response(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    spec_path = write_minimal_research_run_spec(tmp_path, repo)
+    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    runtime = MutatingMalformedEvaluationRuntime()
+
+    def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        return run_experiment_flow(
+            request,
+            selection=ExperimentFlowSelection(
+                selected_plan=SelectedPlan(
+                    selected=True,
+                    plan_id="confirmatory-plan",
+                    rationale="Run locked evaluation.",
+                ),
+                experiment_design=ExperimentDesign(
+                    confirmatory_commands=[
+                        {"name": "eval", "argv": [sys.executable, "eval.py"]}
+                    ],
+                ),
+            ),
+            agent_runtime=runtime,
+        )
+
+    run_research_loop(
+        run.research_run_id,
+        runtime_root=tmp_path / "runs",
+        experiment_runner=experiment_runner,
+    )
+
+    summary = read_json_object(run.experiments_directory / "EXP-0001" / "summary.json")
+    assert summary["outcome"] == "run_failed"
+    assert summary["failed_stage"] == "evaluation_boundary_audit"
+    assert summary["failure_classification"] == "evaluation_boundary_violation"
+
+
+def test_evaluation_boundary_failure_wins_after_evaluator_crash(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    spec_path = write_minimal_research_run_spec(tmp_path, repo)
+    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    runtime = MutatingCrashingEvaluationRuntime()
+
+    def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        return run_experiment_flow(
+            request,
+            selection=ExperimentFlowSelection(
+                selected_plan=SelectedPlan(
+                    selected=True,
+                    plan_id="confirmatory-plan",
+                    rationale="Run locked evaluation.",
+                ),
+                experiment_design=ExperimentDesign(
+                    confirmatory_commands=[
+                        {"name": "eval", "argv": [sys.executable, "eval.py"]}
+                    ],
+                ),
+            ),
+            agent_runtime=runtime,
+        )
+
+    run_research_loop(
+        run.research_run_id,
+        runtime_root=tmp_path / "runs",
+        experiment_runner=experiment_runner,
+    )
+
+    summary = read_json_object(run.experiments_directory / "EXP-0001" / "summary.json")
+    assert summary["outcome"] == "run_failed"
+    assert summary["failed_stage"] == "evaluation_boundary_audit"
+    assert summary["failure_classification"] == "evaluation_boundary_violation"
 
 
 def test_terminal_summary_routes_to_experiment_state(tmp_path: Path) -> None:

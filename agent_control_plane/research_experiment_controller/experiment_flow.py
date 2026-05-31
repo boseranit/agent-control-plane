@@ -1,24 +1,38 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
+from agent_control_plane.control_plane.boundary_audit import git_snapshot
 from agent_control_plane.control_plane.json_artifacts import write_json
 from agent_control_plane.research_experiment_controller.agents import (
     ResearchAgentRole,
     agent_config,
+    open_evaluator_thread,
     open_implementer_thread,
 )
 from agent_control_plane.research_experiment_controller.artifacts import (
+    AnalysisLedger,
+    ConfirmatoryEvaluationResult,
     ExperimentDesign,
+    ExploratoryDiagnosticsResult,
     ResearchOutcome,
     SelectedPlan,
     Summary,
 )
+from agent_control_plane.research_experiment_controller.evaluation import (
+    EvaluationBoundaryError,
+    create_evaluator_workspace,
+    run_evaluation_boundary_audit,
+)
 from agent_control_plane.research_experiment_controller.outcomes import (
     classify_invalid,
     classify_no_op,
+    classify_run_failed,
     classify_selected_without_commands,
 )
 from agent_control_plane.research_experiment_controller.ledger import (
@@ -125,6 +139,13 @@ def run_experiment_flow(
                 else:
                     summary_model = None
             if summary_model is None:
+                summary_model = _run_evaluation_if_needed(
+                    request=request,
+                    experiment_design=experiment_design,
+                    worktree=worktree,
+                    agent_runtime=agent_runtime,
+                )
+            if summary_model is None:
                 summary_model = _terminal_summary_after_data_audit(selection)
 
     summary = summary_model.model_dump(mode="json")
@@ -223,6 +244,180 @@ def _run_verification_if_needed(
         timeout_seconds=_data_audit_timeout_seconds(request.spec, experiment_design),
         max_repairs=request.spec.implementation.max_repairs,
         repair_callback=_repair_callback(request, worktree, agent_runtime),
+    )
+
+
+def _run_evaluation_if_needed(
+    *,
+    request: ExperimentFlowRequest,
+    experiment_design: ExperimentDesign,
+    worktree: ExperimentWorktree | None,
+    agent_runtime: Any | None,
+) -> Summary | None:
+    if not (
+        experiment_design.confirmatory_commands
+        or experiment_design.exploratory_commands
+    ):
+        return None
+
+    worktree_path = (
+        worktree.path if worktree is not None else request.spec.target_repository
+    )
+    workspace = create_evaluator_workspace(
+        experiment_dir=request.experiment_directory,
+        worktree_path=worktree_path,
+        data_root=request.spec.data_root,
+        git_sha=git_snapshot(worktree_path).head or "",
+        canonical_artifacts=_canonical_artifacts(request.experiment_directory),
+        locked_artifacts=_locked_artifacts(request),
+        confirmatory_commands=_command_records(experiment_design.confirmatory_commands),
+        exploratory_commands=_command_records(experiment_design.exploratory_commands),
+    )
+    if agent_runtime is None:
+        return None
+
+    summary: Summary | None = None
+    try:
+        thread = open_evaluator_thread(
+            agent_runtime,
+            request.state,
+            workspace.path,
+            model=request.spec.codex.model,
+            effort=request.spec.codex.effort,
+        )
+        append_ledger_event(
+            request.ledger_path,
+            event_type="evaluation_attempt",
+            research_run_id=request.research_run_id,
+            experiment_id=request.experiment_id,
+            evaluator_thread_id=thread.id,
+            evaluator_workspace=str(workspace.path),
+        )
+        turn_result = thread.run(
+            _evaluation_input(request, workspace.manifest_path),
+            agent_config(
+                ResearchAgentRole.EVALUATOR,
+                workspace.path,
+                model=request.spec.codex.model,
+                effort=request.spec.codex.effort,
+            ),
+        )
+        summary = _write_evaluation_artifacts(
+            request.experiment_directory,
+            _response_mapping(getattr(turn_result, "final_response", None)),
+        )
+    except (KeyError, TypeError, ValueError, ValidationError) as exc:
+        summary = classify_run_failed(
+            str(exc) or type(exc).__name__,
+            failed_stage="evaluation",
+            failure_classification="evaluation_runtime_defect",
+        )
+    except Exception as exc:
+        summary = classify_run_failed(
+            str(exc) or type(exc).__name__,
+            failed_stage="evaluation",
+            failure_classification="evaluation_runtime_defect",
+        )
+    try:
+        run_evaluation_boundary_audit(workspace)
+    except EvaluationBoundaryError as exc:
+        return classify_run_failed(
+            str(exc),
+            failed_stage="evaluation_boundary_audit",
+            failure_classification="evaluation_boundary_violation",
+        )
+    return summary
+
+
+def _canonical_artifacts(experiment_dir: Path) -> dict[str, Path]:
+    candidates = {
+        "selected_plan": experiment_dir / "selected_plan.json",
+        "research_spec": experiment_dir / "research_spec.json",
+        "experiment_design": experiment_dir / "experiment_design.json",
+        "data_audit": experiment_dir / "data_audit.json",
+        "implementation": experiment_dir / "implementation.json",
+        "implementation_diff_summary": experiment_dir
+        / "implementation_diff_summary.json",
+    }
+    return {name: path for name, path in candidates.items() if path.exists()}
+
+
+def _locked_artifacts(request: ExperimentFlowRequest) -> list[Path]:
+    candidates = [
+        request.run_directory / "research_run_spec.yaml",
+        request.experiment_directory / "selected_plan.json",
+        request.experiment_directory / "research_spec.json",
+        request.experiment_directory / "experiment_design.json",
+    ]
+    return [path for path in candidates if path.exists()]
+
+
+def _command_records(commands: list[Any]) -> list[dict[str, Any]]:
+    return [
+        command.model_dump(mode="json")
+        if hasattr(command, "model_dump")
+        else dict(command)
+        for command in commands
+    ]
+
+
+def _evaluation_input(
+    request: ExperimentFlowRequest,
+    manifest_path: Path,
+) -> str:
+    return "\n".join(
+        [
+            f"Evaluate Research Experiment {request.experiment_id}.",
+            f"Read manifest: {manifest_path.name}",
+            "Write scripts under eval_scratch and outputs under eval_outputs.",
+            "Return confirmatory_evaluation_result, exploratory_diagnostics_result, and analysis_ledger.",
+        ]
+    )
+
+
+def _response_mapping(final_response: Any) -> dict[str, Any]:
+    if isinstance(final_response, dict):
+        return final_response
+    if isinstance(final_response, str):
+        parsed = json.loads(final_response)
+        if isinstance(parsed, dict):
+            return parsed
+    raise ValueError("Evaluator response must be a JSON object.")
+
+
+def _write_evaluation_artifacts(
+    experiment_dir: Path,
+    payload: dict[str, Any],
+) -> Summary:
+    confirmatory = ConfirmatoryEvaluationResult.model_validate(
+        payload["confirmatory_evaluation_result"]
+    )
+    exploratory = ExploratoryDiagnosticsResult.model_validate(
+        payload.get("exploratory_diagnostics_result", {})
+    )
+    analysis_ledger = AnalysisLedger.model_validate(
+        payload.get("analysis_ledger", {"entries": []})
+    )
+    write_json(
+        experiment_dir / "confirmatory_evaluation_result.json",
+        confirmatory.model_dump(mode="json"),
+    )
+    write_json(
+        experiment_dir / "exploratory_diagnostics_result.json",
+        exploratory.model_dump(mode="json"),
+    )
+    write_json(
+        experiment_dir / "analysis_ledger.json",
+        analysis_ledger.model_dump(mode="json"),
+    )
+    return Summary(
+        outcome=confirmatory.outcome,
+        outcome_reason=confirmatory.outcome_reason,
+        failed_stage=confirmatory.failed_stage,
+        failure_classification=confirmatory.failure_classification,
+        summary=confirmatory.outcome_reason,
+        confirmatory_findings=confirmatory.pre_registered_evidence,
+        exploratory_findings=exploratory.findings,
     )
 
 

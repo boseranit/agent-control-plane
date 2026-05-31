@@ -86,6 +86,21 @@ def test_snapshot_compare_detects_existing_untracked_file_mutation(
         assert_git_snapshot_unchanged(before, git_snapshot(repo))
 
 
+def test_snapshot_compare_detects_ignored_file_created_after_snapshot(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_repo(repo)
+    commit_file(repo, ".gitignore", "*.cache\n")
+    before = git_snapshot(repo)
+
+    (repo / "evaluation.cache").write_text("ignored\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="evaluation.cache"):
+        assert_git_snapshot_unchanged(before, git_snapshot(repo))
+
+
 def test_snapshot_compare_detects_staged_file_mutation(
     tmp_path: Path,
 ) -> None:

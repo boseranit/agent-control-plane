@@ -1,6 +1,6 @@
 # Evaluator Workspace and Evaluation Boundary Audit
 
-Status: ready-for-agent
+Status: completed
 Label: ready-for-agent
 
 ## Parent
@@ -13,11 +13,11 @@ Implement Evaluator Workspace creation, manifest writing, evaluator cwd behavior
 
 ## Acceptance criteria
 
-- [ ] Evaluator Workspace contains `manifest.json`, `eval_scratch/`, and `eval_outputs/`; no `eval_inputs/`.
-- [ ] Manifest records canonical artifact paths, locked hashes, worktree, data root, commands, and git SHA.
-- [ ] Evaluation Boundary Audit fails on worktree mutation or locked artifact hash changes.
-- [ ] Boundary failure produces `outcome=run_failed` and `failed_stage=evaluation_boundary_audit`.
-- [ ] Evaluation runtime/source defects are preserved as `run_failed` without implementer reroute.
+- [x] Evaluator Workspace contains `manifest.json`, `eval_scratch/`, and `eval_outputs/`; no `eval_inputs/`.
+- [x] Manifest records canonical artifact paths, locked hashes, worktree, data root, commands, and git SHA.
+- [x] Evaluation Boundary Audit fails on worktree mutation or locked artifact hash changes.
+- [x] Boundary failure produces `outcome=run_failed` and `failed_stage=evaluation_boundary_audit`.
+- [x] Evaluation runtime/source defects are preserved as `run_failed` without implementer reroute.
 
 ## Blocked by
 
@@ -26,3 +26,7 @@ Implement Evaluator Workspace creation, manifest writing, evaluator cwd behavior
 - `.scratch/research-experiment-plane/issues/11-controller-phase-skeleton-no-op-blocked-outcomes.md`
 - `.scratch/research-experiment-plane/issues/13-experiment-worktree-implementation-repair-path.md`
 
+## Comments
+
+- Implemented evaluator workspace manifests, evaluator-thread cwd wiring, result artifacts, and boundary audit hardening.
+- Verified with `pixi run test`.

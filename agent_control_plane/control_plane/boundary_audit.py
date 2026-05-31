@@ -15,6 +15,7 @@ class GitSnapshot:
     diff: str
     changed_files: list[str]
     dirty_content_state: dict[str, dict[str, str | None]] = field(default_factory=dict)
+    ignored_content_state: dict[str, str | None] = field(default_factory=dict)
     head: str | None = None
     head_tree: str | None = None
 
@@ -50,6 +51,7 @@ def git_snapshot(repo: str | Path) -> GitSnapshot:
             ["rev-parse", "--verify", "HEAD^{tree}"],
         ),
         dirty_content_state=_dirty_content_state(resolved_repo, changed_files),
+        ignored_content_state=_ignored_content_state(resolved_repo),
     )
 
 
@@ -64,10 +66,16 @@ def assert_git_snapshot_unchanged(before: GitSnapshot, after: GitSnapshot) -> No
         and before.head == after.head
         and before.head_tree == after.head_tree
         and before.dirty_content_state == after.dirty_content_state
+        and before.ignored_content_state == after.ignored_content_state
     ):
         return
 
-    changed_files = sorted(set(before.changed_files) | set(after.changed_files))
+    changed_files = sorted(
+        set(before.changed_files)
+        | set(after.changed_files)
+        | set(before.ignored_content_state)
+        | set(after.ignored_content_state)
+    )
     changed_detail = (
         ", ".join(changed_files) if changed_files else "repository content changed"
     )
@@ -176,6 +184,17 @@ def _dirty_content_state(
             "worktree_sha256": _worktree_sha256(repo, changed_file),
         }
         for changed_file in sorted(changed_files)
+    }
+
+
+def _ignored_content_state(repo: Path) -> dict[str, str | None]:
+    ignored_files = _git_output(
+        repo,
+        ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"],
+    ).split("\0")
+    return {
+        ignored_file: _worktree_sha256(repo, ignored_file)
+        for ignored_file in sorted(path for path in ignored_files if path)
     }
 
 
