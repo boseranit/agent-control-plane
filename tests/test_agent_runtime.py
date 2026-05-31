@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from agents.exceptions import ModelBehaviorError
 
-from agent_control_plane.task_control_plane import agent_runtime
+from agent_control_plane.control_plane import agent_runtime as shared_agent_runtime
 from agent_control_plane.task_control_plane.agent_runtime import (
     AgentRunConfig,
     AgentRuntime,
@@ -57,9 +57,9 @@ def fake_agents(monkeypatch: pytest.MonkeyPatch) -> None:
     FakeSession.calls = []
     FakeRunner.calls = []
     FakeRunner.final_output = {"status": "planned", "plan_markdown": "Do it."}
-    monkeypatch.setattr(agent_runtime, "Agent", FakeAgent)
-    monkeypatch.setattr(agent_runtime, "Runner", FakeRunner)
-    monkeypatch.setattr(agent_runtime, "SQLiteSession", FakeSession)
+    monkeypatch.setattr(shared_agent_runtime, "Agent", FakeAgent)
+    monkeypatch.setattr(shared_agent_runtime, "Runner", FakeRunner)
+    monkeypatch.setattr(shared_agent_runtime, "SQLiteSession", FakeSession)
 
 
 def test_agent_runtime_starts_thread_and_runs_agents_session(
