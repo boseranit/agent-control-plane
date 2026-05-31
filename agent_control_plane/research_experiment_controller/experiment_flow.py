@@ -16,6 +16,10 @@ from agent_control_plane.research_experiment_controller.outcomes import (
     classify_no_op,
     classify_selected_without_commands,
 )
+from agent_control_plane.research_experiment_controller.prerequisites import (
+    PrerequisiteAuditRequest,
+    run_data_audit_phase,
+)
 from agent_control_plane.research_experiment_controller.research_run_spec import (
     ResearchRunSpec,
 )
@@ -67,7 +71,30 @@ def run_experiment_flow(
             experiment_design.model_dump(mode="json"),
         )
 
-    summary_model = _terminal_summary_for_selection(selection)
+    summary_model = _selection_failure_summary(selection)
+    if summary_model is None:
+        data_audit_result = run_data_audit_phase(
+            PrerequisiteAuditRequest(
+                data_root=request.spec.data_root,
+                prerequisite_commands=experiment_design.prerequisite_commands,
+                data_audit_commands=experiment_design.data_audit_commands,
+                cwd=request.spec.target_repository,
+                run_dir=experiment_dir,
+                timeout_seconds=_data_audit_timeout_seconds(
+                    request.spec, experiment_design
+                ),
+            )
+        )
+        _write_artifact_once(
+            experiment_dir / "data_audit.json",
+            request.experiment_id,
+            data_audit_result["data_audit"],
+        )
+        if data_audit_result.get("status") == "experiment_completed":
+            summary_model = _summary_from_result(data_audit_result)
+        else:
+            summary_model = _terminal_summary_after_data_audit(selection)
+
     summary = summary_model.model_dump(mode="json")
     _write_artifact_once(
         experiment_dir / "summary.json",
@@ -81,7 +108,9 @@ def run_experiment_flow(
     }
 
 
-def _terminal_summary_for_selection(selection: ExperimentFlowSelection) -> Summary:
+def _selection_failure_summary(
+    selection: ExperimentFlowSelection,
+) -> Summary | None:
     selected_plan = selection.selected_plan
     experiment_design = selection.experiment_design
     if not selected_plan.selected:
@@ -96,6 +125,10 @@ def _terminal_summary_for_selection(selection: ExperimentFlowSelection) -> Summa
         and not experiment_design.confirmatory_commands
     ):
         return classify_selected_without_commands()
+    return None
+
+
+def _terminal_summary_after_data_audit(selection: ExperimentFlowSelection) -> Summary:
     if selection.terminal_summary is None:
         return classify_invalid(
             "A selected plan did not produce a terminal summary.",
@@ -107,6 +140,21 @@ def _terminal_summary_for_selection(selection: ExperimentFlowSelection) -> Summa
             failure_classification="selected_plan_returned_no_op",
         )
     return selection.terminal_summary
+
+
+def _summary_from_result(result: dict[str, Any]) -> Summary:
+    return Summary.model_validate(
+        {field: result[field] for field in Summary.model_fields}
+    )
+
+
+def _data_audit_timeout_seconds(
+    spec: ResearchRunSpec,
+    experiment_design: ExperimentDesign,
+) -> float:
+    if experiment_design.timeout_seconds is not None:
+        return experiment_design.timeout_seconds
+    return float(spec.selected_budget.default_command_timeout_seconds)
 
 
 def _default_no_op_selection() -> ExperimentFlowSelection:

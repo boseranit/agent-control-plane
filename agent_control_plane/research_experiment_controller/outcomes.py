@@ -13,6 +13,32 @@ COMPLETED_OUTCOMES = frozenset(
     }
 )
 
+DATA_AUDIT_FAILURE_CLASSIFICATIONS = frozenset(
+    {
+        "data_root_missing",
+        "feature_family_missing",
+        "schema_mismatch",
+        "artifact_missing",
+        "point_in_time_invalid",
+        "prerequisite_command_failed",
+    }
+)
+
+
+def classify_data_audit_failure(failure_classification: str) -> Summary:
+    if failure_classification not in DATA_AUDIT_FAILURE_CLASSIFICATIONS:
+        raise ValueError(
+            f"Unknown data-audit failure classification: {failure_classification}"
+        )
+    reason = f"Data/prerequisite audit failed: {failure_classification}."
+    return Summary(
+        outcome=ResearchOutcome.prerequisites_failed,
+        outcome_reason=reason,
+        failed_stage="data_audit",
+        failure_classification=failure_classification,
+        summary=reason,
+    )
+
 
 def classify_no_op(reason: str) -> Summary:
     return Summary(

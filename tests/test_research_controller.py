@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -37,8 +38,13 @@ def write_minimal_research_run_spec(
     *,
     research_run_id: str = "peer-residual-v1",
     max_experiments: int = 1,
+    data_root: Path | None = None,
+    stop_on_prerequisites_failed: bool = True,
 ) -> Path:
     path = tmp_path / f"{research_run_id}.yaml"
+    data_root_value = data_root or tmp_path / "data"
+    if data_root is None:
+        data_root_value.mkdir()
     path.write_text(
         f"""
 research_run_id: {research_run_id}
@@ -52,7 +58,8 @@ budgets:
     month_start: "2026-01"
     month_end: "2026-01"
     max_runtime_minutes: 5
-data_root: /mnt/redbackup/data
+data_root: {data_root_value}
+stop_on_prerequisites_failed: {str(stop_on_prerequisites_failed).lower()}
 """,
         encoding="utf-8",
     )
@@ -200,9 +207,7 @@ def test_run_research_loop_repeats_until_max_experiments(tmp_path: Path) -> None
                     rationale="Admissible bounded experiment.",
                 ),
                 experiment_design=ExperimentDesign(
-                    verification_commands=[
-                        {"name": "unit", "argv": ["pytest", "-q"]}
-                    ],
+                    verification_commands=[{"name": "unit", "argv": ["pytest", "-q"]}],
                 ),
                 terminal_summary=Summary(
                     outcome=ResearchOutcome.completed_rejected,
@@ -340,9 +345,7 @@ def test_selected_plan_without_deterministic_commands_is_blocked(
     )
 
     state = read_json_object(run.state_path)
-    summary = read_json_object(
-        run.experiments_directory / "EXP-0001" / "summary.json"
-    )
+    summary = read_json_object(run.experiments_directory / "EXP-0001" / "summary.json")
     selected_plan = read_json_object(
         run.experiments_directory / "EXP-0001" / "selected_plan.json"
     )
@@ -369,9 +372,7 @@ def test_selected_plan_cannot_return_no_op_terminal_summary(tmp_path: Path) -> N
                     rationale="Plan selected.",
                 ),
                 experiment_design=ExperimentDesign(
-                    verification_commands=[
-                        {"name": "unit", "argv": ["pytest", "-q"]}
-                    ],
+                    verification_commands=[{"name": "unit", "argv": ["pytest", "-q"]}],
                 ),
                 terminal_summary=Summary(
                     outcome=ResearchOutcome.no_op,
@@ -390,13 +391,196 @@ def test_selected_plan_cannot_return_no_op_terminal_summary(tmp_path: Path) -> N
     )
 
     state = read_json_object(run.state_path)
-    summary = read_json_object(
-        run.experiments_directory / "EXP-0001" / "summary.json"
-    )
+    summary = read_json_object(run.experiments_directory / "EXP-0001" / "summary.json")
     assert state["experiments"]["EXP-0001"]["outcome"] == "invalid"
     assert summary["outcome"] == "invalid"
     assert summary["failed_stage"] == "selection"
     assert summary["failure_classification"] == "selected_plan_returned_no_op"
+
+
+def test_missing_data_root_writes_data_audit_and_summary_before_terminal_path(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    spec_path = write_minimal_research_run_spec(
+        tmp_path,
+        repo,
+        data_root=tmp_path / "missing-data",
+    )
+    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+
+    def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        return run_experiment_flow(
+            request,
+            selection=ExperimentFlowSelection(
+                selected_plan=SelectedPlan(
+                    selected=True,
+                    plan_id="needs-data",
+                    rationale="Plan needs data audit.",
+                ),
+                experiment_design=ExperimentDesign(
+                    verification_commands=[{"name": "unit", "argv": ["pytest", "-q"]}],
+                ),
+            ),
+        )
+
+    run_research_loop(
+        run.research_run_id,
+        runtime_root=tmp_path / "runs",
+        experiment_runner=experiment_runner,
+    )
+
+    experiment_dir = run.experiments_directory / "EXP-0001"
+    state = read_json_object(run.state_path)
+    data_audit = read_json_object(experiment_dir / "data_audit.json")
+    summary = read_json_object(experiment_dir / "summary.json")
+
+    assert state["experiments"]["EXP-0001"]["outcome"] == "prerequisites_failed"
+    assert data_audit == {
+        "passed": False,
+        "outcome": "prerequisites_failed",
+        "outcome_reason": "Data/prerequisite audit failed: data_root_missing.",
+        "failed_stage": "data_audit",
+        "failure_classification": "data_root_missing",
+        "command_results": [],
+    }
+    assert summary["outcome"] == "prerequisites_failed"
+    assert summary["failed_stage"] == "data_audit"
+    assert summary["failure_classification"] == "data_root_missing"
+
+
+def test_failed_data_audit_command_writes_summary_and_command_artifacts(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    spec_path = write_minimal_research_run_spec(tmp_path, repo)
+    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+
+    def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        return run_experiment_flow(
+            request,
+            selection=ExperimentFlowSelection(
+                selected_plan=SelectedPlan(
+                    selected=True,
+                    plan_id="bad-schema",
+                    rationale="Plan needs schema audit.",
+                ),
+                experiment_design=ExperimentDesign(
+                    data_audit_commands=[
+                        {
+                            "name": "schema-check",
+                            "argv": [sys.executable, "-c", "raise SystemExit(2)"],
+                        }
+                    ],
+                    verification_commands=[{"name": "unit", "argv": ["pytest", "-q"]}],
+                ),
+            ),
+        )
+
+    run_research_loop(
+        run.research_run_id,
+        runtime_root=tmp_path / "runs",
+        experiment_runner=experiment_runner,
+    )
+
+    experiment_dir = run.experiments_directory / "EXP-0001"
+    state = read_json_object(run.state_path)
+    data_audit = read_json_object(experiment_dir / "data_audit.json")
+    metrics = read_json_object(experiment_dir / "command_metrics.json")
+    summary = read_json_object(experiment_dir / "summary.json")
+
+    assert state["experiments"]["EXP-0001"]["outcome"] == "prerequisites_failed"
+    assert data_audit["failed_stage"] == "data_audit"
+    assert data_audit["failure_classification"] == "prerequisite_command_failed"
+    assert data_audit["command_results"][0]["name"] == "schema-check"
+    assert summary["outcome"] == "prerequisites_failed"
+    assert summary["failed_stage"] == "data_audit"
+    assert metrics["failed_count"] == 1
+    assert (experiment_dir / "commands" / "data_audit_1_stdout.log").exists()
+    assert (experiment_dir / "commands" / "data_audit_1_stderr.log").exists()
+
+
+def test_prerequisites_failed_stops_research_run_by_default(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    spec_path = write_minimal_research_run_spec(
+        tmp_path,
+        repo,
+        max_experiments=3,
+        data_root=tmp_path / "missing-data",
+    )
+    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+
+    def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        return run_experiment_flow(
+            request,
+            selection=ExperimentFlowSelection(
+                selected_plan=SelectedPlan(
+                    selected=True,
+                    plan_id=f"needs-data-{request.experiment_id}",
+                    rationale="Plan needs data audit.",
+                ),
+                experiment_design=ExperimentDesign(
+                    verification_commands=[{"name": "unit", "argv": ["pytest", "-q"]}],
+                ),
+            ),
+        )
+
+    result = run_research_loop(
+        run.research_run_id,
+        runtime_root=tmp_path / "runs",
+        experiment_runner=experiment_runner,
+    )
+
+    state = read_json_object(run.state_path)
+    assert result["experiments_completed"] == 1
+    assert state["status"] == "completed"
+    assert list(state["experiments"]) == ["EXP-0001"]
+    assert state["experiments"]["EXP-0001"]["outcome"] == "prerequisites_failed"
+
+
+def test_stop_on_prerequisites_failed_false_continues_to_max_experiments(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    spec_path = write_minimal_research_run_spec(
+        tmp_path,
+        repo,
+        max_experiments=2,
+        data_root=tmp_path / "missing-data",
+        stop_on_prerequisites_failed=False,
+    )
+    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+
+    def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        return run_experiment_flow(
+            request,
+            selection=ExperimentFlowSelection(
+                selected_plan=SelectedPlan(
+                    selected=True,
+                    plan_id=f"needs-data-{request.experiment_id}",
+                    rationale="Plan needs data audit.",
+                ),
+                experiment_design=ExperimentDesign(
+                    verification_commands=[{"name": "unit", "argv": ["pytest", "-q"]}],
+                ),
+            ),
+        )
+
+    result = run_research_loop(
+        run.research_run_id,
+        runtime_root=tmp_path / "runs",
+        experiment_runner=experiment_runner,
+    )
+
+    state = read_json_object(run.state_path)
+    assert result["experiments_completed"] == 2
+    assert state["status"] == "completed"
+    assert state["experiments"]["EXP-0001"]["outcome"] == "prerequisites_failed"
+    assert state["experiments"]["EXP-0002"]["outcome"] == "prerequisites_failed"
 
 
 def test_terminal_summary_routes_to_experiment_state(tmp_path: Path) -> None:
@@ -437,9 +621,7 @@ def test_terminal_summary_routes_to_experiment_state(tmp_path: Path) -> None:
     )
 
     state = read_json_object(run.state_path)
-    summary = read_json_object(
-        run.experiments_directory / "EXP-0001" / "summary.json"
-    )
+    summary = read_json_object(run.experiments_directory / "EXP-0001" / "summary.json")
     assert state["experiments"]["EXP-0001"] == {
         "id": "EXP-0001",
         "status": "terminal",
@@ -474,9 +656,7 @@ def test_non_completed_runner_result_records_run_failed_experiment(
     )
 
     state = read_json_object(run.state_path)
-    summary = read_json_object(
-        run.experiments_directory / "EXP-0001" / "summary.json"
-    )
+    summary = read_json_object(run.experiments_directory / "EXP-0001" / "summary.json")
     assert result == {
         "status": "completed",
         "research_run_id": "peer-residual-v1",
@@ -506,9 +686,7 @@ def test_runner_exception_records_run_failed_experiment(tmp_path: Path) -> None:
     )
 
     state = read_json_object(run.state_path)
-    summary = read_json_object(
-        run.experiments_directory / "EXP-0001" / "summary.json"
-    )
+    summary = read_json_object(run.experiments_directory / "EXP-0001" / "summary.json")
     assert result["experiments_completed"] == 1
     assert state["active_experiment_id"] is None
     assert state["experiments"]["EXP-0001"]["outcome"] == "run_failed"
