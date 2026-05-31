@@ -1,6 +1,6 @@
 # Shared structured command runner
 
-Status: ready-for-agent
+Status: completed
 Label: ready-for-agent
 
 ## Parent
@@ -13,12 +13,16 @@ Add a shared argv-only command runner with `shell=False`, required cwd, env over
 
 ## Acceptance criteria
 
-- [ ] Shell strings are rejected; argv command records are deterministic.
-- [ ] Logs stream while commands run and persist after completion/failure.
-- [ ] Timeout handling terminates the process group and records timeout metrics.
-- [ ] Tests cover cwd, env overlay, exit codes, logs, metrics, and timeout behavior.
+- [x] Shell strings are rejected; argv command records are deterministic.
+- [x] Logs stream while commands run and persist after completion/failure.
+- [x] Timeout handling terminates the process group and records timeout metrics.
+- [x] Tests cover cwd, env overlay, exit codes, logs, metrics, and timeout behavior.
 
 ## Blocked by
 
 None - can start immediately
 
+## Comments
+
+- Added shared structured command runner.
+- Verified with `pixi run test` (`109 passed`).
