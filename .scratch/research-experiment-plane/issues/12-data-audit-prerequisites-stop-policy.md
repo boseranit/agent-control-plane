@@ -1,7 +1,7 @@
 # Data audit and prerequisites stop policy
 
 Status: completed
-Label: ready-for-agent
+Label: done
 
 ## Parent
 

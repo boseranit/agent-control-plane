@@ -1,7 +1,7 @@
 # Deterministic context pack and prior-run synthesis
 
 Status: completed
-Label: ready-for-agent
+Label: done
 
 ## Parent
 

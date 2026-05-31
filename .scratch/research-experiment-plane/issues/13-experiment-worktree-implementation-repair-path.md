@@ -1,7 +1,7 @@
 # Experiment Worktree and implementation repair path
 
 Status: completed
-Label: ready-for-agent
+Label: done
 
 ## Parent
 

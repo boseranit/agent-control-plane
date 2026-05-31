@@ -1,7 +1,7 @@
 # Research Run Spec loader and snapshot model
 
 Status: completed
-Label: ready-for-agent
+Label: done
 
 ## Parent
 

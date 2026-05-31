@@ -1,7 +1,7 @@
 # Durable Shell and Hatchet adapter
 
 Status: completed
-Label: ready-for-agent
+Label: done
 
 ## Parent
 

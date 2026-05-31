@@ -1,7 +1,7 @@
 # Shared boundary audit helpers
 
 Status: completed
-Label: ready-for-agent
+Label: done
 
 ## Parent
 

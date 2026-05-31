@@ -1,7 +1,7 @@
 # Research agents and prompt boundaries
 
 Status: completed
-Label: ready-for-agent
+Label: done
 
 ## Parent
 

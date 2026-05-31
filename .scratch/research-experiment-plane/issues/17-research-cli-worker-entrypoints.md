@@ -1,7 +1,7 @@
 # Research CLI and worker entrypoints
 
 Status: completed
-Label: ready-for-agent
+Label: done
 
 ## Parent
 

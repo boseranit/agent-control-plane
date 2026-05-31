@@ -1,7 +1,7 @@
 # Controller phase skeleton and no-op/blocked outcomes
 
 Status: completed
-Label: ready-for-agent
+Label: done
 
 ## Parent
 
