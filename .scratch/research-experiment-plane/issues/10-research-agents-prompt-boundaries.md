@@ -1,6 +1,6 @@
 # Research agents and prompt boundaries
 
-Status: ready-for-agent
+Status: completed
 Label: ready-for-agent
 
 ## Parent
@@ -13,11 +13,11 @@ Add Strategist, Critic, Implementer, and Evaluator agent definitions, prompts, t
 
 ## Acceptance criteria
 
-- [ ] Strategist thread persists per Research Run.
-- [ ] Critic thread is fresh per critique pass.
-- [ ] Implementer thread persists per Experiment Worktree with workspace-write access.
-- [ ] Evaluator thread persists per Evaluator Workspace with workspace-write access.
-- [ ] Prompts encode artifact authority, materiality limits, and no human wait in v1.
+- [x] Strategist thread persists per Research Run.
+- [x] Critic thread is fresh per critique pass.
+- [x] Implementer thread persists per Experiment Worktree with workspace-write access.
+- [x] Evaluator thread persists per Evaluator Workspace with workspace-write access.
+- [x] Prompts encode artifact authority, materiality limits, and no human wait in v1.
 
 ## Blocked by
 
@@ -25,3 +25,7 @@ Add Strategist, Critic, Implementer, and Evaluator agent definitions, prompts, t
 - `.scratch/research-experiment-plane/issues/07-research-artifact-models-outcome-enum.md`
 - `.scratch/research-experiment-plane/issues/09-deterministic-context-pack-prior-run-synthesis.md`
 
+## Comments
+
+- Implemented research agent configs, prompt boundaries, and thread lifetime helpers.
+- Verified with `pixi run test`.
