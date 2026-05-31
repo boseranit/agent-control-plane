@@ -1,6 +1,6 @@
 # Shared artifact/state primitives
 
-Status: ready-for-agent
+Status: completed
 Label: ready-for-agent
 
 ## Parent
@@ -13,12 +13,16 @@ Add shared JSON artifact/state primitives for deterministic artifact writes, JSO
 
 ## Acceptance criteria
 
-- [ ] Shared artifact IO writes stable sorted JSON and append-only JSONL.
-- [ ] Helpers reject malformed/non-object artifact payloads with clear errors.
-- [ ] File hashing and hash-manifest helpers support locked artifact verification.
-- [ ] Tests cover persisted output shape and error cases.
+- [x] Shared artifact IO writes stable sorted JSON and append-only JSONL.
+- [x] Helpers reject malformed/non-object artifact payloads with clear errors.
+- [x] File hashing and hash-manifest helpers support locked artifact verification.
+- [x] Tests cover persisted output shape and error cases.
 
 ## Blocked by
 
 None - can start immediately
 
+## Comments
+
+- Implemented in `agent_control_plane/control_plane/json_artifacts.py`.
+- Verified with `pixi run test` (`88 passed`).
