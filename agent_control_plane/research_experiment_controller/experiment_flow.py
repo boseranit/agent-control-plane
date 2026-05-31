@@ -18,15 +18,19 @@ from agent_control_plane.control_plane.usage_limit import (
 from agent_control_plane.research_experiment_controller.agents import (
     ResearchAgentRole,
     agent_config,
+    open_critic_thread,
     open_evaluator_thread,
     open_implementer_thread,
 )
 from agent_control_plane.research_experiment_controller.artifacts import (
     AnalysisLedger,
     ConfirmatoryEvaluationResult,
+    Critique,
     ExperimentDesign,
+    FeatureSpecs,
     ExploratoryDiagnosticsResult,
     ResearchOutcome,
+    ResearchSpec,
     SelectedPlan,
     Summary,
 )
@@ -43,6 +47,10 @@ from agent_control_plane.research_experiment_controller.outcomes import (
 )
 from agent_control_plane.research_experiment_controller.ledger import (
     append_ledger_event,
+)
+from agent_control_plane.research_experiment_controller.materiality import (
+    MaterialRevisionDecision,
+    assess_material_revision,
 )
 from agent_control_plane.research_experiment_controller.prerequisites import (
     PrerequisiteAuditRequest,
@@ -81,6 +89,10 @@ class ExperimentFlowSelection:
     selected_plan: SelectedPlan
     experiment_design: ExperimentDesign | None
     terminal_summary: Summary | None = None
+    prior_research_spec: Any | None = None
+    research_spec: Any | None = None
+    prior_feature_specs: FeatureSpecs | None = None
+    feature_specs: FeatureSpecs | None = None
 
 
 class ExperimentFlowError(RuntimeError):
@@ -108,8 +120,29 @@ def run_experiment_flow(
             request.experiment_id,
             experiment_design.model_dump(mode="json"),
         )
+    if selection.research_spec is not None:
+        _write_artifact_once(
+            experiment_dir / "research_spec.json",
+            request.experiment_id,
+            ResearchSpec.model_validate(selection.research_spec).model_dump(
+                mode="json"
+            ),
+        )
+    if selection.feature_specs is not None:
+        _write_artifact_once(
+            experiment_dir / "feature_specs.json",
+            request.experiment_id,
+            selection.feature_specs.model_dump(mode="json"),
+        )
 
     summary_model = _selection_failure_summary(selection)
+    if summary_model is None:
+        summary_model = _run_material_revision_review_if_needed(
+            request=request,
+            selection=selection,
+            agent_runtime=agent_runtime,
+        )
+
     if summary_model is None:
         summary_model = _worktree_policy_failure(request.spec, experiment_design)
 
@@ -172,6 +205,60 @@ def run_experiment_flow(
     }
 
 
+def _run_material_revision_review_if_needed(
+    *,
+    request: ExperimentFlowRequest,
+    selection: ExperimentFlowSelection,
+    agent_runtime: Any | None,
+) -> Summary | None:
+    decision = _material_revision_decision(selection)
+    if not decision.requires_fresh_critic:
+        return None
+    if agent_runtime is None:
+        return classify_invalid(
+            "Material revision requires Critic review but no agent runtime is available.",
+            failed_stage="critic_review",
+            failure_classification="material_revision_unreviewed",
+        )
+
+    critic_cwd = request.experiment_directory
+    thread = open_critic_thread(
+        agent_runtime,
+        request.state,
+        critic_cwd,
+        model=request.spec.codex.model,
+        effort=request.spec.codex.effort,
+    )
+    append_ledger_event(
+        request.ledger_path,
+        event_type="material_revision_critic_review",
+        research_run_id=request.research_run_id,
+        experiment_id=request.experiment_id,
+        critic_thread_id=thread.id,
+        material_revision_categories=decision.material_categories,
+    )
+    turn_result = _run_agent_turn_with_usage_limit(
+        role=ResearchAgentRole.CRITIC,
+        run=lambda: thread.run(
+            _material_revision_critic_input(request, decision),
+            agent_config(
+                ResearchAgentRole.CRITIC,
+                critic_cwd,
+                model=request.spec.codex.model,
+                effort=request.spec.codex.effort,
+            ),
+        ),
+    )
+    critique = Critique.model_validate(
+        _response_mapping(getattr(turn_result, "final_response", None))
+    )
+    write_json(
+        request.experiment_directory / "material_revision_critique.json",
+        critique.model_dump(mode="json"),
+    )
+    return _material_revision_rejection_summary(critique)
+
+
 def _selection_failure_summary(
     selection: ExperimentFlowSelection,
 ) -> Summary | None:
@@ -190,6 +277,80 @@ def _selection_failure_summary(
     ):
         return classify_selected_without_commands()
     return None
+
+
+def _material_revision_decision(
+    selection: ExperimentFlowSelection,
+) -> MaterialRevisionDecision:
+    before = _material_revision_payload(
+        selection.prior_research_spec,
+        selection.prior_feature_specs,
+    )
+    after = _material_revision_payload(
+        selection.research_spec,
+        selection.feature_specs if selection.prior_feature_specs is not None else None,
+    )
+    return assess_material_revision(
+        before,
+        after,
+        agent_declared_categories=selection.selected_plan.material_revision_categories,
+    )
+
+
+def _material_revision_payload(
+    research_spec: Any | None,
+    feature_specs: FeatureSpecs | None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    if research_spec is not None:
+        if hasattr(research_spec, "model_dump"):
+            payload.update(research_spec.model_dump(mode="json"))
+        elif isinstance(research_spec, dict):
+            payload.update(research_spec)
+    if feature_specs is not None:
+        features = feature_specs.model_dump(mode="json")["features"]
+        payload["data_source"] = [
+            feature.get("data_source")
+            for feature in features
+            if feature.get("data_source")
+        ]
+        payload["feature_family"] = [
+            feature.get("feature_family")
+            for feature in features
+            if feature.get("feature_family")
+        ]
+    return payload
+
+
+def _material_revision_rejection_summary(critique: Critique) -> Summary | None:
+    decision = _normalized_critic_decision(critique.decision)
+    if (
+        decision
+        not in {
+            "fatal",
+            "reject",
+            "rejected",
+            "revise",
+            "requires_revision",
+            "revision_required",
+        }
+        and not critique.fatal_issues
+        and not critique.required_revisions
+    ):
+        return None
+    details = [*critique.fatal_issues, *critique.required_revisions]
+    reason = "Material revision Critic rejected revision."
+    if details:
+        reason = f"{reason} {'; '.join(details)}."
+    return classify_invalid(
+        reason,
+        failed_stage="critic_review",
+        failure_classification="material_revision_rejected",
+    )
+
+
+def _normalized_critic_decision(decision: str) -> str:
+    return "_".join(decision.strip().lower().replace("-", " ").split())
 
 
 def _worktree_policy_failure(
@@ -349,6 +510,7 @@ def _canonical_artifacts(experiment_dir: Path) -> dict[str, Path]:
     candidates = {
         "selected_plan": experiment_dir / "selected_plan.json",
         "research_spec": experiment_dir / "research_spec.json",
+        "feature_specs": experiment_dir / "feature_specs.json",
         "experiment_design": experiment_dir / "experiment_design.json",
         "data_audit": experiment_dir / "data_audit.json",
         "implementation": experiment_dir / "implementation.json",
@@ -363,6 +525,7 @@ def _locked_artifacts(request: ExperimentFlowRequest) -> list[Path]:
         request.run_directory / "research_run_spec.yaml",
         request.experiment_directory / "selected_plan.json",
         request.experiment_directory / "research_spec.json",
+        request.experiment_directory / "feature_specs.json",
         request.experiment_directory / "experiment_design.json",
     ]
     return [path for path in candidates if path.exists()]
@@ -389,6 +552,34 @@ def _evaluation_input(
             "Return confirmatory_evaluation_result, exploratory_diagnostics_result, and analysis_ledger.",
         ]
     )
+
+
+def _material_revision_critic_input(
+    request: ExperimentFlowRequest,
+    decision: MaterialRevisionDecision,
+) -> str:
+    return "\n".join(
+        [
+            f"Review material revision for {request.experiment_id}.",
+            f"Material categories: {', '.join(decision.material_categories)}.",
+            "Review artifacts:",
+            *_material_revision_review_artifacts(request),
+        ]
+    )
+
+
+def _material_revision_review_artifacts(request: ExperimentFlowRequest) -> list[str]:
+    artifact_names = [
+        "selected_plan.json",
+        "experiment_design.json",
+        "research_spec.json",
+        "feature_specs.json",
+    ]
+    return [
+        name
+        for name in artifact_names
+        if (request.experiment_directory / name).exists()
+    ]
 
 
 def _response_mapping(final_response: Any) -> dict[str, Any]:

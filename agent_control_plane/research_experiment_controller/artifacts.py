@@ -3,7 +3,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ResearchArtifact(BaseModel):
@@ -74,6 +74,57 @@ class ExperimentDesign(ResearchArtifact):
     timeout_seconds: float | None = None
     resource_budgets: dict[str, Any] = Field(default_factory=dict)
     failure_routing: dict[str, Any] = Field(default_factory=dict)
+
+
+class FeatureSpec(ResearchArtifact):
+    feature_id: str = Field(min_length=1)
+    inputs: list[str] = Field(min_length=1)
+    transformation_logic: str = Field(min_length=1)
+    lookback_window: str = Field(min_length=1)
+    lag: str = Field(min_length=1)
+    normalization: str = Field(min_length=1)
+    missing_data_policy: str = Field(min_length=1)
+    backfill_range: str = Field(min_length=1)
+    availability_at_decision_time_proof: str = Field(min_length=1)
+    expected_failure_modes: list[str] = Field(min_length=1)
+    feature_name: str | None = Field(default=None, min_length=1)
+    feature_family: str | None = Field(default=None, min_length=1)
+    data_source: str | None = Field(default=None, min_length=1)
+    transformation: str | None = Field(default=None, min_length=1)
+    data_timing: str | None = Field(default=None, min_length=1)
+    failure_modes: list[str] = Field(default_factory=list)
+
+    @field_validator(
+        "feature_id",
+        "transformation_logic",
+        "lookback_window",
+        "lag",
+        "normalization",
+        "missing_data_policy",
+        "backfill_range",
+        "availability_at_decision_time_proof",
+        "feature_name",
+        "feature_family",
+        "data_source",
+        "transformation",
+        "data_timing",
+    )
+    @classmethod
+    def _non_blank_string(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("field must not be blank")
+        return value
+
+    @field_validator("inputs", "expected_failure_modes", "failure_modes")
+    @classmethod
+    def _non_blank_list(cls, value: list[str]) -> list[str]:
+        if any(not item.strip() for item in value):
+            raise ValueError("list must not include blank values")
+        return value
+
+
+class FeatureSpecs(ResearchArtifact):
+    features: list[FeatureSpec] = Field(min_length=1)
 
 
 class SelectedPlan(ResearchArtifact):

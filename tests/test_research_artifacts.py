@@ -12,6 +12,8 @@ from agent_control_plane.research_experiment_controller.artifacts import (
     DataAudit,
     EmpiricalCritique,
     ExperimentDesign,
+    FeatureSpec,
+    FeatureSpecs,
     ExploratoryDiagnosticsResult,
     Implementation,
     ImplementationDiffSummary,
@@ -151,6 +153,140 @@ def test_invalid_artifact_shapes_are_rejected() -> None:
 
     with pytest.raises(ValidationError):
         ExperimentDesign(unknown_field=True)
+
+
+def test_feature_specs_validate_material_signal_contract() -> None:
+    feature = FeatureSpec(
+        feature_id="peer_residual_21d",
+        feature_name="Peer residual 21d",
+        feature_family="peer_residual",
+        data_source="daily_bars_v1",
+        inputs=["returns", "peer_groups"],
+        transformation="Regress returns on peer basket and z-score residual.",
+        transformation_logic="Regress returns on peer basket and z-score residual.",
+        lookback_window="21 trading days",
+        data_timing="Uses only data available before prediction timestamp.",
+        lag="1 trading day",
+        normalization="cross-sectional z-score by timestamp",
+        backfill_range="2020-01 through 2026-01",
+        missing_data_policy="Drop symbols with fewer than 60 observations.",
+        availability_at_decision_time_proof="Uses timestamps <= decision timestamp.",
+        failure_modes=[
+            "Peer basket composition may include future constituents.",
+            "Sparse symbols can create unstable residuals.",
+        ],
+        expected_failure_modes=[
+            "Peer basket composition may include future constituents.",
+            "Sparse symbols can create unstable residuals.",
+        ],
+    )
+    bundle = FeatureSpecs(features=[feature])
+
+    assert bundle.model_dump(mode="json")["features"][0]["lag"] == "1 trading day"
+
+    with pytest.raises(ValidationError):
+        FeatureSpec(
+            feature_id="",
+            feature_name="Peer residual 21d",
+            feature_family="peer_residual",
+            data_source="daily_bars_v1",
+            inputs=["returns", "peer_groups"],
+            transformation="Regress returns on peer basket.",
+            transformation_logic="Regress returns on peer basket.",
+            lookback_window="21 trading days",
+            data_timing="Point-in-time before label.",
+            lag="1 trading day",
+            normalization="z-score",
+            backfill_range="2020-01 through 2026-01",
+            missing_data_policy="Drop missing symbols.",
+            availability_at_decision_time_proof="Uses timestamps <= decision time.",
+            failure_modes=["future constituents"],
+            expected_failure_modes=["future constituents"],
+        )
+
+    with pytest.raises(ValidationError):
+        FeatureSpec(
+            feature_id="peer_residual_21d",
+            feature_name="Peer residual 21d",
+            feature_family="peer_residual",
+            data_source="daily_bars_v1",
+            inputs=["returns", "peer_groups"],
+            transformation="Regress returns on peer basket.",
+            transformation_logic="Regress returns on peer basket.",
+            lookback_window="21 trading days",
+            data_timing="Point-in-time before label.",
+            lag="1 trading day",
+            normalization="z-score",
+            backfill_range="2020-01 through 2026-01",
+            failure_modes=["future constituents"],
+            expected_failure_modes=["future constituents"],
+        )
+
+    with pytest.raises(ValidationError):
+        FeatureSpec(
+            feature_id="peer_residual_21d",
+            feature_name="Peer residual 21d",
+            feature_family="peer_residual",
+            data_source="daily_bars_v1",
+            inputs=["returns", "peer_groups"],
+            transformation="Regress returns on peer basket.",
+            transformation_logic="Regress returns on peer basket.",
+            lookback_window="21 trading days",
+            data_timing="Point-in-time before label.",
+            lag="1 trading day",
+            normalization="z-score",
+            backfill_range="2020-01 through 2026-01",
+            missing_data_policy="Drop missing symbols.",
+            availability_at_decision_time_proof="Uses timestamps <= decision time.",
+            failure_modes=["future constituents"],
+            expected_failure_modes=["future constituents"],
+            extra=True,
+        )
+
+
+def test_feature_spec_records_point_in_time_validity() -> None:
+    feature = FeatureSpec(
+        feature_id="peer_residual_lookback_30d",
+        inputs=["returns", "peer_groups"],
+        transformation_logic="Rolling residual against peer basket.",
+        lookback_window="30d",
+        lag="1 bar",
+        normalization="zscore by timestamp",
+        missing_data_policy="drop if peer group has fewer than 5 assets",
+        backfill_range="2020-01:2026-01",
+        availability_at_decision_time_proof="Uses only timestamps <= decision timestamp.",
+        expected_failure_modes=["thin peer group", "missing returns"],
+    )
+
+    assert feature.feature_id == "peer_residual_lookback_30d"
+    assert "decision timestamp" in feature.availability_at_decision_time_proof
+
+    with pytest.raises(ValidationError):
+        FeatureSpec(
+            feature_id="peer_residual_lookback_30d",
+            inputs=[],
+            transformation_logic="Rolling residual against peer basket.",
+            lookback_window="30d",
+            lag="1 bar",
+            normalization="zscore by timestamp",
+            missing_data_policy="drop if peer group has fewer than 5 assets",
+            backfill_range="2020-01:2026-01",
+            availability_at_decision_time_proof="Uses timestamps <= decision timestamp.",
+            expected_failure_modes=["thin peer group"],
+        )
+
+    with pytest.raises(ValidationError):
+        FeatureSpec(
+            feature_id="peer_residual_lookback_30d",
+            inputs=["returns", "peer_groups"],
+            transformation_logic="Rolling residual against peer basket.",
+            lookback_window="30d",
+            lag="1 bar",
+            normalization="zscore by timestamp",
+            missing_data_policy="drop if peer group has fewer than 5 assets",
+            backfill_range="2020-01:2026-01",
+            expected_failure_modes=["thin peer group"],
+        )
 
 
 def test_remaining_prd_artifacts_validate_minimum_payloads() -> None:
