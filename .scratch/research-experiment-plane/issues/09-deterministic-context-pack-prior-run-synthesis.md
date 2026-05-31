@@ -1,6 +1,6 @@
 # Deterministic context pack and prior-run synthesis
 
-Status: ready-for-agent
+Status: completed
 Label: ready-for-agent
 
 ## Parent
@@ -13,12 +13,16 @@ Build deterministic Research context output containing spec facts, budget, data 
 
 ## Acceptance criteria
 
-- [ ] `context_pack.md` and `context_summary.json` are deterministic for the same inputs.
-- [ ] Prior-run synthesis distinguishes blockers, prerequisites, failures, and completed outcomes.
-- [ ] Context includes selected Research Budget, data root, repo root, and git SHA/status.
-- [ ] Tests cover context content and stable output.
+- [x] `context_pack.md` and `context_summary.json` are deterministic for the same inputs.
+- [x] Prior-run synthesis distinguishes blockers, prerequisites, failures, and completed outcomes.
+- [x] Context includes selected Research Budget, data root, repo root, and git SHA/status.
+- [x] Tests cover context content and stable output.
 
 ## Blocked by
 
 - `.scratch/research-experiment-plane/issues/08-research-run-state-ledger-start-resume.md`
 
+## Comments
+
+- Added deterministic context pack and context summary generation.
+- Verified with `pixi run test` (`172 passed`).
