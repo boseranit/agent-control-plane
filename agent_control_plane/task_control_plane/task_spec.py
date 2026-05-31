@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -83,6 +84,8 @@ def load_task_source(
     path: str | Path, *, repo_path: str | Path | None = None
 ) -> TaskSource:
     source_path = Path(path).expanduser()
+    if not source_path.exists():
+        raise TaskSpecError(f"Task Source does not exist: {source_path}")
     if source_path.is_dir():
         return _load_issue_directory_source(source_path, repo_path=repo_path)
     if repo_path is not None:
@@ -205,9 +208,15 @@ def _first_markdown_title(text: str) -> str | None:
 
 
 def _infer_target_repository(issue_directory: Path) -> Path:
-    for candidate in (issue_directory, *issue_directory.parents):
-        if (candidate / ".git").exists():
-            return candidate.resolve()
+    result = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        cwd=issue_directory,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0 and result.stdout.strip():
+        return Path(result.stdout.strip()).resolve()
     raise TaskSpecError(
         "Issue Directory target repository could not be inferred; pass --repo."
     )

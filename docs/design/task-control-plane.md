@@ -1046,7 +1046,9 @@ Before starting a new Task:
 
 - Target Repository path must exist.
 - It must be a git worktree.
-- `git status --porcelain=v1 --untracked-files=all` must be clean.
+- Tracked and staged changes must be clean.
+- Untracked files must be clean, except for the untracked Issue Directory source
+  excluded with a git pathspec.
 
 When resuming the active Task:
 

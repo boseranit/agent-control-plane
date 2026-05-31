@@ -1228,21 +1228,18 @@ def _require_clean_target_repository(
             f"Target Repository is not a git work tree: {target_repository}"
         )
 
-    status = subprocess.run(
-        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
-        cwd=target_repository,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if status.returncode != 0:
+    if _run_git_command(
+        ["status", "--porcelain=v1", "--untracked-files=no"],
+        target_repository,
+    ).stdout.strip():
         raise TaskRunError(
-            f"Could not inspect Target Repository status: {status.stderr.strip()}"
+            f"Target Repository must be clean {clean_context}: {target_repository}"
         )
-    if any(
-        not _is_untracked_source_status_line(line, untracked_source_root)
-        for line in status.stdout.splitlines()
-    ):
+
+    untracked_args = ["ls-files", "--others", "--exclude-standard"]
+    if untracked_source_root is not None:
+        untracked_args.extend(["--", ".", f":(exclude){untracked_source_root}"])
+    if _run_git_command(untracked_args, target_repository).stdout.strip():
         raise TaskRunError(
             f"Target Repository must be clean {clean_context}: {target_repository}"
         )
@@ -1265,11 +1262,14 @@ def _commit_all_target_repository_changes(
     message: str,
     untracked_source_root: str | None = None,
 ) -> str:
-    add_args = ["add", "--all"]
-    if untracked_source_root is not None:
+    if untracked_source_root is None:
+        _run_git_command(["add", "--all"], target_repository)
+    else:
         _run_git_command(["add", "--update"], target_repository)
-        add_args.extend(["--", ".", f":(exclude){untracked_source_root}"])
-    _run_git_command(add_args, target_repository)
+        _run_git_command(
+            ["add", "--all", "--", ".", f":(exclude){untracked_source_root}"],
+            target_repository,
+        )
     staged_changes = subprocess.run(
         ["git", "diff", "--cached", "--quiet", "--exit-code"],
         cwd=target_repository,
@@ -1319,19 +1319,6 @@ def _state_untracked_source_root(state: Mapping[str, Any]) -> str | None:
         )
     root = root.rstrip("/")
     return root if root and root != "." else None
-
-
-def _is_untracked_source_status_line(
-    status_line: str, untracked_source_root: str | None
-) -> bool:
-    if untracked_source_root is None or not status_line.startswith("?? "):
-        return False
-    status_path = status_line[3:].strip().rstrip("/")
-    if not status_path:
-        return False
-    return status_path == untracked_source_root or status_path.startswith(
-        f"{untracked_source_root}/"
-    )
 
 
 def _task_spec_task_by_id(task_spec: TaskSpec, task_id: Any) -> Task:

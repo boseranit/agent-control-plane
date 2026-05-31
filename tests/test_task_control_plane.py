@@ -435,6 +435,40 @@ def test_load_task_source_imports_external_issue_directory_with_repo_override(
     assert source.untracked_source_root is None
 
 
+def test_load_task_source_requires_repo_for_external_issue_directory(
+    tmp_path: Path,
+) -> None:
+    issue_directory = tmp_path / "issues"
+    issue_directory.mkdir()
+    (issue_directory / "01-task.md").write_text(
+        "# External Task\n\nDo the work.\n", encoding="utf-8"
+    )
+
+    with pytest.raises(TaskSpecError, match="could not be inferred"):
+        load_task_source(issue_directory)
+
+
+def test_load_task_source_rejects_repo_override_for_yaml(
+    tmp_path: Path,
+) -> None:
+    target_repository = tmp_path / "target"
+    target_repository.mkdir()
+    task_spec_path = tmp_path / "task-spec.yaml"
+    task_spec_path.write_text(
+        f"""
+target_repository: {target_repository}
+tasks:
+  - id: TASK-1
+    title: First task
+    prompt: Implement the first task.
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TaskSpecError, match="only supported for issue directories"):
+        load_task_source(task_spec_path, repo_path=target_repository)
+
+
 def test_load_task_spec_rejects_duplicate_task_ids(tmp_path: Path) -> None:
     target_repository = tmp_path / "target"
     target_repository.mkdir()
@@ -663,6 +697,25 @@ def test_start_task_run_accepts_untracked_issue_directory_source(
         == ".planning/issues/cross-sectional-samples-collapse"
     )
     assert state["active_task_id"] == "01-fit-elastic-net"
+
+
+def test_start_task_run_rejects_untracked_file_next_to_issue_directory_source(
+    tmp_path: Path,
+) -> None:
+    target_repository = tmp_path / "target"
+    target_repository.mkdir()
+    subprocess.run(
+        ["git", "init"], cwd=target_repository, check=True, capture_output=True
+    )
+    issue_directory = write_issue_directory(target_repository)
+    adjacent_directory = issue_directory.with_name(f"{issue_directory.name}-extra")
+    adjacent_directory.mkdir()
+    (adjacent_directory / "01-task.md").write_text(
+        "# Adjacent Task\n\nThis is not run input.\n", encoding="utf-8"
+    )
+
+    with pytest.raises(TaskRunError, match="Target Repository must be clean"):
+        start_task_run(issue_directory, runtime_root=tmp_path / "runs")
 
 
 def test_start_task_run_refuses_dirty_target_repository(tmp_path: Path) -> None:
