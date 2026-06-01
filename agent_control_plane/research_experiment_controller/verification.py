@@ -14,6 +14,7 @@ from agent_control_plane.control_plane.command_runner import (
 )
 from agent_control_plane.research_experiment_controller.artifacts import (
     CommandDeclaration,
+    command_declaration_record,
 )
 
 
@@ -123,11 +124,7 @@ def _command_spec(
     index: int,
     default_timeout_seconds: float,
 ) -> CommandSpec:
-    data = (
-        command.model_dump(mode="json")
-        if isinstance(command, CommandDeclaration)
-        else command
-    )
+    data = command_declaration_record(command)
     return CommandSpec(
         name=str(data.get("name") or f"verification-{index}"),
         argv=data["argv"],
@@ -142,11 +139,7 @@ def _log_path(
     index: int,
     stream: str,
 ) -> Path:
-    data = (
-        command.model_dump(mode="json")
-        if isinstance(command, CommandDeclaration)
-        else command
-    )
+    data = command_declaration_record(command)
     name = _safe_name(str(data.get("name") or f"verification-{index}"))
     return run_dir / "verification" / f"attempt_{attempt}" / f"{name}_{stream}.log"
 

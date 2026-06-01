@@ -45,11 +45,14 @@ def test_agent_declared_materiality_is_conservative() -> None:
     before = {"target": "return_1m", "notes": "old"}
     after = {"target": "return_1m", "notes": "new"}
 
-    assert assess_material_revision(
-        before,
-        after,
-        agent_declared_categories=[""],
-    ).requires_fresh_critic is False
+    assert (
+        assess_material_revision(
+            before,
+            after,
+            agent_declared_categories=[""],
+        ).requires_fresh_critic
+        is False
+    )
 
     decision = assess_material_revision(
         before,

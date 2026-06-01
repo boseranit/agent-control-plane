@@ -9,7 +9,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from agent_control_plane.control_plane.boundary_audit import git_snapshot
-from agent_control_plane.control_plane.json_artifacts import read_json_object, write_json
+from agent_control_plane.control_plane.json_artifacts import write_json
 from agent_control_plane.control_plane.usage_limit import (
     UsageLimitEvent,
     UsageLimitWait,
@@ -39,6 +39,7 @@ from agent_control_plane.research_experiment_controller.artifacts import (
     ResearchSpec,
     SelectedPlan,
     Summary,
+    command_declaration_records,
 )
 from agent_control_plane.research_experiment_controller.context import (
     write_context_outputs,
@@ -52,6 +53,7 @@ from agent_control_plane.research_experiment_controller.implementation_boundary 
     audit_implementation_paths,
 )
 from agent_control_plane.research_experiment_controller.outcomes import (
+    COMPLETED_OUTCOMES,
     classify_invalid,
     classify_no_op,
     classify_run_failed,
@@ -107,6 +109,14 @@ class ExperimentFlowSelection:
     feature_specs: FeatureSpecs | None = None
 
 
+@dataclass(frozen=True)
+class _ExperimentPipeline:
+    selection: ExperimentFlowSelection
+    run_design_critique: bool = False
+    run_implementation: bool = False
+    run_empirical_closeout: bool = False
+
+
 class ExperimentFlowError(RuntimeError):
     """Raised when one bounded Research Experiment cannot finish."""
 
@@ -119,10 +129,104 @@ def run_experiment_flow(
 ) -> dict[str, Any]:
     experiment_dir = Path(request.experiment_directory)
     experiment_dir.mkdir(parents=True, exist_ok=True)
-    if selection is None and agent_runtime is not None:
-        return _run_agent_driven_flow(request, agent_runtime)
+    pipeline = _resolve_experiment_pipeline(
+        request=request,
+        selection=selection,
+        agent_runtime=agent_runtime,
+    )
+    return _run_selected_experiment_pipeline(
+        request=request,
+        pipeline=pipeline,
+        agent_runtime=agent_runtime,
+    )
 
-    selection = selection or _default_no_op_selection()
+
+def _resolve_experiment_pipeline(
+    *,
+    request: ExperimentFlowRequest,
+    selection: ExperimentFlowSelection | None,
+    agent_runtime: Any | None,
+) -> _ExperimentPipeline:
+    if selection is not None:
+        return _ExperimentPipeline(selection=selection)
+    if agent_runtime is None:
+        return _ExperimentPipeline(selection=_default_no_op_selection())
+    return _select_agent_driven_experiment(request, agent_runtime)
+
+
+def _select_agent_driven_experiment(
+    request: ExperimentFlowRequest,
+    agent_runtime: Any,
+) -> _ExperimentPipeline:
+    write_context_outputs(
+        request.run_directory,
+        output_directory=request.experiment_directory,
+        current_experiment_id=request.experiment_id,
+    )
+
+    strategist = open_strategist_thread(
+        agent_runtime,
+        request.state,
+        request.experiment_directory,
+        model=request.spec.codex.model,
+        effort=request.spec.codex.effort,
+    )
+    proposal = _run_agent_model(
+        thread=strategist,
+        role=ResearchAgentRole.STRATEGIST,
+        cwd=request.experiment_directory,
+        request=request,
+        model_cls=Proposal,
+        turn_input=(
+            "Read context_pack.md and return proposal.json for the next bounded "
+            f"Research Experiment {request.experiment_id}."
+        ),
+    )
+    _write_model_artifact(request.experiment_directory / "proposal.json", proposal)
+    research_spec = _run_agent_model(
+        thread=strategist,
+        role=ResearchAgentRole.STRATEGIST,
+        cwd=request.experiment_directory,
+        request=request,
+        model_cls=ResearchSpec,
+        turn_input="Return locked research_spec.json for the selected proposal.",
+    )
+    experiment_design = _run_agent_model(
+        thread=strategist,
+        role=ResearchAgentRole.STRATEGIST,
+        cwd=request.experiment_directory,
+        request=request,
+        model_cls=ExperimentDesign,
+        turn_input="Return experiment_design.json with deterministic commands.",
+    )
+    selected_plan = _run_agent_model(
+        thread=strategist,
+        role=ResearchAgentRole.STRATEGIST,
+        cwd=request.experiment_directory,
+        request=request,
+        model_cls=SelectedPlan,
+        turn_input="Return selected_plan.json for exactly one admissible plan.",
+    )
+    return _ExperimentPipeline(
+        selection=ExperimentFlowSelection(
+            selected_plan=selected_plan,
+            experiment_design=experiment_design,
+            research_spec=research_spec,
+        ),
+        run_design_critique=True,
+        run_implementation=True,
+        run_empirical_closeout=True,
+    )
+
+
+def _run_selected_experiment_pipeline(
+    *,
+    request: ExperimentFlowRequest,
+    pipeline: _ExperimentPipeline,
+    agent_runtime: Any | None,
+) -> dict[str, Any]:
+    selection = pipeline.selection
+    experiment_dir = Path(request.experiment_directory)
     _write_artifact_once(
         experiment_dir / "selected_plan.json",
         request.experiment_id,
@@ -158,10 +262,31 @@ def run_experiment_flow(
             agent_runtime=agent_runtime,
         )
 
+    if summary_model is None and pipeline.run_design_critique:
+        if agent_runtime is None:
+            summary_model = classify_invalid(
+                "Design critique requires an agent runtime.",
+                failed_stage="critic_review",
+                failure_classification="critic_runtime_missing",
+            )
+        else:
+            critique = _run_design_critique(
+                request=request,
+                agent_runtime=agent_runtime,
+            )
+            if _critic_blocks_experiment(critique):
+                summary_model = classify_invalid(
+                    "Critic rejected selected design.",
+                    failed_stage="critic_review",
+                    failure_classification="critic_rejected_design",
+                )
+
     if summary_model is None:
+        assert experiment_design is not None
         summary_model = _worktree_policy_failure(request.spec, experiment_design)
 
     if summary_model is None:
+        assert experiment_design is not None
         data_audit_result = run_data_audit_phase(
             PrerequisiteAuditRequest(
                 data_root=request.spec.data_root,
@@ -185,28 +310,41 @@ def run_experiment_flow(
             worktree = _prepare_experiment_worktree_if_needed(
                 request.spec, request, experiment_design
             )
-            verification_result = _run_verification_if_needed(
-                request=request,
-                experiment_design=experiment_design,
-                worktree=worktree,
-                agent_runtime=agent_runtime,
+            implementation_summary = (
+                _run_implementation_phase(
+                    request=request,
+                    experiment_design=experiment_design,
+                    worktree=worktree,
+                    agent_runtime=agent_runtime,
+                )
+                if pipeline.run_implementation
+                else _write_skipped_implementation_if_needed(request, worktree)
             )
-            boundary_summary = _audit_implementation_boundary(
-                request=request,
-                experiment_design=experiment_design,
-                worktree=worktree,
-                replace_existing=(
-                    request.experiment_directory
-                    / "implementation_diff_summary.json"
-                ).exists(),
-            )
-            if boundary_summary is not None:
-                summary_model = boundary_summary
-            elif (
-                verification_result is not None
-                and verification_result["status"] == "failed"
-            ):
-                summary_model = _summary_from_result(verification_result)
+            if implementation_summary is not None:
+                summary_model = implementation_summary
+            else:
+                verification_result = _run_verification_if_needed(
+                    request=request,
+                    experiment_design=experiment_design,
+                    worktree=worktree,
+                    agent_runtime=agent_runtime,
+                )
+                boundary_summary = _audit_implementation_boundary(
+                    request=request,
+                    experiment_design=experiment_design,
+                    worktree=worktree,
+                    replace_existing=(
+                        request.experiment_directory
+                        / "implementation_diff_summary.json"
+                    ).exists(),
+                )
+                if boundary_summary is not None:
+                    summary_model = boundary_summary
+                elif (
+                    verification_result is not None
+                    and verification_result["status"] == "failed"
+                ):
+                    summary_model = _summary_from_result(verification_result)
             if summary_model is None:
                 summary_model = _run_evaluation_if_needed(
                     request=request,
@@ -215,205 +353,28 @@ def run_experiment_flow(
                     agent_runtime=agent_runtime,
                 )
             if summary_model is None:
-                summary_model = _terminal_summary_after_data_audit(selection)
+                if pipeline.run_empirical_closeout:
+                    summary_model = classify_invalid(
+                        "Agent-driven selected plan did not produce evaluation results.",
+                        failure_classification="missing_evaluation_result",
+                        failed_stage="evaluation",
+                    )
+                else:
+                    summary_model = _terminal_summary_after_data_audit(selection)
 
-    summary = summary_model.model_dump(mode="json")
-    _write_artifact_once(
-        experiment_dir / "summary.json",
-        request.experiment_id,
-        summary,
-    )
-    _mirror_experiment_if_enabled(request, summary_model)
-    return {
-        "status": "experiment_completed",
-        "experiment_id": request.experiment_id,
-        **summary,
-    }
-
-
-def _run_agent_driven_flow(
-    request: ExperimentFlowRequest,
-    agent_runtime: Any,
-) -> dict[str, Any]:
-    write_context_outputs(
-        request.run_directory,
-        output_directory=request.experiment_directory,
-        current_experiment_id=request.experiment_id,
-    )
-
-    strategist = open_strategist_thread(
-        agent_runtime,
-        request.state,
-        request.experiment_directory,
-        model=request.spec.codex.model,
-        effort=request.spec.codex.effort,
-    )
-    proposal = _run_agent_model(
-        thread=strategist,
-        role=ResearchAgentRole.STRATEGIST,
-        cwd=request.experiment_directory,
-        request=request,
-        model_cls=Proposal,
-        turn_input=(
-            "Read context_pack.md and return proposal.json for the next bounded "
-            f"Research Experiment {request.experiment_id}."
-        ),
-    )
-    _write_model_artifact(request.experiment_directory / "proposal.json", proposal)
-    research_spec = _run_agent_model(
-        thread=strategist,
-        role=ResearchAgentRole.STRATEGIST,
-        cwd=request.experiment_directory,
-        request=request,
-        model_cls=ResearchSpec,
-        turn_input="Return locked research_spec.json for the selected proposal.",
-    )
-    _write_model_artifact(
-        request.experiment_directory / "research_spec.json",
-        research_spec,
-    )
-    experiment_design = _run_agent_model(
-        thread=strategist,
-        role=ResearchAgentRole.STRATEGIST,
-        cwd=request.experiment_directory,
-        request=request,
-        model_cls=ExperimentDesign,
-        turn_input="Return experiment_design.json with deterministic commands.",
-    )
-    _write_model_artifact(
-        request.experiment_directory / "experiment_design.json",
-        experiment_design,
-    )
-    selected_plan = _run_agent_model(
-        thread=strategist,
-        role=ResearchAgentRole.STRATEGIST,
-        cwd=request.experiment_directory,
-        request=request,
-        model_cls=SelectedPlan,
-        turn_input="Return selected_plan.json for exactly one admissible plan.",
-    )
-    _write_model_artifact(
-        request.experiment_directory / "selected_plan.json",
-        selected_plan,
-    )
-
-    prior_research_spec, prior_feature_specs = _prior_material_artifacts(request)
-    generated_selection = ExperimentFlowSelection(
-        selected_plan=selected_plan,
-        experiment_design=experiment_design,
-        prior_research_spec=prior_research_spec,
-        research_spec=research_spec,
-        prior_feature_specs=prior_feature_specs,
-    )
-    selection_summary = _selection_failure_summary(generated_selection)
-    if selection_summary is not None:
-        return _complete_with_summary(request, selection_summary)
-
-    material_summary = _run_material_revision_review_if_needed(
-        request=request,
-        selection=generated_selection,
-        agent_runtime=agent_runtime,
-    )
-    if material_summary is not None:
-        return _complete_with_summary(request, material_summary)
-
-    critique = _run_design_critique(
-        request=request,
-        agent_runtime=agent_runtime,
-    )
-    if _critic_blocks_experiment(critique):
-        return _complete_with_summary(
-            request,
-            classify_invalid(
-                "Critic rejected selected design.",
-                failed_stage="critic_review",
-                failure_classification="critic_rejected_design",
-            ),
+    if pipeline.run_empirical_closeout and summary_model.outcome in COMPLETED_OUTCOMES:
+        assert agent_runtime is not None
+        _run_empirical_critique(
+            request=request,
+            agent_runtime=agent_runtime,
+        )
+        summary_model = _run_strategist_closeout(
+            request=request,
+            agent_runtime=agent_runtime,
+            official_summary=summary_model,
         )
 
-    policy_failure = _worktree_policy_failure(request.spec, experiment_design)
-    if policy_failure is not None:
-        return _complete_with_summary(request, policy_failure)
-
-    data_audit_result = run_data_audit_phase(
-        PrerequisiteAuditRequest(
-            data_root=request.spec.data_root,
-            prerequisite_commands=experiment_design.prerequisite_commands,
-            data_audit_commands=experiment_design.data_audit_commands,
-            cwd=request.spec.target_repository,
-            run_dir=request.experiment_directory,
-            timeout_seconds=_data_audit_timeout_seconds(
-                request.spec, experiment_design
-            ),
-        )
-    )
-    _write_artifact_once(
-        request.experiment_directory / "data_audit.json",
-        request.experiment_id,
-        data_audit_result["data_audit"],
-    )
-    if data_audit_result.get("status") == "experiment_completed":
-        return _complete_with_summary(
-            request,
-            _summary_from_result(data_audit_result),
-        )
-
-    worktree = _prepare_experiment_worktree_if_needed(
-        request.spec, request, experiment_design
-    )
-    implementation_summary = _run_implementation_phase(
-        request=request,
-        experiment_design=experiment_design,
-        worktree=worktree,
-        agent_runtime=agent_runtime,
-    )
-    if implementation_summary is not None:
-        return _complete_with_summary(request, implementation_summary)
-
-    verification_result = _run_verification_if_needed(
-        request=request,
-        experiment_design=experiment_design,
-        worktree=worktree,
-        agent_runtime=agent_runtime,
-    )
-    post_verification_boundary_summary = _audit_implementation_boundary(
-        request=request,
-        experiment_design=experiment_design,
-        worktree=worktree,
-        replace_existing=True,
-    )
-    if post_verification_boundary_summary is not None:
-        return _complete_with_summary(request, post_verification_boundary_summary)
-    if verification_result is not None and verification_result["status"] == "failed":
-        return _complete_with_summary(
-            request, _summary_from_result(verification_result)
-        )
-
-    evaluation_summary = _run_evaluation_if_needed(
-        request=request,
-        experiment_design=experiment_design,
-        worktree=worktree,
-        agent_runtime=agent_runtime,
-    )
-    if evaluation_summary is None:
-        evaluation_summary = classify_invalid(
-            "Agent-driven selected plan did not produce evaluation results.",
-            failure_classification="missing_evaluation_result",
-            failed_stage="evaluation",
-        )
-    if evaluation_summary.outcome not in _COMPLETED_RESEARCH_OUTCOMES:
-        return _complete_with_summary(request, evaluation_summary)
-
-    _run_empirical_critique(
-        request=request,
-        agent_runtime=agent_runtime,
-    )
-    closeout_summary = _run_strategist_closeout(
-        request=request,
-        agent_runtime=agent_runtime,
-        official_summary=evaluation_summary,
-    )
-    return _complete_with_summary(request, closeout_summary)
+    return _complete_with_summary(request, summary_model)
 
 
 def _complete_with_summary(
@@ -473,8 +434,14 @@ def _run_implementation_phase(
     request: ExperimentFlowRequest,
     experiment_design: ExperimentDesign,
     worktree: ExperimentWorktree | None,
-    agent_runtime: Any,
+    agent_runtime: Any | None,
 ) -> Summary | None:
+    if agent_runtime is None:
+        return classify_invalid(
+            "Implementation requires an agent runtime.",
+            failed_stage="implementation",
+            failure_classification="implementation_runtime_missing",
+        )
     if worktree is None:
         _write_model_artifact(
             request.experiment_directory / "implementation.json",
@@ -526,6 +493,29 @@ def _run_implementation_phase(
         worktree=worktree,
         replace_existing=False,
     )
+
+
+def _write_skipped_implementation_if_needed(
+    request: ExperimentFlowRequest,
+    worktree: ExperimentWorktree | None,
+) -> Summary | None:
+    implementation_path = request.experiment_directory / "implementation.json"
+    if not implementation_path.exists():
+        _write_model_artifact(
+            implementation_path,
+            Implementation(
+                status="skipped",
+                summary="No Implementer Agent run for supplied selection.",
+                changed_files=[],
+            ),
+        )
+    if worktree is None:
+        diff_path = request.experiment_directory / "implementation_diff_summary.json"
+        if not diff_path.exists():
+            _write_model_artifact(
+                diff_path, ImplementationDiffSummary(changed_files=[])
+            )
+    return None
 
 
 def _audit_implementation_boundary(
@@ -760,56 +750,35 @@ def _selection_failure_summary(
 def _material_revision_decision(
     selection: ExperimentFlowSelection,
 ) -> MaterialRevisionDecision:
-    if (
-        selection.prior_research_spec is None
-        and selection.prior_feature_specs is None
-    ):
-        return assess_material_revision(
-            {},
-            {},
-            agent_declared_categories=(
-                selection.selected_plan.material_revision_categories
-            ),
-        )
     before = _material_revision_payload(
-        selection.prior_research_spec,
-        selection.prior_feature_specs,
+        (
+            selection.prior_research_spec
+            if selection.research_spec is not None
+            else None
+        ),
+        (
+            selection.prior_feature_specs
+            if selection.feature_specs is not None
+            else None
+        ),
     )
     after = _material_revision_payload(
-        selection.research_spec,
-        selection.feature_specs if selection.prior_feature_specs is not None else None,
+        (
+            selection.research_spec
+            if selection.prior_research_spec is not None
+            else None
+        ),
+        (
+            selection.feature_specs
+            if selection.prior_feature_specs is not None
+            else None
+        ),
     )
     return assess_material_revision(
         before,
         after,
         agent_declared_categories=selection.selected_plan.material_revision_categories,
     )
-
-
-def _prior_material_artifacts(
-    request: ExperimentFlowRequest,
-) -> tuple[dict[str, Any] | None, FeatureSpecs | None]:
-    experiments = request.state["experiments"]
-    for experiment_id in sorted(experiments, reverse=True):
-        if experiment_id == request.experiment_id:
-            continue
-        experiment_dir = Path(experiments[experiment_id]["experiment_directory"])
-        research_spec = _read_optional_json(experiment_dir / "research_spec.json")
-        feature_specs_data = _read_optional_json(experiment_dir / "feature_specs.json")
-        feature_specs = (
-            FeatureSpecs.model_validate(feature_specs_data)
-            if feature_specs_data is not None
-            else None
-        )
-        if research_spec is not None or feature_specs is not None:
-            return research_spec, feature_specs
-    return None, None
-
-
-def _read_optional_json(path: Path) -> dict[str, Any] | None:
-    if not path.exists():
-        return None
-    return read_json_object(path)
 
 
 def _material_revision_payload(
@@ -859,15 +828,6 @@ _BLOCKING_CRITIC_DECISIONS = frozenset(
         "revise",
         "requires_revision",
         "revision_required",
-    }
-)
-
-
-_COMPLETED_RESEARCH_OUTCOMES = frozenset(
-    {
-        ResearchOutcome.completed_rejected,
-        ResearchOutcome.completed_inconclusive,
-        ResearchOutcome.completed_candidate,
     }
 )
 
@@ -1063,12 +1023,7 @@ def _locked_artifacts(request: ExperimentFlowRequest) -> list[Path]:
 
 
 def _command_records(commands: list[Any]) -> list[dict[str, Any]]:
-    return [
-        command.model_dump(mode="json")
-        if hasattr(command, "model_dump")
-        else dict(command)
-        for command in commands
-    ]
+    return command_declaration_records(commands)
 
 
 def _evaluation_input(

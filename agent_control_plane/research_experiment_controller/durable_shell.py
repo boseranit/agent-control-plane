@@ -1,3 +1,5 @@
+"""Thin shell: controller-owned semantics with generic metadata and retry sleep."""
+
 from __future__ import annotations
 
 import asyncio

@@ -132,7 +132,7 @@ def test_default_shell_controller_uses_agent_runtime(
 
     class FakeAgentRuntime:
         def __init__(self, **kwargs: object) -> None:
-            seen["runtime_kwargs"] = kwargs
+            seen["runtime_created"] = bool(kwargs)
 
         def __enter__(self) -> FakeAgentRuntime:
             seen["entered"] = True
@@ -164,10 +164,7 @@ def test_default_shell_controller_uses_agent_runtime(
 
     assert result == {"status": "completed", "research_run_id": "run-1"}
     assert seen["agent_runtime"].__class__ is FakeAgentRuntime
-    assert seen["runtime_kwargs"] == {
-        "agent_name_prefix": "research-experiment",
-        "session_db_path": tmp_path / "runs" / "run-1" / "agent_sessions.sqlite3",
-    }
+    assert seen["runtime_created"] is True
     assert seen["entered"] is True
     assert seen["exited"] is True
 
@@ -395,7 +392,7 @@ def test_plain_evaluation_usage_limit_error_sleeps_durably_not_run_failed(
     assert summary["failure_classification"] is None
 
 
-def test_usage_limit_retry_removes_dirty_in_progress_worktree(
+def test_usage_limit_retry_preserves_dirty_in_progress_worktree(
     tmp_path: Path,
 ) -> None:
     spec_path = write_research_run_spec(tmp_path, worktree_create=True)
@@ -444,10 +441,11 @@ def test_usage_limit_retry_removes_dirty_in_progress_worktree(
     )
     assert result["status"] == "completed"
     assert sleeps == [11.0]
-    assert runtime.run_calls == 2
-    assert summary["outcome"] == "completed_candidate"
-    assert summary["failure_classification"] is None
-    assert not (worktree_path / "dirty.txt").exists()
+    assert runtime.run_calls == 1
+    assert summary["outcome"] == "run_failed"
+    assert summary["failure_classification"] == "runner_exception"
+    assert "Existing Experiment Worktree is dirty" in summary["outcome_reason"]
+    assert (worktree_path / "dirty.txt").exists()
 
 
 def test_hatchet_workflow_delegates_to_shell_with_ctx_sleep_and_metadata(

@@ -225,7 +225,8 @@ stop_on_prerequisites_failed: true
   - `prerequisite_command_failed`
 - Use Hatchet as a Durable Execution Shell adapter only.
 - Durable shell callers depend on a provider-neutral local interface, not Hatchet SDK types.
-- Hatchet owns durable resume, sleeps, step invocation, and generic run metadata.
+- Hatchet owns only generic run metadata plus usage-limit sleep/retry around the Python controller loop.
+- V1 does not resume inside a running Research Experiment phase.
 - Python controller code owns phases, artifacts, materiality, outcomes, commands, worktrees, evaluator boundaries, ledgers, and when Research Run Mirror output is requested.
 - MLflow SDK details live only behind the Research Run Mirror interface.
 - Hatchet task/decorator metadata should stay generic. Avoid research-specific decorator metadata such as materiality gates.
@@ -393,7 +394,7 @@ evaluation/
 - Tests should verify external behavior and persisted artifacts, not private implementation structure.
 - The Research Run Spec loader should be tested for required fields, defaults, budget profiles, selected budget lookup, `stop_on_prerequisites_failed`, and snapshot behavior.
 - Research Run startup should be tested for resolved spec copy, initial controller state, ledger initialization, and deterministic run directory layout.
-- Hatchet wrapper tests should mirror current Task Hatchet tests: durable loop runs phases, sleeps on usage-limit status, exposes generic metadata, and delegates semantics to a phase runner.
+- Hatchet wrapper tests should cover the public thin-shell contract: delegate to the controller loop, sleep/retry on usage-limit status, and expose generic metadata.
 - Hatchet tests should not assert research semantics inside decorator metadata.
 - Generic agent runtime tests should cover arbitrary role names, read-only role capability, workspace-write role capability, persistent thread id reuse, fresh-thread creation, and workflow-supplied prompts.
 - Artifact IO tests should cover stable JSON writing, Pydantic validation at artifact boundaries, hash calculation, and clear errors for malformed canonical artifacts.

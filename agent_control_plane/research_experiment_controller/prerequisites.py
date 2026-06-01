@@ -12,6 +12,7 @@ from agent_control_plane.control_plane.command_runner import (
 from agent_control_plane.research_experiment_controller.artifacts import (
     CommandDeclaration,
     DataAudit,
+    command_declaration_record,
 )
 from agent_control_plane.research_experiment_controller.outcomes import (
     classify_data_audit_failure,
@@ -43,11 +44,7 @@ def run_data_audit_phase(request: PrerequisiteAuditRequest) -> dict[str, Any]:
         ("data_audit", request.data_audit_commands),
     ):
         for index, command in enumerate(commands, start=1):
-            data = (
-                command.model_dump(mode="json")
-                if isinstance(command, CommandDeclaration)
-                else dict(command)
-            )
+            data = command_declaration_record(command)
             result = run_command(
                 CommandSpec(
                     name=str(data.get("name") or f"{phase}-{index}"),
@@ -68,8 +65,7 @@ def run_data_audit_phase(request: PrerequisiteAuditRequest) -> dict[str, Any]:
             command_results.append(result)
             if result.status != "passed" and failure_classification is None:
                 failure_classification = str(
-                    data.get("failure_classification")
-                    or "prerequisite_command_failed"
+                    data.get("failure_classification") or "prerequisite_command_failed"
                 )
 
     write_command_metrics(run_dir / "command_metrics.json", command_results)

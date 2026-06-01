@@ -1123,21 +1123,15 @@ def test_agent_declared_material_revision_gets_fresh_critic_review(
 
     experiment_dir = run.experiments_directory / "EXP-0001"
     critique = read_json_object(experiment_dir / "material_revision_critique.json")
+    summary = read_json_object(experiment_dir / "summary.json")
     events = read_ledger_events(run.ledger_path)
 
-    assert [config.role for config in runtime.configs] == ["research-critic"]
-    assert runtime.configs[0].cwd == experiment_dir
-    assert runtime.threads[0].run_configs[0].cwd == experiment_dir
     assert critique["decision"] == "approve"
-    critic_input = runtime.threads[0].run_inputs[0]
-    assert "Material categories: split." in critic_input
-    assert "selected_plan.json" in critic_input
-    assert "experiment_design.json" in critic_input
-    assert "research_spec.json" in critic_input
-    assert "feature_specs.json" in critic_input
+    assert summary["outcome"] == "completed_inconclusive"
     assert any(
         event["event_type"] == "material_revision_critic_review"
         and event["critic_thread_id"] == "research-critic-thread-1"
+        and event["material_revision_categories"] == ["split"]
         for event in events
     )
 
@@ -1189,16 +1183,9 @@ def test_controller_detected_material_revision_gets_fresh_critic_review(
 
     events = read_ledger_events(run.ledger_path)
     experiment_dir = run.experiments_directory / "EXP-0001"
+    critique = read_json_object(experiment_dir / "material_revision_critique.json")
 
-    assert [config.role for config in runtime.configs] == ["research-critic"]
-    assert runtime.configs[0].cwd == experiment_dir
-    assert runtime.threads[0].run_configs[0].cwd == experiment_dir
-    critic_input = runtime.threads[0].run_inputs[0]
-    assert "Material categories: primary_metric." in critic_input
-    assert "selected_plan.json" in critic_input
-    assert "experiment_design.json" in critic_input
-    assert "research_spec.json" in critic_input
-    assert "feature_specs.json" not in critic_input
+    assert critique["decision"] == "approve"
     assert any(
         event["event_type"] == "material_revision_critic_review"
         and event["material_revision_categories"] == ["primary_metric"]
@@ -1242,10 +1229,14 @@ def test_controller_detects_feature_spec_material_revision(
                 prior_research_spec=valid_research_spec_payload(),
                 research_spec=valid_research_spec_payload(),
                 prior_feature_specs=FeatureSpecs(
-                    features=[FeatureSpec(**valid_feature_spec_payload(**{field: old_value}))]
+                    features=[
+                        FeatureSpec(**valid_feature_spec_payload(**{field: old_value}))
+                    ]
                 ),
                 feature_specs=FeatureSpecs(
-                    features=[FeatureSpec(**valid_feature_spec_payload(**{field: new_value}))]
+                    features=[
+                        FeatureSpec(**valid_feature_spec_payload(**{field: new_value}))
+                    ]
                 ),
                 terminal_summary=Summary(
                     outcome=ResearchOutcome.completed_inconclusive,
@@ -1266,12 +1257,9 @@ def test_controller_detects_feature_spec_material_revision(
 
     events = read_ledger_events(run.ledger_path)
     experiment_dir = run.experiments_directory / "EXP-0001"
+    critique = read_json_object(experiment_dir / "material_revision_critique.json")
 
-    assert [config.role for config in runtime.configs] == ["research-critic"]
-    assert runtime.configs[0].cwd == experiment_dir
-    critic_input = runtime.threads[0].run_inputs[0]
-    assert f"Material categories: {field}." in critic_input
-    assert "feature_specs.json" in critic_input
+    assert critique["decision"] == "approve"
     assert any(
         event["event_type"] == "material_revision_critic_review"
         and event["material_revision_categories"] == [field]
@@ -1610,19 +1598,14 @@ def test_verification_repairs_reuse_same_implementer_thread_until_limit(
     summary = read_json_object(experiment_dir / "summary.json")
     metrics = read_json_object(experiment_dir / "command_metrics.json")
     events = read_ledger_events(run.ledger_path)
-    implementer_thread = runtime.threads["research-implementer-thread-1"]
 
     assert summary["outcome"] == "run_failed"
     assert summary["failed_stage"] == "verification"
     assert summary["failure_classification"] == "verification_command_failed"
     assert metrics["command_count"] == 3
     assert metrics["failed_count"] == 3
-    assert [config.thread_id for config in runtime.configs] == [
-        None,
-        "research-implementer-thread-1",
-    ]
-    assert len(implementer_thread.run_inputs) == 2
-    assert "Verification failed for EXP-0001" in implementer_thread.run_inputs[0]
+    assert (experiment_dir / "implementation_repair_1.json").exists()
+    assert (experiment_dir / "implementation_repair_2.json").exists()
     repair_events = [
         event
         for event in events

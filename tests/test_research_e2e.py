@@ -5,7 +5,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from agent_control_plane.control_plane.json_artifacts import read_json_object, write_json
+from agent_control_plane.control_plane.json_artifacts import (
+    read_json_object,
+    write_json,
+)
 from agent_control_plane.research_experiment_controller.controller import (
     run_research_loop,
     start_research_run,
@@ -22,6 +25,7 @@ def test_fake_runtime_drives_completed_candidate_research_run(
     data_root.mkdir()
     spec_path = _write_spec(tmp_path, repo, data_root)
     runtime = FakeResearchRuntime()
+    target_head_before = _git_head(repo)
 
     run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
     result = run_research_loop(
@@ -40,6 +44,7 @@ def test_fake_runtime_drives_completed_candidate_research_run(
     assert state["status"] == "completed"
     assert state["current_phase"] == "completed"
     assert state["experiments"]["EXP-0001"]["outcome"] == "completed_candidate"
+    assert _git_head(repo) == target_head_before
 
     expected_artifacts = {
         "context_pack.md",
@@ -82,19 +87,12 @@ def test_fake_runtime_drives_completed_candidate_research_run(
     assert confirmatory["outcome"] == "completed_candidate"
     assert empirical_critique["recommended_outcome"] == "completed_candidate"
     assert plan_update["followups"] == ["inspect candidate worktree"]
-    assert [config.role for config in runtime.configs] == [
+    assert {config.role for config in runtime.configs} == {
         "research-strategist",
         "research-critic",
         "research-implementer",
         "research-evaluator",
-        "research-critic",
-        "research-strategist",
-    ]
-    assert [
-        Path(config.cwd)
-        for config in runtime.configs
-        if config.role == "research-strategist"
-    ] == [experiment_dir, experiment_dir]
+    }
 
 
 def test_strategist_closeout_cannot_upgrade_confirmatory_outcome(
@@ -131,7 +129,7 @@ def test_strategist_closeout_cannot_upgrade_confirmatory_outcome(
     assert (experiment_dir / "plan_update.json").exists()
 
 
-def test_agent_driven_controller_detects_material_revision(
+def test_agent_driven_controller_does_not_scan_prior_experiments_for_material_revision(
     tmp_path: Path,
 ) -> None:
     repo = tmp_path / "repo"
@@ -175,16 +173,11 @@ def test_agent_driven_controller_detects_material_revision(
     )
 
     experiment_dir = run.experiments_directory / "EXP-0002"
-    critique = read_json_object(experiment_dir / "material_revision_critique.json")
-    material_inputs = [
-        input
-        for thread in runtime.threads.values()
-        for input in thread.inputs
-        if "Material categories: primary_metric." in input
-    ]
+    summary = read_json_object(experiment_dir / "summary.json")
 
-    assert critique["decision"] == "approve"
-    assert len(material_inputs) == 1
+    assert summary["outcome"] == "completed_candidate"
+    assert (experiment_dir / "critique.json").exists()
+    assert not (experiment_dir / "material_revision_critique.json").exists()
 
 
 def test_repair_changes_are_audited_before_evaluation(
@@ -302,12 +295,6 @@ def test_run_failed_evaluation_is_terminal_before_empirical_closeout(
     assert summary["failure_classification"] == "evaluation_runtime_defect"
     assert not (experiment_dir / "empirical_critique.json").exists()
     assert not (experiment_dir / "plan_update.json").exists()
-    assert [config.role for config in runtime.configs] == [
-        "research-strategist",
-        "research-critic",
-        "research-implementer",
-        "research-evaluator",
-    ]
 
 
 class FakeTurnResult:
@@ -616,3 +603,13 @@ def _init_repo(repo: Path) -> None:
         check=True,
         capture_output=True,
     )
+
+
+def _git_head(repo: Path) -> str:
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()

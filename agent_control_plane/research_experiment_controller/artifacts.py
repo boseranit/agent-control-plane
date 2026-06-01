@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from enum import Enum
+from collections.abc import Sequence
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -27,6 +28,18 @@ class CommandDeclaration(ResearchArtifact):
     timeout_seconds: float | None = None
     phase: str | None = None
     failure_classification: str | None = None
+
+
+def command_declaration_record(
+    command: CommandDeclaration | dict[str, Any],
+) -> dict[str, Any]:
+    return CommandDeclaration.model_validate(command).model_dump(mode="json")
+
+
+def command_declaration_records(
+    commands: Sequence[CommandDeclaration | dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return [command_declaration_record(command) for command in commands]
 
 
 class ContextSummary(ResearchArtifact):

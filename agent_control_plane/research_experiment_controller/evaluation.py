@@ -68,8 +68,6 @@ def create_evaluator_workspace(
         manifest_path,
         {
             "experiment_dir": str(resolved_experiment_dir),
-            "manifest_path": str(manifest_path.resolve()),
-            "worktree": str(resolved_worktree),
             "worktree_path": str(resolved_worktree),
             "data_root": str(Path(data_root).expanduser().resolve()),
             "git_sha": git_sha,
@@ -82,21 +80,8 @@ def create_evaluator_workspace(
                 "confirmatory": [dict(command) for command in confirmatory_commands],
                 "exploratory": [dict(command) for command in exploratory_commands],
             },
-            "confirmatory_commands": [
-                dict(command) for command in confirmatory_commands
-            ],
-            "exploratory_commands": [dict(command) for command in exploratory_commands],
             "eval_scratch": str(scratch.resolve()),
             "eval_outputs": str(outputs.resolve()),
-            "pre_evaluation_worktree": {
-                "status_porcelain": before.status_porcelain,
-                "diff": before.diff,
-                "changed_files": before.changed_files,
-                "dirty_content_state": before.dirty_content_state,
-                "ignored_content_state": before.ignored_content_state,
-                "head": before.head,
-                "head_tree": before.head_tree,
-            },
         },
     )
     return EvaluatorWorkspace(

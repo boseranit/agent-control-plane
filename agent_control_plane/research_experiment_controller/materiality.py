@@ -91,9 +91,8 @@ def assess_material_revision(
     controller_detected = [
         category
         for category in material_categories
-        if _material_value(before_data, category) != _material_value(
-            after_data, category
-        )
+        if _material_value(before_data, category)
+        != _material_value(after_data, category)
     ]
     agent_declared = _normalize_agent_categories(agent_declared_categories)
     categories = _ordered_unique([*controller_detected, *agent_declared])
