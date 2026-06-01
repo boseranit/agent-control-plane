@@ -6,6 +6,7 @@ from typing import Any
 
 from agent_control_plane.control_plane.agent_runtime import (
     AgentRunConfig,
+    RuntimeApproval,
     RuntimePolicy,
 )
 
@@ -39,6 +40,7 @@ def agent_config(
         thread_id=thread_id,
         session_db_path=session_db_path,
         policy=_policy_for_role(role),
+        approval=RuntimeApproval.AUTO_REVIEW,
     )
 
 
