@@ -1,7 +1,7 @@
 # Material revision and feature spec artifacts
 
-Status: ready-for-agent
-Label: ready-for-agent
+Status: completed
+Label: done
 
 ## Parent
 
@@ -13,11 +13,11 @@ Implement controller-owned Material Revision Policy and feature spec artifacts f
 
 ## Acceptance criteria
 
-- [ ] Policy covers the PRD default material fields.
-- [ ] Agent-declared material revisions trigger fresh Critic review.
-- [ ] Controller-detected material changes trigger fresh Critic review.
-- [ ] Feature specs record transformation, data timing, lag, backfill range, missing-data policy, and failure modes.
-- [ ] Tests cover material/non-material examples and feature spec validation.
+- [x] Policy covers the PRD default material fields.
+- [x] Agent-declared material revisions trigger fresh Critic review.
+- [x] Controller-detected material changes trigger fresh Critic review.
+- [x] Feature specs record transformation, data timing, lag, backfill range, missing-data policy, and failure modes.
+- [x] Tests cover material/non-material examples and feature spec validation.
 
 ## Blocked by
 
@@ -25,4 +25,3 @@ Implement controller-owned Material Revision Policy and feature spec artifacts f
 - `.scratch/research-experiment-plane/issues/10-research-agents-prompt-boundaries.md`
 - `.scratch/research-experiment-plane/issues/11-controller-phase-skeleton-no-op-blocked-outcomes.md`
 - `.scratch/research-experiment-plane/issues/14-evaluator-workspace-boundary-audit.md`
-

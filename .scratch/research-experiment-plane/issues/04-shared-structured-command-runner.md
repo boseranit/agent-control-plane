@@ -1,7 +1,7 @@
 # Shared structured command runner
 
 Status: completed
-Label: ready-for-agent
+Label: done
 
 ## Parent
 

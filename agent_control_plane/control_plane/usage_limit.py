@@ -87,7 +87,9 @@ def usage_limit_event(
     )
 
 
-def usage_limit_retry_at(message_or_exc: str | Exception, now: datetime) -> datetime | None:
+def usage_limit_retry_at(
+    message_or_exc: str | Exception, now: datetime
+) -> datetime | None:
     message = (
         exception_message(message_or_exc)
         if isinstance(message_or_exc, Exception)

@@ -1,4 +1,4 @@
-"""Research Experiment Controller workflow package."""
+"""Sibling Control-Plane Workflow for Research Outcomes, not Task final commits."""
 
 from agent_control_plane.research_experiment_controller.research_run_spec import (
     CodexConfig,

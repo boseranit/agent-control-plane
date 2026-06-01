@@ -1,7 +1,7 @@
 # Research Run state, ledger, start/resume
 
 Status: completed
-Label: ready-for-agent
+Label: done
 
 ## Parent
 

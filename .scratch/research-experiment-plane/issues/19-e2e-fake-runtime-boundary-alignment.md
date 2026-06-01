@@ -1,7 +1,7 @@
 # End-to-end fake runtime and boundary alignment
 
-Status: ready-for-agent
-Label: ready-for-agent
+Status: completed
+Label: done
 
 ## Parent
 
@@ -13,12 +13,12 @@ Add end-to-end fake-runtime coverage and perform the final package boundary alig
 
 ## Acceptance criteria
 
-- [ ] Fake runtime test drives a full Research Run through terminal Research Outcome.
-- [ ] Full test suite passes.
-- [ ] Research code does not import Hatchet or MLflow outside adapter modules.
-- [ ] Shared package contains only deep reusable primitives.
-- [ ] Task Control Plane lifecycle and final-commit semantics remain unchanged.
-- [ ] Parent issue acceptance criteria are traceable to the smaller issues.
+- [x] Fake runtime test drives a full Research Run through terminal Research Outcome.
+- [x] Full test suite passes.
+- [x] Research code does not import Hatchet or MLflow outside adapter modules.
+- [x] Shared package contains only deep reusable primitives.
+- [x] Task Control Plane lifecycle and final-commit semantics remain unchanged.
+- [x] Parent issue acceptance criteria are traceable to the smaller issues.
 
 ## Blocked by
 
@@ -39,4 +39,3 @@ Add end-to-end fake-runtime coverage and perform the final package boundary alig
 - `.scratch/research-experiment-plane/issues/16-durable-shell-hatchet-adapter.md`
 - `.scratch/research-experiment-plane/issues/17-research-cli-worker-entrypoints.md`
 - `.scratch/research-experiment-plane/issues/18-material-revision-feature-spec-artifacts.md`
-

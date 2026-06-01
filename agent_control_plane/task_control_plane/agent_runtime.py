@@ -9,12 +9,11 @@ from agent_control_plane.control_plane.agent_runtime import (
     AgentRuntime as SharedAgentRuntime,
     AgentRunConfig as SharedAgentRunConfig,
     AgentTurnResult,
+    RuntimeApproval,
     RuntimePolicy,
-    _JsonSchemaOutput as _SharedJsonSchemaOutput,
 )
 
 AgentRole = Literal["planner", "context", "implementer", "reviewer"]
-_JsonSchemaOutput = _SharedJsonSchemaOutput
 
 
 @dataclass(frozen=True)
@@ -51,7 +50,13 @@ class AgentRuntime:
 
     def open_thread(self, config: AgentRunConfig) -> AgentThread:
         return AgentThread(
-            self._runtime.open_thread(_shared_config(config, _policy_for_role(config.role)))
+            self._runtime.open_thread(
+                _shared_config(
+                    config,
+                    _policy_for_role(config.role),
+                    _approval_for_role(config.role),
+                )
+            )
         )
 
 
@@ -64,11 +69,18 @@ class AgentThread:
         return self._thread.id
 
     def run(self, input: str, config: AgentRunConfig) -> AgentTurnResult:
-        return self._thread.run(input, _shared_config(config, _policy_for_role(config.role)))
+        return self._thread.run(
+            input,
+            _shared_config(
+                config,
+                _policy_for_role(config.role),
+                _approval_for_role(config.role),
+            ),
+        )
 
 
 def _shared_config(
-    config: AgentRunConfig, policy: RuntimePolicy
+    config: AgentRunConfig, policy: RuntimePolicy, approval: RuntimeApproval
 ) -> SharedAgentRunConfig:
     return SharedAgentRunConfig(
         role=config.role,
@@ -80,6 +92,7 @@ def _shared_config(
         thread_id=config.thread_id,
         session_db_path=config.session_db_path,
         policy=policy,
+        approval=approval,
     )
 
 
@@ -87,3 +100,9 @@ def _policy_for_role(role: AgentRole) -> RuntimePolicy:
     if role == "implementer":
         return RuntimePolicy.WORKSPACE_WRITE
     return RuntimePolicy.READ_ONLY
+
+
+def _approval_for_role(role: AgentRole) -> RuntimeApproval:
+    if role == "reviewer":
+        return RuntimeApproval.DENY_ALL
+    return RuntimeApproval.AUTO_REVIEW

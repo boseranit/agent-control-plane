@@ -12,6 +12,7 @@ from agent_control_plane.control_plane.command_runner import (
 from agent_control_plane.research_experiment_controller.artifacts import (
     CommandDeclaration,
     DataAudit,
+    command_declaration_record,
 )
 from agent_control_plane.research_experiment_controller.outcomes import (
     classify_data_audit_failure,
@@ -32,6 +33,7 @@ def run_data_audit_phase(request: PrerequisiteAuditRequest) -> dict[str, Any]:
     run_dir = Path(request.run_dir)
     data_root = Path(request.data_root).expanduser()
     command_results = []
+    failure_classification: str | None = None
 
     if not data_root.exists():
         write_command_metrics(run_dir / "command_metrics.json", command_results)
@@ -42,9 +44,15 @@ def run_data_audit_phase(request: PrerequisiteAuditRequest) -> dict[str, Any]:
         ("data_audit", request.data_audit_commands),
     ):
         for index, command in enumerate(commands, start=1):
-            command_spec = _command_spec(command, phase, index, request.timeout_seconds)
+            data = command_declaration_record(command)
             result = run_command(
-                command_spec,
+                CommandSpec(
+                    name=str(data.get("name") or f"{phase}-{index}"),
+                    argv=data["argv"],
+                    timeout_seconds=float(
+                        data.get("timeout_seconds") or request.timeout_seconds
+                    ),
+                ),
                 cwd=request.cwd,
                 stdout_path=run_dir / "commands" / f"{phase}_{index}_stdout.log",
                 stderr_path=run_dir / "commands" / f"{phase}_{index}_stderr.log",
@@ -55,10 +63,14 @@ def run_data_audit_phase(request: PrerequisiteAuditRequest) -> dict[str, Any]:
                 },
             )
             command_results.append(result)
+            if result.status != "passed" and failure_classification is None:
+                failure_classification = str(
+                    data.get("failure_classification") or "prerequisite_command_failed"
+                )
 
     write_command_metrics(run_dir / "command_metrics.json", command_results)
-    if any(result.status != "passed" for result in command_results):
-        return _failed_result("prerequisite_command_failed", command_results)
+    if failure_classification is not None:
+        return _failed_result(failure_classification, command_results)
 
     data_audit = DataAudit(
         passed=True,
@@ -95,21 +107,3 @@ def _failed_result(
         "data_audit": data_audit.model_dump(mode="json"),
         **summary.model_dump(mode="json"),
     }
-
-
-def _command_spec(
-    command: CommandDeclaration | dict[str, Any],
-    phase: str,
-    index: int,
-    default_timeout_seconds: float,
-) -> CommandSpec:
-    data = (
-        command.model_dump(mode="json")
-        if isinstance(command, CommandDeclaration)
-        else command
-    )
-    return CommandSpec(
-        name=str(data.get("name") or f"{phase}-{index}"),
-        argv=data["argv"],
-        timeout_seconds=float(data.get("timeout_seconds") or default_timeout_seconds),
-    )

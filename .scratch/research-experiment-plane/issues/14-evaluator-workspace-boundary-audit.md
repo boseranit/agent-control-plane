@@ -1,7 +1,7 @@
 # Evaluator Workspace and Evaluation Boundary Audit
 
 Status: completed
-Label: ready-for-agent
+Label: done
 
 ## Parent
 

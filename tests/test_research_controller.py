@@ -10,6 +10,8 @@ import yaml
 from agent_control_plane.control_plane.json_artifacts import read_json_object
 from agent_control_plane.research_experiment_controller.artifacts import (
     ExperimentDesign,
+    FeatureSpec,
+    FeatureSpecs,
     ResearchOutcome,
     SelectedPlan,
     Summary,
@@ -95,6 +97,50 @@ def init_repo_if_needed(path: Path) -> None:
     )
 
 
+def valid_research_spec_payload() -> dict[str, object]:
+    return {
+        "hypothesis": "Peer residuals forecast next-month returns.",
+        "target": "next_month_return",
+        "prediction_horizon": "1M",
+        "universe": "hyperliquid_perps",
+        "label": "forward_return_1m",
+        "feature_availability_assumptions": ["features lagged one bar"],
+        "split": {"train": "2020-01:2024-12", "test": "2025-01:2026-01"},
+        "primary_metric": "information_coefficient",
+        "secondary_metrics": ["turnover"],
+        "baselines": ["market_neutral_null"],
+        "null_tests": ["symbol_shuffle"],
+        "transaction_cost_assumptions": "5 bps",
+        "success_gates": {"information_coefficient": 0.03},
+        "failure_gates": {"information_coefficient": 0.0},
+        "inconclusive_gates": {"min_observations": 100},
+    }
+
+
+def valid_feature_spec_payload(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "feature_id": "peer_residual_21d",
+        "feature_name": "Peer residual 21d",
+        "feature_family": "peer_residual",
+        "data_source": "daily_bars_v1",
+        "inputs": ["returns", "peer_groups"],
+        "transformation": "Regress returns on peer basket.",
+        "transformation_logic": "Regress returns on peer basket.",
+        "lookback_window": "21 trading days",
+        "data_timing": "Point-in-time before label.",
+        "lag": "1 trading day",
+        "normalization": "z-score by timestamp",
+        "backfill_range": "2020-01 through 2026-01",
+        "missing_data_policy": "Drop missing symbols.",
+        "failure_modes": ["future constituents"],
+        "availability_at_decision_time_proof": (
+            "Uses timestamps <= decision timestamp."
+        ),
+        "expected_failure_modes": ["future constituents"],
+    }
+    return payload | overrides
+
+
 class FlowFakeThread:
     def __init__(self, thread_id: str) -> None:
         self.id = thread_id
@@ -127,6 +173,23 @@ class FlowFakeRuntime:
         thread = self.threads.get(thread_id)
         if thread is None:
             thread = FlowFakeThread(thread_id)
+            self.threads[thread_id] = thread
+        return thread
+
+
+class BoundaryViolatingRepairThread(FlowFakeThread):
+    def run(self, input: str, config) -> object:
+        (Path(config.cwd) / "outside.py").write_text("VALUE = 1\n", encoding="utf-8")
+        return super().run(input, config)
+
+
+class BoundaryViolatingRepairRuntime(FlowFakeRuntime):
+    def open_thread(self, config) -> BoundaryViolatingRepairThread:
+        self.configs.append(config)
+        thread_id = config.thread_id or "research-implementer-thread-1"
+        thread = self.threads.get(thread_id)
+        if thread is None:
+            thread = BoundaryViolatingRepairThread(thread_id)
             self.threads[thread_id] = thread
         return thread
 
@@ -179,6 +242,115 @@ class EvaluationFakeRuntime:
         if thread is None:
             thread = EvaluationFakeThread(thread_id)
             self.threads[thread_id] = thread
+        return thread
+
+
+class MaterialCriticThread:
+    def __init__(self, thread_id: str) -> None:
+        self.id = thread_id
+        self.run_inputs: list[str] = []
+        self.run_configs = []
+
+    def run(self, input: str, config) -> object:
+        self.run_inputs.append(input)
+        self.run_configs.append(config)
+        return type(
+            "TurnResult",
+            (),
+            {
+                "final_response": {
+                    "decision": "approve",
+                    "fatal_issues": [],
+                    "required_revisions": [],
+                    "material_revision_categories": ["split"],
+                    "leakage_risks": [],
+                    "baseline_concerns": [],
+                    "gate_concerns": [],
+                }
+            },
+        )()
+
+
+class MaterialCriticRuntime:
+    def __init__(self) -> None:
+        self.configs = []
+        self.threads: list[MaterialCriticThread] = []
+
+    def open_thread(self, config) -> MaterialCriticThread:
+        self.configs.append(config)
+        thread = MaterialCriticThread(f"{config.role}-thread-{len(self.configs)}")
+        self.threads.append(thread)
+        return thread
+
+
+class RejectingMaterialCriticThread(MaterialCriticThread):
+    def run(self, input: str, config) -> object:
+        self.run_inputs.append(input)
+        self.run_configs.append(config)
+        return type(
+            "TurnResult",
+            (),
+            {
+                "final_response": {
+                    "decision": "reject",
+                    "fatal_issues": ["leakage risk"],
+                    "required_revisions": ["restore locked split"],
+                    "material_revision_categories": ["split"],
+                    "leakage_risks": ["future labels"],
+                    "baseline_concerns": [],
+                    "gate_concerns": [],
+                }
+            },
+        )()
+
+
+class RejectingMaterialCriticRuntime(MaterialCriticRuntime):
+    def open_thread(self, config) -> RejectingMaterialCriticThread:
+        self.configs.append(config)
+        thread = RejectingMaterialCriticThread(
+            f"{config.role}-thread-{len(self.configs)}"
+        )
+        self.threads.append(thread)
+        return thread
+
+
+class DecisionMaterialCriticThread(MaterialCriticThread):
+    def __init__(self, thread_id: str, decision: str) -> None:
+        super().__init__(thread_id)
+        self.decision = decision
+
+    def run(self, input: str, config) -> object:
+        self.run_inputs.append(input)
+        self.run_configs.append(config)
+        return type(
+            "TurnResult",
+            (),
+            {
+                "final_response": {
+                    "decision": self.decision,
+                    "fatal_issues": [],
+                    "required_revisions": [],
+                    "material_revision_categories": ["split"],
+                    "leakage_risks": [],
+                    "baseline_concerns": [],
+                    "gate_concerns": [],
+                }
+            },
+        )()
+
+
+class DecisionMaterialCriticRuntime(MaterialCriticRuntime):
+    def __init__(self, decision: str) -> None:
+        super().__init__()
+        self.decision = decision
+
+    def open_thread(self, config) -> DecisionMaterialCriticThread:
+        self.configs.append(config)
+        thread = DecisionMaterialCriticThread(
+            f"{config.role}-thread-{len(self.configs)}",
+            self.decision,
+        )
+        self.threads.append(thread)
         return thread
 
 
@@ -882,6 +1054,421 @@ def test_worktree_create_false_allows_read_only_selected_design(
     assert not (repo / ".worktrees").exists()
 
 
+def test_agent_declared_material_revision_gets_fresh_critic_review(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    spec_path = write_minimal_research_run_spec(tmp_path, repo)
+    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    runtime = MaterialCriticRuntime()
+
+    def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        return run_experiment_flow(
+            request,
+            selection=ExperimentFlowSelection(
+                selected_plan=SelectedPlan(
+                    selected=True,
+                    plan_id="revised-plan",
+                    rationale="Split changed after critique.",
+                    material_revision_categories=["split"],
+                ),
+                experiment_design=ExperimentDesign(
+                    verification_commands=[
+                        {"name": "unit", "argv": [sys.executable, "-c", "pass"]}
+                    ],
+                ),
+                prior_research_spec=valid_research_spec_payload(),
+                research_spec=valid_research_spec_payload(),
+                feature_specs=FeatureSpecs(
+                    features=[
+                        FeatureSpec(
+                            feature_id="peer_residual_21d",
+                            feature_name="Peer residual 21d",
+                            feature_family="peer_residual",
+                            data_source="daily_bars_v1",
+                            inputs=["returns", "peer_groups"],
+                            transformation="Regress returns on peer basket.",
+                            transformation_logic="Regress returns on peer basket.",
+                            lookback_window="21 trading days",
+                            data_timing="Point-in-time before label.",
+                            lag="1 trading day",
+                            normalization="z-score by timestamp",
+                            backfill_range="2020-01 through 2026-01",
+                            missing_data_policy="Drop missing symbols.",
+                            failure_modes=["future constituents"],
+                            availability_at_decision_time_proof=(
+                                "Uses timestamps <= decision timestamp."
+                            ),
+                            expected_failure_modes=["future constituents"],
+                        )
+                    ]
+                ),
+                terminal_summary=Summary(
+                    outcome=ResearchOutcome.completed_inconclusive,
+                    outcome_reason="Read-only evaluation inconclusive.",
+                    failed_stage=None,
+                    failure_classification=None,
+                    summary="Read-only evaluation inconclusive.",
+                ),
+            ),
+            agent_runtime=runtime,
+        )
+
+    run_research_loop(
+        run.research_run_id,
+        runtime_root=tmp_path / "runs",
+        experiment_runner=experiment_runner,
+    )
+
+    experiment_dir = run.experiments_directory / "EXP-0001"
+    critique = read_json_object(experiment_dir / "material_revision_critique.json")
+    summary = read_json_object(experiment_dir / "summary.json")
+    events = read_ledger_events(run.ledger_path)
+
+    assert critique["decision"] == "approve"
+    assert summary["outcome"] == "completed_inconclusive"
+    assert any(
+        event["event_type"] == "material_revision_critic_review"
+        and event["critic_thread_id"] == "research-critic-thread-1"
+        and event["material_revision_categories"] == ["split"]
+        for event in events
+    )
+
+
+def test_controller_detected_material_revision_gets_fresh_critic_review(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    spec_path = write_minimal_research_run_spec(tmp_path, repo)
+    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    runtime = MaterialCriticRuntime()
+
+    def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        return run_experiment_flow(
+            request,
+            selection=ExperimentFlowSelection(
+                selected_plan=SelectedPlan(
+                    selected=True,
+                    plan_id="metric-revision",
+                    rationale="Primary metric revised.",
+                ),
+                experiment_design=ExperimentDesign(
+                    verification_commands=[
+                        {"name": "unit", "argv": [sys.executable, "-c", "pass"]}
+                    ],
+                ),
+                prior_research_spec=valid_research_spec_payload(),
+                research_spec={
+                    **valid_research_spec_payload(),
+                    "primary_metric": "rank_information_coefficient",
+                },
+                terminal_summary=Summary(
+                    outcome=ResearchOutcome.completed_inconclusive,
+                    outcome_reason="Verification passed.",
+                    failed_stage=None,
+                    failure_classification=None,
+                    summary="Verification passed.",
+                ),
+            ),
+            agent_runtime=runtime,
+        )
+
+    run_research_loop(
+        run.research_run_id,
+        runtime_root=tmp_path / "runs",
+        experiment_runner=experiment_runner,
+    )
+
+    events = read_ledger_events(run.ledger_path)
+    experiment_dir = run.experiments_directory / "EXP-0001"
+    critique = read_json_object(experiment_dir / "material_revision_critique.json")
+
+    assert critique["decision"] == "approve"
+    assert any(
+        event["event_type"] == "material_revision_critic_review"
+        and event["material_revision_categories"] == ["primary_metric"]
+        for event in events
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "old_value", "new_value"),
+    [
+        ("data_source", "daily_bars_v1", "daily_bars_v2"),
+        ("feature_family", "peer_residual", "volume_residual"),
+    ],
+)
+def test_controller_detects_feature_spec_material_revision(
+    tmp_path: Path,
+    field: str,
+    old_value: str,
+    new_value: str,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    spec_path = write_minimal_research_run_spec(tmp_path, repo)
+    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    runtime = MaterialCriticRuntime()
+
+    def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        return run_experiment_flow(
+            request,
+            selection=ExperimentFlowSelection(
+                selected_plan=SelectedPlan(
+                    selected=True,
+                    plan_id=f"{field}-revision",
+                    rationale="Feature spec changed.",
+                ),
+                experiment_design=ExperimentDesign(
+                    verification_commands=[
+                        {"name": "unit", "argv": [sys.executable, "-c", "pass"]}
+                    ],
+                ),
+                prior_research_spec=valid_research_spec_payload(),
+                research_spec=valid_research_spec_payload(),
+                prior_feature_specs=FeatureSpecs(
+                    features=[
+                        FeatureSpec(**valid_feature_spec_payload(**{field: old_value}))
+                    ]
+                ),
+                feature_specs=FeatureSpecs(
+                    features=[
+                        FeatureSpec(**valid_feature_spec_payload(**{field: new_value}))
+                    ]
+                ),
+                terminal_summary=Summary(
+                    outcome=ResearchOutcome.completed_inconclusive,
+                    outcome_reason="Verification passed.",
+                    failed_stage=None,
+                    failure_classification=None,
+                    summary="Verification passed.",
+                ),
+            ),
+            agent_runtime=runtime,
+        )
+
+    run_research_loop(
+        run.research_run_id,
+        runtime_root=tmp_path / "runs",
+        experiment_runner=experiment_runner,
+    )
+
+    events = read_ledger_events(run.ledger_path)
+    experiment_dir = run.experiments_directory / "EXP-0001"
+    critique = read_json_object(experiment_dir / "material_revision_critique.json")
+
+    assert critique["decision"] == "approve"
+    assert any(
+        event["event_type"] == "material_revision_critic_review"
+        and event["material_revision_categories"] == [field]
+        for event in events
+    )
+
+
+def test_rejected_material_revision_blocks_experiment(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    spec_path = write_minimal_research_run_spec(tmp_path, repo)
+    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    runtime = RejectingMaterialCriticRuntime()
+
+    def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        return run_experiment_flow(
+            request,
+            selection=ExperimentFlowSelection(
+                selected_plan=SelectedPlan(
+                    selected=True,
+                    plan_id="bad-revision",
+                    rationale="Split changed after critique.",
+                    material_revision_categories=["split"],
+                ),
+                experiment_design=ExperimentDesign(
+                    verification_commands=[
+                        {"name": "unit", "argv": [sys.executable, "-c", "pass"]}
+                    ],
+                ),
+                terminal_summary=Summary(
+                    outcome=ResearchOutcome.completed_candidate,
+                    outcome_reason="Should not run.",
+                    failed_stage=None,
+                    failure_classification=None,
+                    summary="Should not run.",
+                ),
+            ),
+            agent_runtime=runtime,
+        )
+
+    run_research_loop(
+        run.research_run_id,
+        runtime_root=tmp_path / "runs",
+        experiment_runner=experiment_runner,
+    )
+
+    experiment_dir = run.experiments_directory / "EXP-0001"
+    critique = read_json_object(experiment_dir / "material_revision_critique.json")
+    summary = read_json_object(experiment_dir / "summary.json")
+
+    assert critique["decision"] == "reject"
+    assert summary["outcome"] == "invalid"
+    assert summary["failed_stage"] == "critic_review"
+    assert summary["failure_classification"] == "material_revision_rejected"
+    assert "leakage risk" in summary["outcome_reason"]
+    assert "restore locked split" in summary["outcome_reason"]
+    assert not (experiment_dir / "data_audit.json").exists()
+
+
+@pytest.mark.parametrize(
+    "decision",
+    ["revision_required", "revision-required", "requires revision", "fatal"],
+)
+def test_revision_required_material_critic_decisions_block_experiment(
+    tmp_path: Path,
+    decision: str,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    spec_path = write_minimal_research_run_spec(tmp_path, repo)
+    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    runtime = DecisionMaterialCriticRuntime(decision)
+
+    def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        return run_experiment_flow(
+            request,
+            selection=ExperimentFlowSelection(
+                selected_plan=SelectedPlan(
+                    selected=True,
+                    plan_id=f"{decision}-revision",
+                    rationale="Split changed after critique.",
+                    material_revision_categories=["split"],
+                ),
+                experiment_design=ExperimentDesign(
+                    verification_commands=[
+                        {"name": "unit", "argv": [sys.executable, "-c", "pass"]}
+                    ],
+                ),
+                terminal_summary=Summary(
+                    outcome=ResearchOutcome.completed_candidate,
+                    outcome_reason="Should not run.",
+                    failed_stage=None,
+                    failure_classification=None,
+                    summary="Should not run.",
+                ),
+            ),
+            agent_runtime=runtime,
+        )
+
+    run_research_loop(
+        run.research_run_id,
+        runtime_root=tmp_path / "runs",
+        experiment_runner=experiment_runner,
+    )
+
+    experiment_dir = run.experiments_directory / "EXP-0001"
+    summary = read_json_object(experiment_dir / "summary.json")
+
+    assert summary["outcome"] == "invalid"
+    assert summary["failed_stage"] == "critic_review"
+    assert summary["failure_classification"] == "material_revision_rejected"
+    assert not (experiment_dir / "data_audit.json").exists()
+
+
+def test_non_material_revision_does_not_get_fresh_critic_review(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    spec_path = write_minimal_research_run_spec(tmp_path, repo)
+    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    runtime = MaterialCriticRuntime()
+
+    def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        return run_experiment_flow(
+            request,
+            selection=ExperimentFlowSelection(
+                selected_plan=SelectedPlan(
+                    selected=True,
+                    plan_id="formatting-revision",
+                    rationale="Command formatting changed only.",
+                ),
+                experiment_design=ExperimentDesign(
+                    verification_commands=[
+                        {"name": "unit", "argv": [sys.executable, "-c", "pass"]}
+                    ],
+                ),
+                prior_research_spec={
+                    "target": "return_1m",
+                    "command_formatting": "python eval.py",
+                },
+                research_spec={
+                    "target": "return_1m",
+                    "command_formatting": "python ./eval.py",
+                },
+                terminal_summary=Summary(
+                    outcome=ResearchOutcome.completed_inconclusive,
+                    outcome_reason="Verification passed.",
+                    failed_stage=None,
+                    failure_classification=None,
+                    summary="Verification passed.",
+                ),
+            ),
+            agent_runtime=runtime,
+        )
+
+    run_research_loop(
+        run.research_run_id,
+        runtime_root=tmp_path / "runs",
+        experiment_runner=experiment_runner,
+    )
+
+    experiment_dir = run.experiments_directory / "EXP-0001"
+
+    assert runtime.configs == []
+    assert not (experiment_dir / "material_revision_critique.json").exists()
+
+
+def test_material_revision_without_runtime_is_invalid(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    spec_path = write_minimal_research_run_spec(tmp_path, repo)
+    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+
+    def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        return run_experiment_flow(
+            request,
+            selection=ExperimentFlowSelection(
+                selected_plan=SelectedPlan(
+                    selected=True,
+                    plan_id="unreviewed-revision",
+                    rationale="Revision declared material.",
+                    material_revision_categories=["success gate"],
+                ),
+                experiment_design=ExperimentDesign(
+                    verification_commands=[
+                        {"name": "unit", "argv": [sys.executable, "-c", "pass"]}
+                    ],
+                ),
+            ),
+        )
+
+    run_research_loop(
+        run.research_run_id,
+        runtime_root=tmp_path / "runs",
+        experiment_runner=experiment_runner,
+    )
+
+    summary = read_json_object(run.experiments_directory / "EXP-0001" / "summary.json")
+
+    assert summary["outcome"] == "invalid"
+    assert summary["failed_stage"] == "critic_review"
+    assert summary["failure_classification"] == "material_revision_unreviewed"
+
+
 def test_selected_confirmatory_only_experiment_gets_default_worktree(
     tmp_path: Path,
 ) -> None:
@@ -1011,19 +1598,14 @@ def test_verification_repairs_reuse_same_implementer_thread_until_limit(
     summary = read_json_object(experiment_dir / "summary.json")
     metrics = read_json_object(experiment_dir / "command_metrics.json")
     events = read_ledger_events(run.ledger_path)
-    implementer_thread = runtime.threads["research-implementer-thread-1"]
 
     assert summary["outcome"] == "run_failed"
     assert summary["failed_stage"] == "verification"
     assert summary["failure_classification"] == "verification_command_failed"
     assert metrics["command_count"] == 3
     assert metrics["failed_count"] == 3
-    assert [config.thread_id for config in runtime.configs] == [
-        None,
-        "research-implementer-thread-1",
-    ]
-    assert len(implementer_thread.run_inputs) == 2
-    assert "Verification failed for EXP-0001" in implementer_thread.run_inputs[0]
+    assert (experiment_dir / "implementation_repair_1.json").exists()
+    assert (experiment_dir / "implementation_repair_2.json").exists()
     repair_events = [
         event
         for event in events
@@ -1049,6 +1631,53 @@ def test_verification_repairs_reuse_same_implementer_thread_until_limit(
             "implementer_thread_id": "research-implementer-thread-1",
         },
     ]
+
+
+def test_selection_path_audits_repair_boundary_before_verification_failure(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    spec_path = write_minimal_research_run_spec(tmp_path, repo, max_repairs=1)
+    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    runtime = BoundaryViolatingRepairRuntime()
+
+    def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        return run_experiment_flow(
+            request,
+            selection=ExperimentFlowSelection(
+                selected_plan=SelectedPlan(
+                    selected=True,
+                    plan_id="editing-plan",
+                    rationale="Needs implementation.",
+                ),
+                experiment_design=ExperimentDesign(
+                    allowed_write_paths=["src"],
+                    verification_commands=[
+                        {
+                            "name": "unit",
+                            "argv": [sys.executable, "-c", "raise SystemExit(4)"],
+                        }
+                    ],
+                ),
+            ),
+            agent_runtime=runtime,
+        )
+
+    run_research_loop(
+        run.research_run_id,
+        runtime_root=tmp_path / "runs",
+        experiment_runner=experiment_runner,
+    )
+
+    experiment_dir = run.experiments_directory / "EXP-0001"
+    summary = read_json_object(experiment_dir / "summary.json")
+    diff_summary = read_json_object(experiment_dir / "implementation_diff_summary.json")
+
+    assert summary["outcome"] == "run_failed"
+    assert summary["failed_stage"] == "implementation_boundary_audit"
+    assert summary["failure_classification"] == "allowed_path_violation"
+    assert diff_summary["allowed_path_violations"] == ["outside.py"]
 
 
 def test_evaluator_runs_in_workspace_and_writes_result_artifacts(
@@ -1106,6 +1735,134 @@ def test_evaluator_runs_in_workspace_and_writes_result_artifacts(
     assert summary["outcome"] == "completed_candidate"
     assert summary["confirmatory_findings"] == ["confirmatory command eval"]
     assert summary["exploratory_findings"] == ["turnover stable"]
+
+
+def test_feature_specs_are_written_and_locked_for_evaluation(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    spec_path = write_minimal_research_run_spec(tmp_path, repo)
+    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    runtime = EvaluationFakeRuntime()
+
+    def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        return run_experiment_flow(
+            request,
+            selection=ExperimentFlowSelection(
+                selected_plan=SelectedPlan(
+                    selected=True,
+                    plan_id="feature-plan",
+                    rationale="Evaluate material signal feature.",
+                ),
+                experiment_design=ExperimentDesign(
+                    confirmatory_commands=[
+                        {"name": "eval", "argv": [sys.executable, "eval.py"]}
+                    ],
+                ),
+                research_spec=valid_research_spec_payload(),
+                prior_research_spec=valid_research_spec_payload(),
+                feature_specs=FeatureSpecs(
+                    features=[
+                        FeatureSpec(
+                            feature_id="peer_residual_21d",
+                            feature_name="Peer residual 21d",
+                            feature_family="peer_residual",
+                            data_source="daily_bars_v1",
+                            inputs=["returns", "peer_groups"],
+                            transformation="Regress returns on peer basket.",
+                            transformation_logic="Regress returns on peer basket.",
+                            lookback_window="21 trading days",
+                            data_timing="Point-in-time before label.",
+                            lag="1 trading day",
+                            normalization="z-score by timestamp",
+                            backfill_range="2020-01 through 2026-01",
+                            missing_data_policy="Drop missing symbols.",
+                            failure_modes=["future constituents"],
+                            availability_at_decision_time_proof=(
+                                "Uses timestamps <= decision timestamp."
+                            ),
+                            expected_failure_modes=["future constituents"],
+                        )
+                    ]
+                ),
+            ),
+            agent_runtime=runtime,
+        )
+
+    run_research_loop(
+        run.research_run_id,
+        runtime_root=tmp_path / "runs",
+        experiment_runner=experiment_runner,
+    )
+
+    experiment_dir = run.experiments_directory / "EXP-0001"
+    feature_specs_path = experiment_dir / "feature_specs.json"
+    research_spec_path = experiment_dir / "research_spec.json"
+    feature_specs = read_json_object(feature_specs_path)
+    research_spec = read_json_object(research_spec_path)
+    manifest = read_json_object(experiment_dir / "evaluation" / "manifest.json")
+
+    assert research_spec["primary_metric"] == "information_coefficient"
+    assert feature_specs["features"][0]["feature_id"] == "peer_residual_21d"
+    assert manifest["canonical_artifacts"]["research_spec"] == str(
+        research_spec_path.resolve()
+    )
+    assert manifest["canonical_artifacts"]["feature_specs"] == str(
+        feature_specs_path.resolve()
+    )
+    assert str(research_spec_path.resolve()) in manifest["locked_artifact_hashes"]
+    assert str(feature_specs_path.resolve()) in manifest["locked_artifact_hashes"]
+
+
+def test_partial_research_spec_is_rejected_before_evaluation_lock(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    spec_path = write_minimal_research_run_spec(tmp_path, repo)
+    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    runtime = EvaluationFakeRuntime()
+
+    def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        return run_experiment_flow(
+            request,
+            selection=ExperimentFlowSelection(
+                selected_plan=SelectedPlan(
+                    selected=True,
+                    plan_id="partial-spec-plan",
+                    rationale="Evaluate partial research spec.",
+                ),
+                experiment_design=ExperimentDesign(
+                    confirmatory_commands=[
+                        {"name": "eval", "argv": [sys.executable, "eval.py"]}
+                    ],
+                ),
+                research_spec={
+                    "target": "return_1m",
+                    "label": "forward_return_1m",
+                    "universe": "top_200",
+                    "primary_metric": "ic",
+                },
+            ),
+            agent_runtime=runtime,
+        )
+
+    run_research_loop(
+        run.research_run_id,
+        runtime_root=tmp_path / "runs",
+        experiment_runner=experiment_runner,
+    )
+
+    experiment_dir = run.experiments_directory / "EXP-0001"
+    summary = read_json_object(experiment_dir / "summary.json")
+
+    assert summary["outcome"] == "run_failed"
+    assert summary["failure_classification"] == "runner_exception"
+    assert "hypothesis" in summary["outcome_reason"]
+    assert runtime.configs == []
+    assert not (experiment_dir / "research_spec.json").exists()
+    assert not (experiment_dir / "evaluation" / "manifest.json").exists()
 
 
 def test_evaluation_runtime_defect_records_run_failed_without_implementer_reroute(

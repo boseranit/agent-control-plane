@@ -1,7 +1,7 @@
 # Shared artifact/state primitives
 
 Status: completed
-Label: ready-for-agent
+Label: done
 
 ## Parent
 

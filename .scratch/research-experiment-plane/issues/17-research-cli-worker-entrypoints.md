@@ -1,7 +1,7 @@
 # Research CLI and worker entrypoints
 
-Status: ready-for-agent
-Label: ready-for-agent
+Status: completed
+Label: done
 
 ## Parent
 
@@ -13,15 +13,21 @@ Add Research Experiment Controller CLI and module entrypoints for starting/resum
 
 ## Acceptance criteria
 
-- [ ] CLI can start a Research Run from a Research Run Spec.
-- [ ] CLI can resume an existing Research Run by id/runtime root.
-- [ ] Worker entrypoint starts the Research Durable Shell adapter.
-- [ ] `pixi.toml` includes a `research-experiment-worker` task.
-- [ ] Tests cover CLI parsing and start/resume delegation.
+- [x] CLI can start a Research Run from a Research Run Spec.
+- [x] CLI can resume an existing Research Run by id/runtime root.
+- [x] Worker entrypoint starts the Research Durable Shell adapter.
+- [x] `pixi.toml` includes a `research-experiment-worker` task.
+- [x] Tests cover CLI parsing and start/resume delegation.
+
+## Completion notes
+
+- Added Research CLI and module entrypoint.
+- Added `research-experiment-worker` pixi task.
+- Added CLI parsing, start, resume delegation, and import-boundary tests.
+- Verified with `pixi run test` (`259 passed`).
 
 ## Blocked by
 
 - `.scratch/research-experiment-plane/issues/06-research-run-spec-loader-snapshot-model.md`
 - `.scratch/research-experiment-plane/issues/08-research-run-state-ledger-start-resume.md`
 - `.scratch/research-experiment-plane/issues/16-durable-shell-hatchet-adapter.md`
-

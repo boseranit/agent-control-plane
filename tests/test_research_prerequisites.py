@@ -89,3 +89,35 @@ def test_failed_data_audit_command_records_prerequisite_failure_and_metrics(
     assert metrics["commands"][0]["name"] == "schema-check"
     assert stdout.read_text(encoding="utf-8").strip() == str(data_root)
     assert "schema failed" in stderr.read_text(encoding="utf-8")
+
+
+def test_failed_data_audit_command_can_declare_failure_classification(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    data_root = tmp_path / "data"
+    run_dir = tmp_path / "run"
+    repo.mkdir()
+    data_root.mkdir()
+
+    result = run_data_audit_phase(
+        PrerequisiteAuditRequest(
+            data_root=data_root,
+            prerequisite_commands=[],
+            data_audit_commands=[
+                {
+                    "name": "schema-check",
+                    "argv": [sys.executable, "-c", "raise SystemExit(9)"],
+                    "failure_classification": "schema_mismatch",
+                }
+            ],
+            cwd=repo,
+            run_dir=run_dir,
+            timeout_seconds=60,
+        )
+    )
+
+    assert result["outcome"] == "prerequisites_failed"
+    assert result["failed_stage"] == "data_audit"
+    assert result["failure_classification"] == "schema_mismatch"
+    assert result["data_audit"]["failure_classification"] == "schema_mismatch"

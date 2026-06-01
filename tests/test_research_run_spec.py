@@ -246,14 +246,6 @@ def test_applies_defaults_and_accepts_stop_on_prerequisites_failed_false(
             {"stop_on_prerequisites_failed": "false"},
             "stop_on_prerequisites_failed.*boolean",
         ),
-        ("unsupported_commands", {"commands": []}, "Unsupported.*commands"),
-        ("unsupported_eval_inputs", {"eval_inputs": []}, "Unsupported.*eval_inputs"),
-        (
-            "unsupported_service_tier",
-            {"service_tier": "flex"},
-            "Unsupported.*service_tier",
-        ),
-        ("unsupported_dependencies", {"dependencies": []}, "Unsupported.*dependencies"),
     ],
 )
 def test_rejects_invalid_research_run_specs(
@@ -309,3 +301,20 @@ def test_resolved_spec_dict_is_deterministic_snapshot_data(tmp_path: Path) -> No
     reloaded = load_research_run_spec(snapshot_path)
 
     assert resolved_spec_dict(reloaded) == resolved
+
+
+def test_ignores_nonessential_unknown_research_run_spec_fields(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    data = minimal_spec_data(repo)
+    data["commands"] = []
+    data["eval_inputs"] = []
+    data["service_tier"] = "flex"
+    data["dependencies"] = []
+
+    spec = load_research_run_spec(write_spec_data(tmp_path, data, "unknown-fields"))
+
+    assert spec.research_run_id == "peer-residual-v1"
+    assert spec.budget == "smoke"

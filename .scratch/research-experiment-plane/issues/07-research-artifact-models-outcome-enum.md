@@ -1,7 +1,7 @@
 # Research Artifact models and outcome enum
 
 Status: completed
-Label: ready-for-agent
+Label: done
 
 ## Parent
 

@@ -7,11 +7,6 @@ from typing import Any
 import yaml
 
 
-UNSUPPORTED_FIELDS = frozenset(
-    {"commands", "eval_inputs", "service_tier", "dependencies"}
-)
-
-
 @dataclass(frozen=True)
 class ResearchBudget:
     month_start: str
@@ -75,7 +70,6 @@ def load_research_run_spec(path: str | Path) -> ResearchRunSpec:
     data = yaml.safe_load(source_path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ResearchRunSpecError("Research Run Spec must be a mapping.")
-    _reject_unsupported_fields(data)
 
     budgets = _load_budgets(data.get("budgets"))
     budget_name = _required_string(data, "budget")
@@ -148,14 +142,6 @@ def resolved_spec_dict(spec: ResearchRunSpec) -> dict[str, Any]:
         },
         "stop_on_prerequisites_failed": spec.stop_on_prerequisites_failed,
     }
-
-
-def _reject_unsupported_fields(data: dict[str, Any]) -> None:
-    for field in data:
-        if field in UNSUPPORTED_FIELDS:
-            raise ResearchRunSpecError(
-                f"Unsupported v1 Research Run Spec field '{field}'."
-            )
 
 
 def _load_budgets(value: Any) -> dict[str, ResearchBudget]:

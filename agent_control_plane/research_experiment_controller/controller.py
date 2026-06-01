@@ -35,9 +35,6 @@ from agent_control_plane.research_experiment_controller.state import (
     record_terminal_experiment,
     research_run_directory,
 )
-from agent_control_plane.research_experiment_controller.worktree import (
-    cleanup_experiment_worktree,
-)
 
 
 @dataclass(frozen=True)
@@ -337,14 +334,6 @@ def _propagate_usage_limit_wait(
     write_json(phase_input.state_path, state)
     if experiment_dir.exists():
         shutil.rmtree(experiment_dir)
-    spec = load_research_run_spec(phase_input.spec_snapshot_path)
-    if spec.worktree.create:
-        cleanup_experiment_worktree(
-            target_repository=spec.target_repository,
-            worktree_root=spec.worktree.root,
-            research_run_id=phase_input.research_run_id,
-            experiment_id=experiment_id,
-        )
     append_ledger_event(
         phase_input.ledger_path,
         event_type="usage_limit_wait",

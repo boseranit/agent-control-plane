@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import shlex
-import shutil
 import subprocess
 import threading
 import time
@@ -28,9 +27,9 @@ from agent_control_plane.task_control_plane.task_spec import (
     Task,
     TaskSpec,
     TestCommand,
+    load_task_source,
     load_task_spec,
 )
-
 
 PACKAGE_DIRECTORY = Path(__file__).parent
 PLANNER_PROMPT_PATH = PACKAGE_DIRECTORY / "prompts" / "planner-agent.md"
@@ -92,10 +91,17 @@ class HumanAnswerError(RuntimeError):
 
 
 def start_task_run(
-    task_spec_path: str | Path, runtime_root: str | Path = "runs"
+    task_source_path: str | Path,
+    runtime_root: str | Path = "runs",
+    *,
+    repo_path: str | Path | None = None,
 ) -> TaskRun:
-    task_spec = load_task_spec(task_spec_path)
-    _require_clean_target_repository(task_spec.target_repository)
+    task_source = load_task_source(task_source_path, repo_path=repo_path)
+    task_spec = task_source.task_spec
+    _require_clean_target_repository(
+        task_spec.target_repository,
+        untracked_source_root=task_source.untracked_source_root,
+    )
 
     run_id = _new_run_id()
     runtime_root_path = Path(runtime_root).resolve()
@@ -107,7 +113,7 @@ def start_task_run(
     task_state_path = run_directory / "task-state.json"
     first_task_context_path = task_directory / "context.json"
 
-    shutil.copyfile(task_spec.source_path, task_spec_snapshot_path)
+    task_spec_snapshot_path.write_text(task_source.snapshot_text, encoding="utf-8")
 
     artifact_paths = _artifact_paths(task_directory)
     context = _first_task_context(
@@ -129,6 +135,7 @@ def start_task_run(
         task_state_path=task_state_path,
         first_task_context_path=first_task_context_path,
         artifact_paths=artifact_paths,
+        untracked_source_root=task_source.untracked_source_root,
     )
     _write_json(task_state_path, state)
 
@@ -177,10 +184,7 @@ def resume_task_run(
         _require_resume_can_continue_from_phase(state)
 
         if phase in {"ready_for_planning", "planning_needs_answers"}:
-            _require_clean_target_repository(
-                Path(state["target_repository"]).resolve(),
-                "before resuming planning",
-            )
+            _require_clean_state_target_repository(state, "before resuming planning")
             plan_active_task(
                 task_run.task_state_path,
                 codex_client,
@@ -193,9 +197,8 @@ def resume_task_run(
             continue
 
         if phase == "plan_approved":
-            _require_clean_target_repository(
-                Path(state["target_repository"]).resolve(),
-                "before resuming implementation",
+            _require_clean_state_target_repository(
+                state, "before resuming implementation"
             )
             run_active_task_implementer(
                 task_run.task_state_path,
@@ -730,6 +733,7 @@ def commit_active_task_and_advance(task_state_path: str | Path) -> dict[str, Any
     commit_sha = _commit_all_target_repository_changes(
         target_repository=target_repository,
         message=f"{task.task_id}: {task.title}",
+        untracked_source_root=_state_untracked_source_root(state),
     )
     completed_at = _utc_timestamp()
     active_task_state["status"] = "completed"
@@ -751,9 +755,7 @@ def commit_active_task_and_advance(task_state_path: str | Path) -> dict[str, Any
         }
 
     try:
-        _require_clean_target_repository(
-            target_repository, "before starting the next Task"
-        )
+        _require_clean_state_target_repository(state, "before starting the next Task")
     except TaskRunError:
         state["phase"] = "target_repository_dirty_before_next_task"
         _write_json(task_state_file, state)
@@ -860,8 +862,7 @@ def _resume_after_dirty_before_next_task(task_state_path: str | Path) -> None:
             "Task Run cannot start the next Task until the active Task is completed."
         )
 
-    target_repository = Path(state["target_repository"]).resolve()
-    _require_clean_target_repository(target_repository, "before starting the next Task")
+    _require_clean_state_target_repository(state, "before starting the next Task")
 
     task_spec = load_task_spec(state["task_spec_snapshot_path"])
     completed_task_id = active_task_state.get("id")
@@ -1194,8 +1195,21 @@ def _write_command_log(
         command_log.flush()
 
 
+def _require_clean_state_target_repository(
+    state: Mapping[str, Any], clean_context: str
+) -> None:
+    _require_clean_target_repository(
+        Path(state["target_repository"]).resolve(),
+        clean_context,
+        untracked_source_root=_state_untracked_source_root(state),
+    )
+
+
 def _require_clean_target_repository(
-    target_repository: Path, clean_context: str = "before starting a Task Run"
+    target_repository: Path,
+    clean_context: str = "before starting a Task Run",
+    *,
+    untracked_source_root: str | None = None,
 ) -> None:
     if not target_repository.exists():
         raise TaskRunError(f"Target Repository does not exist: {target_repository}")
@@ -1214,18 +1228,18 @@ def _require_clean_target_repository(
             f"Target Repository is not a git work tree: {target_repository}"
         )
 
-    status = subprocess.run(
-        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
-        cwd=target_repository,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if status.returncode != 0:
+    if _run_git_command(
+        ["status", "--porcelain=v1", "--untracked-files=no"],
+        target_repository,
+    ).stdout.strip():
         raise TaskRunError(
-            f"Could not inspect Target Repository status: {status.stderr.strip()}"
+            f"Target Repository must be clean {clean_context}: {target_repository}"
         )
-    if status.stdout.strip():
+
+    untracked_args = ["ls-files", "--others", "--exclude-standard"]
+    if untracked_source_root is not None:
+        untracked_args.extend(["--", ".", f":(exclude){untracked_source_root}"])
+    if _run_git_command(untracked_args, target_repository).stdout.strip():
         raise TaskRunError(
             f"Target Repository must be clean {clean_context}: {target_repository}"
         )
@@ -1243,9 +1257,19 @@ def _require_active_task_commit_ready(task_state: Mapping[str, Any]) -> None:
 
 
 def _commit_all_target_repository_changes(
-    *, target_repository: Path, message: str
+    *,
+    target_repository: Path,
+    message: str,
+    untracked_source_root: str | None = None,
 ) -> str:
-    _run_git_command(["add", "--all"], target_repository)
+    if untracked_source_root is None:
+        _run_git_command(["add", "--all"], target_repository)
+    else:
+        _run_git_command(["add", "--update"], target_repository)
+        _run_git_command(
+            ["add", "--all", "--", ".", f":(exclude){untracked_source_root}"],
+            target_repository,
+        )
     staged_changes = subprocess.run(
         ["git", "diff", "--cached", "--quiet", "--exit-code"],
         cwd=target_repository,
@@ -1282,6 +1306,19 @@ def _run_git_command(
             raise TaskRunError(f"{command} failed: {detail}")
         raise TaskRunError(f"{command} failed.")
     return result
+
+
+def _state_untracked_source_root(state: Mapping[str, Any]) -> str | None:
+    root = state.get("task_source_untracked_root")
+    if root is None:
+        return None
+    if not isinstance(root, str):
+        raise TaskRunError(
+            "Task State field 'task_source_untracked_root' must be a path "
+            "string or null."
+        )
+    root = root.rstrip("/")
+    return root if root and root != "." else None
 
 
 def _task_spec_task_by_id(task_spec: TaskSpec, task_id: Any) -> Task:
@@ -1434,6 +1471,7 @@ def _initial_task_state(
     task_state_path: Path,
     first_task_context_path: Path,
     artifact_paths: dict[str, Path],
+    untracked_source_root: str | None,
 ) -> dict[str, Any]:
     first_task = task_spec.tasks[0]
     return {
@@ -1445,6 +1483,7 @@ def _initial_task_state(
         "run_directory": str(run_directory),
         "task_spec_snapshot_path": str(task_spec_snapshot_path),
         "task_state_path": str(task_state_path),
+        "task_source_untracked_root": untracked_source_root,
         "tasks": [
             {
                 "id": task.task_id,

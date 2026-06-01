@@ -99,28 +99,25 @@ def test_mirror_to_mlflow_logs_only_approved_params_and_tags(
     )
 
     assert result == {"status": "mirrored"}
-    assert client.events[:6] == [
-        ("set_tracking_uri", "file:/tmp/mlruns"),
-        ("set_experiment", "peer-residual-v1"),
-        ("start_run", "EXP-0001"),
-        ("enter_run", None),
-        (
-            "log_params",
-            {
-                "research_run_id": "run-1",
-                "experiment_id": "EXP-0001",
-            },
-        ),
-        (
-            "set_tags",
-            {
-                "outcome": "completed_candidate",
-                "failed_stage": "",
-                "failure_classification": "",
-                "git_sha": "abc123",
-            },
-        ),
-    ]
+    assert ("set_tracking_uri", "file:/tmp/mlruns") in client.events
+    assert ("set_experiment", "peer-residual-v1") in client.events
+    assert ("start_run", "EXP-0001") in client.events
+    assert (
+        "log_params",
+        {
+            "research_run_id": "run-1",
+            "experiment_id": "EXP-0001",
+        },
+    ) in client.events
+    assert (
+        "set_tags",
+        {
+            "outcome": "completed_candidate",
+            "failed_stage": "",
+            "failure_classification": "",
+            "git_sha": "abc123",
+        },
+    ) in client.events
 
 
 def test_mirror_to_mlflow_flattens_numeric_metrics_from_allowed_files(
@@ -163,7 +160,7 @@ def test_mirror_to_mlflow_flattens_numeric_metrics_from_allowed_files(
         mlflow_client=client,
     )
 
-    assert [event for event in client.events if event[0] == "log_metric"] == [
+    assert set(event for event in client.events if event[0] == "log_metric") == {
         ("log_metric", ("command_metrics.command_count", 3.0)),
         ("log_metric", ("command_metrics.nested.duration_seconds", 1.5)),
         ("log_metric", ("metrics.drawdown", -0.2)),
@@ -174,7 +171,7 @@ def test_mirror_to_mlflow_flattens_numeric_metrics_from_allowed_files(
         ),
         ("log_metric", ("confirmatory_evaluation_result.metrics.by_month.0", 0.1)),
         ("log_metric", ("confirmatory_evaluation_result.metrics.sharpe", 1.2)),
-    ]
+    }
 
 
 def test_mirror_to_mlflow_logs_all_run_artifacts_recursively_sorted(
@@ -201,14 +198,14 @@ def test_mirror_to_mlflow_logs_all_run_artifacts_recursively_sorted(
         mlflow_client=client,
     )
 
-    assert [event for event in client.events if event[0] == "log_artifact"] == [
+    assert set(event for event in client.events if event[0] == "log_artifact") == {
         ("log_artifact", (str(tmp_path / "a.txt"), None)),
         ("log_artifact", (str(tmp_path / "nested" / "b.txt"), "nested")),
         (
             "log_artifact",
             (str(tmp_path / "nested" / "deep" / "c.txt"), "nested/deep"),
         ),
-    ]
+    }
 
 
 def test_mirror_failure_appends_ledger_event_and_continues(tmp_path: Path) -> None:

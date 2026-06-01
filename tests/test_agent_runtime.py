@@ -1,76 +1,70 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
-import pytest
-from agents.exceptions import ModelBehaviorError
-
-from agent_control_plane.control_plane import agent_runtime as shared_agent_runtime
+from agent_control_plane.control_plane.agent_runtime import (
+    AgentTurnResult,
+    RuntimeApproval,
+    RuntimePolicy,
+)
+from agent_control_plane.task_control_plane import agent_runtime as task_agent_runtime
 from agent_control_plane.task_control_plane.agent_runtime import (
     AgentRunConfig,
     AgentRuntime,
-    _JsonSchemaOutput,
 )
 from agent_control_plane.task_control_plane.controller import _parse_planner_output
 
 
-class FakeAgent:
-    calls: list[dict[str, object]] = []
+class FakeSharedRuntime:
+    instances: list["FakeSharedRuntime"] = []
 
     def __init__(self, **kwargs: object) -> None:
         self.kwargs = kwargs
-        self.calls.append(kwargs)
+        self.open_configs = []
+        self.threads: list[FakeSharedThread] = []
+        self.entered = False
+        self.exited = False
+        self.instances.append(self)
+
+    def __enter__(self) -> "FakeSharedRuntime":
+        self.entered = True
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.exited = True
+
+    def open_thread(self, config) -> "FakeSharedThread":
+        self.open_configs.append(config)
+        thread = FakeSharedThread(config.thread_id or f"{config.role}-thread-1")
+        self.threads.append(thread)
+        return thread
 
 
-class FakeSession:
-    calls: list[dict[str, object]] = []
+class FakeSharedThread:
+    def __init__(self, thread_id: str) -> None:
+        self.id = thread_id
+        self.run_calls = []
 
-    def __init__(self, session_id: str, db_path: str | Path) -> None:
-        self.session_id = session_id
-        self.db_path = db_path
-        self.closed = False
-        self.calls.append({"session_id": session_id, "db_path": db_path})
-
-    def close(self) -> None:
-        self.closed = True
-
-
-class FakeRunResult:
-    def __init__(self, final_output: object) -> None:
-        self.final_output = final_output
+    def run(self, input: str, config) -> AgentTurnResult:
+        self.run_calls.append({"input": input, "config": config})
+        return AgentTurnResult(
+            final_response='{"status": "planned", "plan_markdown": "Do it."}'
+        )
 
 
-class FakeRunner:
-    calls: list[dict[str, object]] = []
-    final_output: object = {"status": "planned", "plan_markdown": "Do it."}
-
-    @classmethod
-    def run_sync(cls, agent: FakeAgent, input: str, **kwargs: object) -> FakeRunResult:
-        cls.calls.append({"agent": agent, "input": input, **kwargs})
-        return FakeRunResult(cls.final_output)
+def fake_shared_runtime(monkeypatch) -> type[FakeSharedRuntime]:
+    FakeSharedRuntime.instances = []
+    monkeypatch.setattr(task_agent_runtime, "SharedAgentRuntime", FakeSharedRuntime)
+    return FakeSharedRuntime
 
 
-@pytest.fixture(autouse=True)
-def fake_agents(monkeypatch: pytest.MonkeyPatch) -> None:
-    FakeAgent.calls = []
-    FakeSession.calls = []
-    FakeRunner.calls = []
-    FakeRunner.final_output = {"status": "planned", "plan_markdown": "Do it."}
-    monkeypatch.setattr(shared_agent_runtime, "Agent", FakeAgent)
-    monkeypatch.setattr(shared_agent_runtime, "Runner", FakeRunner)
-    monkeypatch.setattr(shared_agent_runtime, "SQLiteSession", FakeSession)
-
-
-def test_agent_runtime_starts_thread_and_runs_agents_session(
-    tmp_path: Path,
+def test_task_agent_runtime_maps_planner_to_read_only_auto_review(
+    tmp_path: Path, monkeypatch
 ) -> None:
-    runtime = AgentRuntime(
-        thread_id_factory=lambda role: f"{role}-thread-1",
-        session_db_path=tmp_path / "sessions.sqlite3",
-    )
+    fake_runtime = fake_shared_runtime(monkeypatch)
     schema = {"title": "PlannerOutput", "type": "object"}
 
+    runtime = AgentRuntime(session_db_path=tmp_path / "sessions.sqlite3")
     thread = runtime.open_thread(
         AgentRunConfig(
             role="planner",
@@ -85,110 +79,90 @@ def test_agent_runtime_starts_thread_and_runs_agents_session(
             role="planner",
             cwd=tmp_path,
             effort="high",
-            model="gpt-5-codex",
             output_schema=schema,
         ),
     )
 
-    assert thread.id == "planner-thread-1"
-    assert FakeSession.calls == [
-        {"session_id": "planner-thread-1", "db_path": tmp_path / "sessions.sqlite3"}
-    ]
-    agent_call = FakeAgent.calls[0]
-    assert agent_call["name"] == "task-control-planner"
-    assert agent_call["model"] == "gpt-5-codex"
-    assert "Planner Agent" in str(agent_call["instructions"])
-    assert len(agent_call["tools"]) == 3
-    assert agent_call["output_type"].json_schema() == schema
-    assert FakeRunner.calls[0]["input"] == "plan"
+    shared_runtime = fake_runtime.instances[0]
+    assert shared_runtime.kwargs["session_db_path"] == tmp_path / "sessions.sqlite3"
+    open_config = shared_runtime.open_configs[0]
+    assert open_config.policy is RuntimePolicy.READ_ONLY
+    assert open_config.approval is RuntimeApproval.AUTO_REVIEW
+    assert open_config.developer_instructions == "# Planner Agent"
+    assert open_config.model == "gpt-5-codex"
+
+    run_config = shared_runtime.threads[0].run_calls[0]["config"]
+    assert run_config.policy is RuntimePolicy.READ_ONLY
+    assert run_config.approval is RuntimeApproval.AUTO_REVIEW
+    assert run_config.effort == "high"
+    assert run_config.output_schema == schema
     assert _parse_planner_output(result) == {
         "status": "planned",
         "plan_markdown": "Do it.",
     }
 
 
-def test_agent_runtime_resumes_existing_thread_and_enables_implementer_tools(
-    tmp_path: Path,
+def test_task_agent_runtime_maps_implementer_to_workspace_write(
+    tmp_path: Path, monkeypatch
 ) -> None:
-    runtime = AgentRuntime(thread_id_factory=lambda role: f"{role}-new")
+    fake_runtime = fake_shared_runtime(monkeypatch)
 
+    runtime = AgentRuntime()
     thread = runtime.open_thread(
         AgentRunConfig(
             role="implementer",
             cwd=tmp_path,
             thread_id="implementer-existing",
-            developer_instructions="# Implementer Agent",
-            session_db_path=tmp_path / "run-sessions.sqlite3",
         )
     )
-    thread.run(
-        "implement",
-        AgentRunConfig(role="implementer", cwd=tmp_path, effort="xhigh"),
-    )
+    thread.run("implement", AgentRunConfig(role="implementer", cwd=tmp_path))
 
+    shared_runtime = fake_runtime.instances[0]
     assert thread.id == "implementer-existing"
-    assert FakeSession.calls[0] == {
-        "session_id": "implementer-existing",
-        "db_path": tmp_path / "run-sessions.sqlite3",
-    }
-    agent_call = FakeAgent.calls[0]
-    assert len(agent_call["tools"]) == 5
-    tool_names = [tool.name for tool in agent_call["tools"]]
-    assert tool_names == [
-        "read_file",
-        "list_files",
-        "search_text",
-        "shell",
-        "apply_patch",
-    ]
-    assert agent_call["model_settings"].reasoning.effort == "xhigh"
+    assert shared_runtime.open_configs[0].policy is RuntimePolicy.WORKSPACE_WRITE
+    assert shared_runtime.open_configs[0].approval is RuntimeApproval.AUTO_REVIEW
+    run_config = shared_runtime.threads[0].run_calls[0]["config"]
+    assert run_config.policy is RuntimePolicy.WORKSPACE_WRITE
+    assert run_config.approval is RuntimeApproval.AUTO_REVIEW
 
 
-def test_json_schema_output_validates_and_round_trips() -> None:
-    output = _JsonSchemaOutput(
-        {
-            "title": "PlannerOutput",
-            "type": "object",
-            "properties": {"status": {"const": "planned"}},
-            "required": ["status"],
-        }
-    )
-
-    assert output.name() == "PlannerOutput"
-    assert output.validate_json('{"status": "planned"}') == {"status": "planned"}
-    with pytest.raises(ModelBehaviorError):
-        output.validate_json('{"status": "needs_answers"}')
-
-
-def test_agent_turn_result_final_response_parses_like_controller_output(
-    tmp_path: Path,
+def test_task_agent_runtime_maps_reviewer_to_deny_all(
+    tmp_path: Path, monkeypatch
 ) -> None:
-    FakeRunner.final_output = {"status": "planned", "plan_markdown": "Do it."}
-    thread = AgentRuntime(thread_id_factory=lambda _role: "thread-1").open_thread(
-        AgentRunConfig(role="planner", cwd=tmp_path)
-    )
+    fake_runtime = fake_shared_runtime(monkeypatch)
 
-    result = thread.run(
-        "plan",
-        AgentRunConfig(
-            role="planner",
-            cwd=tmp_path,
-            output_schema={"title": "PlannerOutput", "type": "object"},
-        ),
-    )
+    runtime = AgentRuntime()
+    thread = runtime.open_thread(AgentRunConfig(role="reviewer", cwd=tmp_path))
+    thread.run("review", AgentRunConfig(role="reviewer", cwd=tmp_path))
 
-    assert json.loads(result.final_response) == {
-        "status": "planned",
-        "plan_markdown": "Do it.",
-    }
+    shared_runtime = fake_runtime.instances[0]
+    assert shared_runtime.open_configs[0].policy is RuntimePolicy.READ_ONLY
+    assert shared_runtime.open_configs[0].approval is RuntimeApproval.DENY_ALL
+    run_config = shared_runtime.threads[0].run_calls[0]["config"]
+    assert run_config.policy is RuntimePolicy.READ_ONLY
+    assert run_config.approval is RuntimeApproval.DENY_ALL
 
 
-def test_openai_codex_import_is_removed_from_package() -> None:
-    package_root = Path("agent_control_plane/task_control_plane")
-    offenders = [
-        path
-        for path in package_root.glob("*.py")
-        if "openai_codex" in path.read_text(encoding="utf-8")
-    ]
+def test_task_agent_runtime_context_manager_delegates(monkeypatch) -> None:
+    fake_runtime = fake_shared_runtime(monkeypatch)
+
+    with AgentRuntime():
+        pass
+
+    shared_runtime = fake_runtime.instances[0]
+    assert shared_runtime.entered is True
+    assert shared_runtime.exited is True
+
+
+def test_source_imports_no_agents_or_openai_types() -> None:
+    offenders = []
+    for path in Path("agent_control_plane").rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        if "from agents" in text or "import agents" in text or "openai.types" in text:
+            offenders.append(path)
 
     assert offenders == []
+
+
+def test_openai_agents_dependency_is_removed() -> None:
+    assert "openai-agents" not in Path("pixi.toml").read_text(encoding="utf-8")

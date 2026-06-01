@@ -1,7 +1,7 @@
 # Shared usage-limit and generic agent runtime
 
 Status: completed
-Label: ready-for-agent
+Label: done
 
 ## Parent
 

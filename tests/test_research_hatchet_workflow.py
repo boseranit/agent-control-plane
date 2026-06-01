@@ -19,6 +19,7 @@ from agent_control_plane.control_plane.usage_limit import (
     UsageLimitWait,
 )
 from agent_control_plane.research_experiment_controller import hatchet_workflow
+from agent_control_plane.research_experiment_controller import durable_shell
 from agent_control_plane.research_experiment_controller.controller import (
     run_research_loop,
     start_research_run,
@@ -121,6 +122,51 @@ def test_run_research_shell_delegates_once_and_returns_result() -> None:
         "experiments_completed": 1,
     }
     assert seen == [ResearchRunInput(research_run_id="run-1", runtime_root="tmp-runs")]
+
+
+def test_default_shell_controller_uses_agent_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, object] = {}
+
+    class FakeAgentRuntime:
+        def __init__(self, **kwargs: object) -> None:
+            seen["runtime_created"] = bool(kwargs)
+
+        def __enter__(self) -> FakeAgentRuntime:
+            seen["entered"] = True
+            return self
+
+        def __exit__(self, *exc_info: object) -> None:
+            seen["exited"] = True
+
+    def fake_run_research_loop(
+        research_run_id: str,
+        *,
+        runtime_root: str,
+        agent_runtime: object,
+    ) -> dict[str, object]:
+        seen["research_run_id"] = research_run_id
+        seen["runtime_root"] = runtime_root
+        seen["agent_runtime"] = agent_runtime
+        return {"status": "completed", "research_run_id": research_run_id}
+
+    monkeypatch.setattr(durable_shell, "AgentRuntime", FakeAgentRuntime)
+    monkeypatch.setattr(
+        "agent_control_plane.research_experiment_controller.controller.run_research_loop",
+        fake_run_research_loop,
+    )
+
+    result = durable_shell._run_controller_loop(
+        ResearchRunInput(research_run_id="run-1", runtime_root=str(tmp_path / "runs"))
+    )
+
+    assert result == {"status": "completed", "research_run_id": "run-1"}
+    assert seen["agent_runtime"].__class__ is FakeAgentRuntime
+    assert seen["runtime_created"] is True
+    assert seen["entered"] is True
+    assert seen["exited"] is True
 
 
 def test_run_research_shell_reports_only_generic_metadata() -> None:
@@ -346,7 +392,7 @@ def test_plain_evaluation_usage_limit_error_sleeps_durably_not_run_failed(
     assert summary["failure_classification"] is None
 
 
-def test_usage_limit_retry_removes_dirty_in_progress_worktree(
+def test_usage_limit_retry_preserves_dirty_in_progress_worktree(
     tmp_path: Path,
 ) -> None:
     spec_path = write_research_run_spec(tmp_path, worktree_create=True)
@@ -395,10 +441,11 @@ def test_usage_limit_retry_removes_dirty_in_progress_worktree(
     )
     assert result["status"] == "completed"
     assert sleeps == [11.0]
-    assert runtime.run_calls == 2
-    assert summary["outcome"] == "completed_candidate"
-    assert summary["failure_classification"] is None
-    assert not (worktree_path / "dirty.txt").exists()
+    assert runtime.run_calls == 1
+    assert summary["outcome"] == "run_failed"
+    assert summary["failure_classification"] == "runner_exception"
+    assert "Existing Experiment Worktree is dirty" in summary["outcome_reason"]
+    assert (worktree_path / "dirty.txt").exists()
 
 
 def test_hatchet_workflow_delegates_to_shell_with_ctx_sleep_and_metadata(

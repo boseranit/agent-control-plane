@@ -9,8 +9,8 @@ from pathlib import Path
 import jsonschema
 import pytest
 
-from agent_control_plane.task_control_plane.cli import main
 from agent_control_plane.task_control_plane.agent_runtime import AgentRunConfig
+from agent_control_plane.task_control_plane.cli import main
 from agent_control_plane.task_control_plane.controller import (
     CONTEXT_ANSWERS_SCHEMA_PATH,
     CONTEXT_PROMPT_PATH,
@@ -28,16 +28,19 @@ from agent_control_plane.task_control_plane.controller import (
     build_implementer_turn_input,
     commit_active_task_and_advance,
     plan_active_task,
+    resume_task_run,
     run_active_task_failed_test_repair,
     run_active_task_implementer,
     run_active_task_review_rejection_repair,
     run_active_task_reviewer,
     run_active_task_tests,
-    resume_task_run,
     start_task_run,
 )
-from agent_control_plane.task_control_plane.task_spec import TaskSpecError
-from agent_control_plane.task_control_plane.task_spec import load_task_spec
+from agent_control_plane.task_control_plane.task_spec import (
+    TaskSpecError,
+    load_task_source,
+    load_task_spec,
+)
 
 
 class FakeCodexClient:
@@ -259,6 +262,82 @@ tasks:
     )
 
 
+def write_issue_directory(target_repository: Path) -> Path:
+    issue_directory = (
+        target_repository / ".planning" / "issues" / "cross-sectional-samples-collapse"
+    )
+    issue_directory.mkdir(parents=True)
+    (issue_directory / "README.md").write_text(
+        """# Issue Breakdown: Collapse Cross-Sectional Samples Into Elastic-Net
+
+Parent PRD: https://example.test/prd/25
+""",
+        encoding="utf-8",
+    )
+    (issue_directory / "01-fit-elastic-net.md").write_text(
+        """# Fit Elastic-Net From Feature Groups In Hot Modes
+
+Type: AFK
+
+## What to build
+
+Make the model consume feature group outputs directly.
+
+## Acceptance criteria
+
+- [ ] Declares direct feature group dependencies.
+
+## Blocked by
+
+None - can start immediately
+""",
+        encoding="utf-8",
+    )
+    (issue_directory / "02-backfill-elastic-net.md").write_text(
+        """# Backfill Elastic-Net Directly From Feature Group Parquet
+
+Type: AFK
+
+## What to build
+
+Make backfill read promoted feature group parquet directly.
+
+## Acceptance criteria
+
+- [ ] Backfill keeps existing output layouts unchanged.
+
+## Blocked by
+
+- Issue 1
+""",
+        encoding="utf-8",
+    )
+    return issue_directory
+
+
+def mark_task_run_commit_ready(task_run: TaskRun) -> None:
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    active_task_state = state["tasks"][0]
+    state["phase"] = "commit_ready"
+    active_task_state["phase"] = "commit_ready"
+    active_task_state["latest_test_status"] = {
+        "passed": True,
+        "status": "passed",
+        "command_log_path": active_task_state["artifacts"]["command_log"],
+    }
+    active_task_state["latest_review_output"] = {
+        "status": "approved",
+        "summary": "Ready.",
+        "blocking_issues": [],
+        "requested_changes": [],
+        "non_blocking_issues": [],
+    }
+    task_run.task_state_path.write_text(
+        json.dumps(state, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
 def test_load_task_spec_applies_defaults_and_preserves_ordered_tasks(
     tmp_path: Path,
 ) -> None:
@@ -302,6 +381,92 @@ tasks:
     ]
     assert [task.task_id for task in task_spec.tasks] == ["TASK-1", "TASK-2"]
     assert task_spec.tasks[0].context == "Task-specific context."
+
+
+def test_load_task_source_imports_issue_directory_as_ordered_tasks(
+    tmp_path: Path,
+) -> None:
+    target_repository = tmp_path / "target"
+    target_repository.mkdir()
+    subprocess.run(
+        ["git", "init"], cwd=target_repository, check=True, capture_output=True
+    )
+    issue_directory = write_issue_directory(target_repository)
+
+    source = load_task_source(issue_directory)
+
+    assert source.task_spec.target_repository == target_repository.resolve()
+    assert source.task_spec.description == (
+        "Issue Breakdown: Collapse Cross-Sectional Samples Into Elastic-Net"
+    )
+    assert [task.task_id for task in source.task_spec.tasks] == [
+        "01-fit-elastic-net",
+        "02-backfill-elastic-net",
+    ]
+    assert source.task_spec.tasks[0].title == (
+        "Fit Elastic-Net From Feature Groups In Hot Modes"
+    )
+    assert "Declares direct feature group dependencies" in (
+        source.task_spec.tasks[0].prompt
+    )
+    assert "Parent PRD" in (source.task_spec.context or "")
+    assert (
+        source.untracked_source_root
+        == ".planning/issues/cross-sectional-samples-collapse"
+    )
+    assert "01-fit-elastic-net" in source.snapshot_text
+
+
+def test_load_task_source_imports_external_issue_directory_with_repo_override(
+    tmp_path: Path,
+) -> None:
+    target_repository = tmp_path / "target"
+    target_repository.mkdir()
+    issue_directory = tmp_path / "issues"
+    issue_directory.mkdir()
+    (issue_directory / "01-task.md").write_text(
+        "# External Task\n\nDo the work.\n", encoding="utf-8"
+    )
+
+    source = load_task_source(issue_directory, repo_path=target_repository)
+
+    assert source.task_spec.target_repository == target_repository.resolve()
+    assert source.task_spec.tasks[0].task_id == "01-task"
+    assert source.untracked_source_root is None
+
+
+def test_load_task_source_requires_repo_for_external_issue_directory(
+    tmp_path: Path,
+) -> None:
+    issue_directory = tmp_path / "issues"
+    issue_directory.mkdir()
+    (issue_directory / "01-task.md").write_text(
+        "# External Task\n\nDo the work.\n", encoding="utf-8"
+    )
+
+    with pytest.raises(TaskSpecError, match="could not be inferred"):
+        load_task_source(issue_directory)
+
+
+def test_load_task_source_rejects_repo_override_for_yaml(
+    tmp_path: Path,
+) -> None:
+    target_repository = tmp_path / "target"
+    target_repository.mkdir()
+    task_spec_path = tmp_path / "task-spec.yaml"
+    task_spec_path.write_text(
+        f"""
+target_repository: {target_repository}
+tasks:
+  - id: TASK-1
+    title: First task
+    prompt: Implement the first task.
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TaskSpecError, match="only supported for issue directories"):
+        load_task_source(task_spec_path, repo_path=target_repository)
 
 
 def test_load_task_spec_rejects_duplicate_task_ids(tmp_path: Path) -> None:
@@ -507,6 +672,50 @@ tasks:
     assert Path(context["task_spec_snapshot_path"]).is_absolute()
     assert Path(context["task_state_path"]).is_absolute()
     assert all(Path(path).is_absolute() for path in context["artifacts"].values())
+
+
+def test_start_task_run_accepts_untracked_issue_directory_source(
+    tmp_path: Path,
+) -> None:
+    target_repository = tmp_path / "target"
+    target_repository.mkdir()
+    subprocess.run(
+        ["git", "init"], cwd=target_repository, check=True, capture_output=True
+    )
+    issue_directory = write_issue_directory(target_repository)
+
+    task_run = start_task_run(issue_directory, runtime_root=tmp_path / "runs")
+
+    snapshot = load_task_spec(task_run.task_spec_snapshot_path)
+    assert [task.task_id for task in snapshot.tasks] == [
+        "01-fit-elastic-net",
+        "02-backfill-elastic-net",
+    ]
+    state = json.loads(task_run.task_state_path.read_text(encoding="utf-8"))
+    assert (
+        state["task_source_untracked_root"]
+        == ".planning/issues/cross-sectional-samples-collapse"
+    )
+    assert state["active_task_id"] == "01-fit-elastic-net"
+
+
+def test_start_task_run_rejects_untracked_file_next_to_issue_directory_source(
+    tmp_path: Path,
+) -> None:
+    target_repository = tmp_path / "target"
+    target_repository.mkdir()
+    subprocess.run(
+        ["git", "init"], cwd=target_repository, check=True, capture_output=True
+    )
+    issue_directory = write_issue_directory(target_repository)
+    adjacent_directory = issue_directory.with_name(f"{issue_directory.name}-extra")
+    adjacent_directory.mkdir()
+    (adjacent_directory / "01-task.md").write_text(
+        "# Adjacent Task\n\nThis is not run input.\n", encoding="utf-8"
+    )
+
+    with pytest.raises(TaskRunError, match="Target Repository must be clean"):
+        start_task_run(issue_directory, runtime_root=tmp_path / "runs")
 
 
 def test_start_task_run_refuses_dirty_target_repository(tmp_path: Path) -> None:
@@ -1658,6 +1867,105 @@ tasks:
     assert next_context["task"]["id"] == "TASK-2"
     assert next_context["task"]["title"] == "Second task"
     assert all(Path(path).is_absolute() for path in next_context["artifacts"].values())
+
+
+def test_commit_active_task_excludes_untracked_issue_directory_source(
+    tmp_path: Path,
+) -> None:
+    target_repository = tmp_path / "target"
+    target_repository.mkdir()
+    subprocess.run(
+        ["git", "init"], cwd=target_repository, check=True, capture_output=True
+    )
+    configure_git_identity(target_repository)
+    (target_repository / "README.md").write_text("initial\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "README.md"],
+        cwd=target_repository,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "Initial target state"],
+        cwd=target_repository,
+        check=True,
+        capture_output=True,
+    )
+    issue_directory = write_issue_directory(target_repository)
+    task_run = start_task_run(issue_directory, runtime_root=tmp_path / "runs")
+
+    mark_task_run_commit_ready(task_run)
+    (target_repository / "done.txt").write_text("done\n", encoding="utf-8")
+
+    result = commit_active_task_and_advance(task_run.task_state_path)
+
+    assert result["status"] == "advanced"
+    committed_files = subprocess.run(
+        ["git", "show", "--name-only", "--pretty=format:", "HEAD"],
+        cwd=target_repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    assert "done.txt" in committed_files
+    assert not any(path.startswith(".planning/") for path in committed_files)
+    status = subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        cwd=target_repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert ".planning/issues/cross-sectional-samples-collapse/" in status
+
+
+def test_commit_active_task_keeps_tracked_issue_directory_changes(
+    tmp_path: Path,
+) -> None:
+    target_repository = tmp_path / "target"
+    target_repository.mkdir()
+    subprocess.run(
+        ["git", "init"], cwd=target_repository, check=True, capture_output=True
+    )
+    configure_git_identity(target_repository)
+    (target_repository / "README.md").write_text("initial\n", encoding="utf-8")
+    issue_directory = write_issue_directory(target_repository)
+    subprocess.run(
+        ["git", "add", "README.md", ".planning"],
+        cwd=target_repository,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "Initial target state"],
+        cwd=target_repository,
+        check=True,
+        capture_output=True,
+    )
+    task_run = start_task_run(issue_directory, runtime_root=tmp_path / "runs")
+
+    mark_task_run_commit_ready(task_run)
+    (target_repository / "done.txt").write_text("done\n", encoding="utf-8")
+    (issue_directory / "README.md").write_text(
+        "# Issue Breakdown: Collapse Cross-Sectional Samples Into Elastic-Net\n\n"
+        "Clarified PRD context.\n",
+        encoding="utf-8",
+    )
+
+    result = commit_active_task_and_advance(task_run.task_state_path)
+
+    assert result["status"] == "advanced"
+    committed_files = subprocess.run(
+        ["git", "show", "--name-only", "--pretty=format:", "HEAD"],
+        cwd=target_repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    assert "done.txt" in committed_files
+    assert (
+        ".planning/issues/cross-sectional-samples-collapse/README.md" in committed_files
+    )
 
 
 def test_commit_active_task_marks_run_completed_when_no_next_task_exists(
@@ -3080,14 +3388,14 @@ def test_reviewer_prompt_and_output_schema_are_source_controlled() -> None:
     )
 
 
-def test_cli_run_requires_explicit_task_spec_path(
+def test_cli_run_requires_explicit_task_source_path(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     with pytest.raises(SystemExit) as exc_info:
         main(["run"])
 
     assert exc_info.value.code == 2
-    assert "task_spec_path" in capsys.readouterr().err
+    assert "task_source_path" in capsys.readouterr().err
 
 
 def test_cli_resume_requires_task_run_id(

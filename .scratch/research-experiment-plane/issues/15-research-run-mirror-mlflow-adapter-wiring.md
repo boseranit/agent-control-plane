@@ -1,7 +1,7 @@
 # Research Run Mirror and MLflow adapter wiring
 
 Status: completed
-Label: ready-for-agent
+Label: done
 
 ## Parent
 
