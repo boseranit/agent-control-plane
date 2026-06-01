@@ -62,6 +62,7 @@ def test_run_command_uses_cwd_and_env_overlay(
 
     assert result.status == "passed"
     assert result.cwd == str(tmp_path.resolve())
+    assert result.to_record()["env"] == {"ACP_OVERRIDE_VALUE": "new"}
     assert stdout_path.read_text(encoding="utf-8").splitlines() == [
         str(tmp_path.resolve()),
         "parent",
@@ -246,6 +247,7 @@ def test_write_command_metrics_writes_deterministic_summary(tmp_path: Path) -> N
       ],
       "cwd": "/repo",
       "duration_seconds": 1.2,
+      "env": {},
       "exit_code": 0,
       "name": "ok",
       "status": "passed",
@@ -259,6 +261,7 @@ def test_write_command_metrics_writes_deterministic_summary(tmp_path: Path) -> N
       ],
       "cwd": "/repo",
       "duration_seconds": 0.3,
+      "env": {},
       "exit_code": 1,
       "name": "bad",
       "status": "failed",
@@ -273,6 +276,7 @@ def test_write_command_metrics_writes_deterministic_summary(tmp_path: Path) -> N
       ],
       "cwd": "/repo",
       "duration_seconds": 0.5,
+      "env": {},
       "exit_code": null,
       "name": "slow",
       "status": "timed_out",

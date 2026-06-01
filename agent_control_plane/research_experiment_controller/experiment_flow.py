@@ -9,7 +9,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from agent_control_plane.control_plane.boundary_audit import git_snapshot
-from agent_control_plane.control_plane.json_artifacts import write_json
+from agent_control_plane.control_plane.json_artifacts import read_json_object, write_json
 from agent_control_plane.control_plane.usage_limit import (
     UsageLimitEvent,
     UsageLimitWait,
@@ -297,15 +297,25 @@ def _run_agent_driven_flow(
         selected_plan,
     )
 
-    selection_summary = _selection_failure_summary(
-        ExperimentFlowSelection(
-            selected_plan=selected_plan,
-            experiment_design=experiment_design,
-            research_spec=research_spec,
-        )
+    prior_research_spec, prior_feature_specs = _prior_material_artifacts(request)
+    generated_selection = ExperimentFlowSelection(
+        selected_plan=selected_plan,
+        experiment_design=experiment_design,
+        prior_research_spec=prior_research_spec,
+        research_spec=research_spec,
+        prior_feature_specs=prior_feature_specs,
     )
+    selection_summary = _selection_failure_summary(generated_selection)
     if selection_summary is not None:
         return _complete_with_summary(request, selection_summary)
+
+    material_summary = _run_material_revision_review_if_needed(
+        request=request,
+        selection=generated_selection,
+        agent_runtime=agent_runtime,
+    )
+    if material_summary is not None:
+        return _complete_with_summary(request, material_summary)
 
     critique = _run_design_critique(
         request=request,
@@ -750,6 +760,17 @@ def _selection_failure_summary(
 def _material_revision_decision(
     selection: ExperimentFlowSelection,
 ) -> MaterialRevisionDecision:
+    if (
+        selection.prior_research_spec is None
+        and selection.prior_feature_specs is None
+    ):
+        return assess_material_revision(
+            {},
+            {},
+            agent_declared_categories=(
+                selection.selected_plan.material_revision_categories
+            ),
+        )
     before = _material_revision_payload(
         selection.prior_research_spec,
         selection.prior_feature_specs,
@@ -763,6 +784,32 @@ def _material_revision_decision(
         after,
         agent_declared_categories=selection.selected_plan.material_revision_categories,
     )
+
+
+def _prior_material_artifacts(
+    request: ExperimentFlowRequest,
+) -> tuple[dict[str, Any] | None, FeatureSpecs | None]:
+    experiments = request.state["experiments"]
+    for experiment_id in sorted(experiments, reverse=True):
+        if experiment_id == request.experiment_id:
+            continue
+        experiment_dir = Path(experiments[experiment_id]["experiment_directory"])
+        research_spec = _read_optional_json(experiment_dir / "research_spec.json")
+        feature_specs_data = _read_optional_json(experiment_dir / "feature_specs.json")
+        feature_specs = (
+            FeatureSpecs.model_validate(feature_specs_data)
+            if feature_specs_data is not None
+            else None
+        )
+        if research_spec is not None or feature_specs is not None:
+            return research_spec, feature_specs
+    return None, None
+
+
+def _read_optional_json(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    return read_json_object(path)
 
 
 def _material_revision_payload(

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from agent_control_plane.control_plane.agent_runtime import AgentRuntime
 from agent_control_plane.control_plane.json_artifacts import read_json_object
 
 
@@ -86,4 +87,13 @@ def _run_controller_loop(input: ResearchRunInput) -> dict[str, Any]:
         run_research_loop,
     )
 
-    return run_research_loop(input.research_run_id, runtime_root=input.runtime_root)
+    run_directory = Path(input.runtime_root).resolve() / input.research_run_id
+    with AgentRuntime(
+        agent_name_prefix="research-experiment",
+        session_db_path=run_directory / "agent_sessions.sqlite3",
+    ) as agent_runtime:
+        return run_research_loop(
+            input.research_run_id,
+            runtime_root=input.runtime_root,
+            agent_runtime=agent_runtime,
+        )

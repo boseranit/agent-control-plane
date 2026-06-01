@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from agent_control_plane.control_plane.json_artifacts import read_json_object
+from agent_control_plane.control_plane.json_artifacts import read_json_object, write_json
 from agent_control_plane.research_experiment_controller.controller import (
     run_research_loop,
     start_research_run,
@@ -129,6 +129,62 @@ def test_strategist_closeout_cannot_upgrade_confirmatory_outcome(
     assert summary["outcome"] == "completed_rejected"
     assert state["experiments"]["EXP-0001"]["outcome"] == "completed_rejected"
     assert (experiment_dir / "plan_update.json").exists()
+
+
+def test_agent_driven_controller_detects_material_revision(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    spec_path = _write_spec(tmp_path, repo, data_root, max_experiments=2)
+    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    previous_experiment = run.experiments_directory / "EXP-0001"
+    previous_experiment.mkdir(parents=True)
+    write_json(previous_experiment / "research_spec.json", _research_spec_payload())
+    write_json(
+        previous_experiment / "summary.json",
+        {
+            "outcome": "completed_candidate",
+            "outcome_reason": "Prior candidate.",
+            "failed_stage": None,
+            "failure_classification": None,
+            "summary": "Prior candidate.",
+        },
+    )
+    state = read_json_object(run.state_path)
+    state["experiments"]["EXP-0001"] = {
+        "id": "EXP-0001",
+        "status": "terminal",
+        "experiment_directory": str(previous_experiment),
+        "outcome": "completed_candidate",
+        "outcome_reason": "Prior candidate.",
+        "failed_stage": None,
+        "failure_classification": None,
+    }
+    state["experiment_count"] = 1
+    write_json(run.state_path, state)
+    runtime = FakeResearchRuntime(primary_metric="rank_information_coefficient")
+
+    run_research_loop(
+        run.research_run_id,
+        runtime_root=tmp_path / "runs",
+        agent_runtime=runtime,
+    )
+
+    experiment_dir = run.experiments_directory / "EXP-0002"
+    critique = read_json_object(experiment_dir / "material_revision_critique.json")
+    material_inputs = [
+        input
+        for thread in runtime.threads.values()
+        for input in thread.inputs
+        if "Material categories: primary_metric." in input
+    ]
+
+    assert critique["decision"] == "approve"
+    assert len(material_inputs) == 1
 
 
 def test_repair_changes_are_audited_before_evaluation(
@@ -273,6 +329,10 @@ class FakeResearchThread:
                 _strategist_response(
                     input,
                     closeout_outcome=self.runtime.closeout_outcome,
+                    primary_metric=self.runtime.primary_metric,
+                    material_revision_categories=(
+                        self.runtime.material_revision_categories
+                    ),
                     repair_during_verification=self.runtime.repair_outside_allowed_paths,
                     allowed_write_paths=self.runtime.allowed_write_paths,
                 )
@@ -351,6 +411,8 @@ class FakeResearchRuntime:
         *,
         confirmatory_outcome: str = "completed_candidate",
         closeout_outcome: str = "completed_candidate",
+        primary_metric: str = "information_coefficient",
+        material_revision_categories: list[str] | None = None,
         repair_outside_allowed_paths: bool = False,
         repair_keeps_verification_failing: bool = False,
         allowed_write_paths: list[str] | None = None,
@@ -360,6 +422,8 @@ class FakeResearchRuntime:
         self.role_counts: dict[str, int] = {}
         self.confirmatory_outcome = confirmatory_outcome
         self.closeout_outcome = closeout_outcome
+        self.primary_metric = primary_metric
+        self.material_revision_categories = material_revision_categories or []
         self.repair_outside_allowed_paths = repair_outside_allowed_paths
         self.repair_keeps_verification_failing = repair_keeps_verification_failing
         self.allowed_write_paths = allowed_write_paths or ["research"]
@@ -383,6 +447,8 @@ def _strategist_response(
     input: str,
     *,
     closeout_outcome: str,
+    primary_metric: str,
+    material_revision_categories: list[str],
     repair_during_verification: bool,
     allowed_write_paths: list[str],
 ) -> dict[str, Any]:
@@ -396,23 +462,7 @@ def _strategist_response(
             "falsification_evidence": ["IC below zero"],
         }
     if "research_spec.json" in input:
-        return {
-            "hypothesis": "Peer residuals predict forward returns.",
-            "target": "forward_return_1m",
-            "prediction_horizon": "1M",
-            "universe": "test_universe",
-            "label": "forward_return_1m",
-            "feature_availability_assumptions": ["features lagged one bar"],
-            "split": {"train": "2026-01", "test": "2026-01"},
-            "primary_metric": "information_coefficient",
-            "secondary_metrics": ["turnover"],
-            "baselines": ["zero_signal"],
-            "null_tests": ["shuffle"],
-            "transaction_cost_assumptions": "5 bps",
-            "success_gates": {"information_coefficient": 0.03},
-            "failure_gates": {"information_coefficient": 0.0},
-            "inconclusive_gates": {"min_observations": 10},
-        }
+        return _research_spec_payload(primary_metric=primary_metric)
     if "experiment_design.json" in input:
         return {
             "prerequisite_commands": [],
@@ -437,7 +487,7 @@ def _strategist_response(
             "selected": True,
             "plan_id": "candidate-1",
             "rationale": "Admissible bounded experiment.",
-            "material_revision_categories": [],
+            "material_revision_categories": material_revision_categories,
         }
     if "summary.json" in input:
         return {
@@ -493,13 +543,42 @@ def _critic_response(input: str, *, recommended_outcome: str) -> dict[str, Any]:
     }
 
 
-def _write_spec(tmp_path: Path, repo: Path, data_root: Path) -> Path:
+def _research_spec_payload(
+    *,
+    primary_metric: str = "information_coefficient",
+) -> dict[str, Any]:
+    return {
+        "hypothesis": "Peer residuals predict forward returns.",
+        "target": "forward_return_1m",
+        "prediction_horizon": "1M",
+        "universe": "test_universe",
+        "label": "forward_return_1m",
+        "feature_availability_assumptions": ["features lagged one bar"],
+        "split": {"train": "2026-01", "test": "2026-01"},
+        "primary_metric": primary_metric,
+        "secondary_metrics": ["turnover"],
+        "baselines": ["zero_signal"],
+        "null_tests": ["shuffle"],
+        "transaction_cost_assumptions": "5 bps",
+        "success_gates": {"information_coefficient": 0.03},
+        "failure_gates": {"information_coefficient": 0.0},
+        "inconclusive_gates": {"min_observations": 10},
+    }
+
+
+def _write_spec(
+    tmp_path: Path,
+    repo: Path,
+    data_root: Path,
+    *,
+    max_experiments: int = 1,
+) -> Path:
     path = tmp_path / "research.yaml"
     path.write_text(
         f"""
 research_run_id: e2e-run
 target_repository: {repo}
-max_experiments: 1
+max_experiments: {max_experiments}
 research_brief: |
   Test full fake-runtime flow.
 budget: smoke

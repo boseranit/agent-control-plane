@@ -26,6 +26,7 @@ class CommandDeclaration(ResearchArtifact):
     argv: list[str] = Field(min_length=1)
     timeout_seconds: float | None = None
     phase: str | None = None
+    failure_classification: str | None = None
 
 
 class ContextSummary(ResearchArtifact):

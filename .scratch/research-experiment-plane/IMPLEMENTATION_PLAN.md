@@ -220,7 +220,7 @@ Create tests:
 - Create: `agent_control_plane/control_plane/json_artifacts.py`
 - Test: `tests/test_control_plane_json_artifacts.py`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Create `tests/test_control_plane_json_artifacts.py`:
 
@@ -296,7 +296,7 @@ def test_write_json_requires_mapping(tmp_path: Path) -> None:
         write_json(path, [1, 2, 3])  # type: ignore[arg-type]
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -306,7 +306,7 @@ pixi run pytest tests/test_control_plane_json_artifacts.py -q
 
 Expected: FAIL with `ModuleNotFoundError: No module named 'agent_control_plane.control_plane'`.
 
-- [ ] **Step 3: Implement JSON helpers**
+- [x] **Step 3: Implement JSON helpers**
 
 Create `agent_control_plane/control_plane/__init__.py`:
 
@@ -382,7 +382,7 @@ def file_sha256(path: str | Path) -> str:
     return digest.hexdigest()
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run:
 
@@ -392,7 +392,7 @@ pixi run pytest tests/test_control_plane_json_artifacts.py -q
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Run:
 
@@ -409,7 +409,7 @@ git commit -m "add shared json artifact helpers"
 - Test: `tests/test_control_plane_usage_limit.py`
 - Test: `tests/test_task_control_plane.py`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Create `tests/test_control_plane_usage_limit.py`:
 
@@ -498,7 +498,7 @@ def test_run_with_usage_limit_backoff_raises_after_second_usage_limit() -> None:
     assert sleeps == [60.0]
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -508,7 +508,7 @@ pixi run pytest tests/test_control_plane_usage_limit.py -q
 
 Expected: FAIL with `ModuleNotFoundError` or missing functions.
 
-- [ ] **Step 3: Implement shared usage-limit module**
+- [x] **Step 3: Implement shared usage-limit module**
 
 Create `agent_control_plane/control_plane/usage_limit.py` by moving the parsing behavior from `task_control_plane.controller` into a generic module. The public functions must use this exact signature:
 
@@ -729,7 +729,7 @@ def _exception_message(exc: Exception) -> str:
     return exc.__class__.__name__
 ```
 
-- [ ] **Step 4: Refactor Task controller onto shared parser**
+- [x] **Step 4: Refactor Task controller onto shared parser**
 
 In `agent_control_plane/task_control_plane/controller.py`, replace `_usage_limit_retry_at` with a wrapper that calls `parse_usage_limit_retry_at`. Keep existing Task tests passing. Do not change Task state shape in this task.
 
@@ -743,7 +743,7 @@ def _usage_limit_retry_at(exc: Exception, now: datetime) -> datetime | None:
 
 Remove duplicate parser helper functions from the Task controller only after tests pass.
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 Run:
 
@@ -753,7 +753,7 @@ pixi run pytest tests/test_control_plane_usage_limit.py tests/test_task_control_
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 Run:
 
@@ -768,7 +768,7 @@ git commit -m "share usage limit backoff"
 - Create: `agent_control_plane/control_plane/command_runner.py`
 - Test: `tests/test_control_plane_command_runner.py`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Create `tests/test_control_plane_command_runner.py`:
 
@@ -896,7 +896,7 @@ def test_run_command_combined_log_writes_stdout_and_stderr_to_one_file(tmp_path:
     assert "err" in text
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -906,7 +906,7 @@ pixi run pytest tests/test_control_plane_command_runner.py -q
 
 Expected: FAIL with missing module/functions.
 
-- [ ] **Step 3: Implement command runner**
+- [x] **Step 3: Implement command runner**
 
 Create `agent_control_plane/control_plane/command_runner.py` with dataclasses `CommandSpec` and `CommandResult`, plus `run_command` and `write_command_metrics`. Required behavior:
 
@@ -1075,7 +1075,7 @@ def _terminate_process_group(process: subprocess.Popen[str]) -> None:
 
 Implementation note: keep the public API above, but avoid double-opening the same file when `run_command_combined_log` is used. Use one shared log handle or a private runner that understands combined output; do not depend on two append handles to the same path.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run:
 
@@ -1085,7 +1085,7 @@ pixi run pytest tests/test_control_plane_command_runner.py -q
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Run:
 
@@ -1102,7 +1102,7 @@ git commit -m "add structured command runner"
 - Test: `tests/test_control_plane_agent_runtime.py`
 - Test: `tests/test_agent_runtime.py`
 
-- [ ] **Step 1: Write failing shared runtime tests**
+- [x] **Step 1: Write failing shared runtime tests**
 
 Create `tests/test_control_plane_agent_runtime.py`:
 
@@ -1203,7 +1203,7 @@ def test_generic_runtime_enables_workspace_write_tools(tmp_path: Path, monkeypat
     assert tool_names == ["read_file", "list_files", "search_text", "shell", "apply_patch"]
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -1213,7 +1213,7 @@ pixi run pytest tests/test_control_plane_agent_runtime.py -q
 
 Expected: FAIL with missing module.
 
-- [ ] **Step 3: Move generic runtime code**
+- [x] **Step 3: Move generic runtime code**
 
 Create `agent_control_plane/control_plane/agent_runtime.py` by adapting `task_control_plane/agent_runtime.py`:
 
@@ -1250,7 +1250,7 @@ class AgentRunConfig:
 - Use write tools only when `config.capabilities == RoleCapabilities.WORKSPACE_WRITE`.
 - Preserve JSON schema output validation, read tools, shell tool, and apply-patch tool behavior.
 
-- [ ] **Step 4: Keep Task compatibility**
+- [x] **Step 4: Keep Task compatibility**
 
 Replace `agent_control_plane/task_control_plane/agent_runtime.py` with a compatibility wrapper that keeps existing imports working:
 
@@ -1320,7 +1320,7 @@ def _to_shared_config(config: AgentRunConfig) -> SharedAgentRunConfig:
     )
 ```
 
-- [ ] **Step 5: Run runtime tests**
+- [x] **Step 5: Run runtime tests**
 
 Run:
 
@@ -1330,7 +1330,7 @@ pixi run pytest tests/test_control_plane_agent_runtime.py tests/test_agent_runti
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 Run:
 
@@ -1346,7 +1346,7 @@ git commit -m "share agent runtime"
 - Create: `agent_control_plane/research_experiment_controller/research_run_spec.py`
 - Test: `tests/test_research_run_spec.py`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Create `tests/test_research_run_spec.py`:
 
@@ -1447,7 +1447,7 @@ def test_shell_command_fields_are_not_supported(tmp_path: Path) -> None:
         load_research_run_spec(path)
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -1457,7 +1457,7 @@ pixi run pytest tests/test_research_run_spec.py -q
 
 Expected: FAIL with missing package/module.
 
-- [ ] **Step 3: Implement spec loader**
+- [x] **Step 3: Implement spec loader**
 
 Create `agent_control_plane/research_experiment_controller/__init__.py`:
 
@@ -1631,7 +1631,7 @@ def _positive_int(data: dict[str, Any], field: str, default: int) -> int:
     return value
 ```
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 Run:
 
@@ -1641,7 +1641,7 @@ pixi run pytest tests/test_research_run_spec.py -q
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 Run:
 
@@ -1657,7 +1657,7 @@ git commit -m "load research run specs"
 - Modify: `pixi.toml`
 - Test: `tests/test_research_artifacts.py`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Create `tests/test_research_artifacts.py`:
 
@@ -1766,7 +1766,7 @@ def test_invalid_outcome_rejected() -> None:
         )
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -1776,7 +1776,7 @@ pixi run pytest tests/test_research_artifacts.py -q
 
 Expected: FAIL with missing artifact models.
 
-- [ ] **Step 3: Add explicit Pydantic dependency**
+- [x] **Step 3: Add explicit Pydantic dependency**
 
 Modify `pixi.toml` under `[dependencies]`:
 
@@ -1786,7 +1786,7 @@ pydantic = ">=2,<3"
 
 This makes Pydantic an explicit project dependency instead of relying on transitive Hatchet dependencies.
 
-- [ ] **Step 4: Implement artifact models**
+- [x] **Step 4: Implement artifact models**
 
 Create `agent_control_plane/research_experiment_controller/artifacts.py`:
 
@@ -1953,7 +1953,7 @@ class PlanUpdate(BaseModel):
     blocked_paths: list[str] = Field(default_factory=list)
 ```
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 Run:
 
@@ -1963,7 +1963,7 @@ pixi run pytest tests/test_research_artifacts.py -q
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 Run:
 
@@ -1979,7 +1979,7 @@ git commit -m "define research artifacts"
 - Create: `agent_control_plane/research_experiment_controller/ledger.py`
 - Test: `tests/test_research_state_and_ledger.py`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Create `tests/test_research_state_and_ledger.py`:
 
@@ -2013,13 +2013,15 @@ def test_create_initial_state(tmp_path: Path) -> None:
 
     assert state["research_run_id"] == "peer-residual-v1"
     assert state["status"] == "running"
-    assert state["current_phase"] == "ready_for_experiment"
+    assert state["current_phase"] == "initialized"
     assert state["controller_state_version"] == 1
-    assert state["experiments"] == []
+    assert state["active_experiment_id"] is None
+    assert state["experiment_count"] == 0
+    assert state["experiments"] == {}
 
 
 def test_next_experiment_id_counts_existing_experiments() -> None:
-    state = {"experiments": [{"experiment_id": "EXP-0001"}]}
+    state = {"experiment_count": 1}
 
     assert next_experiment_id(state) == "EXP-0002"
 
@@ -2037,7 +2039,7 @@ def test_ledger_events_round_trip(tmp_path: Path) -> None:
     assert [event["event"] for event in read_events(ledger_path)] == ["START", "COMPLETE"]
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -2047,7 +2049,7 @@ pixi run pytest tests/test_research_state_and_ledger.py -q
 
 Expected: FAIL with missing modules.
 
-- [ ] **Step 3: Implement state and ledger**
+- [x] **Step 3: Implement state and ledger**
 
 Create `agent_control_plane/research_experiment_controller/ledger.py`:
 
@@ -2096,23 +2098,25 @@ def create_initial_state(
         "controller_state_version": 1,
         "research_run_id": research_run_id,
         "status": "running",
-        "current_phase": "ready_for_experiment",
+        "current_phase": "initialized",
+        "active_experiment_id": None,
+        "experiment_count": 0,
         "run_directory": str(Path(run_directory)),
         "spec_snapshot_path": str(Path(spec_snapshot_path)),
         "max_experiments": max_experiments,
-        "experiments": [],
+        "experiments": {},
         "threads": {},
     }
 
 
 def next_experiment_id(state: dict[str, Any]) -> str:
-    experiments = state.get("experiments", [])
-    if not isinstance(experiments, list):
-        raise ValueError("Research state field 'experiments' must be a list.")
-    return f"EXP-{len(experiments) + 1:04d}"
+    experiment_count = state.get("experiment_count")
+    if isinstance(experiment_count, bool) or not isinstance(experiment_count, int):
+        raise ValueError("Research Run state experiment_count must be an integer.")
+    return f"EXP-{experiment_count + 1:04d}"
 ```
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run:
 
@@ -2122,7 +2126,7 @@ pixi run pytest tests/test_research_state_and_ledger.py -q
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Run:
 
@@ -2137,7 +2141,7 @@ git commit -m "add research state ledger"
 - Create: `agent_control_plane/control_plane/boundary_audit.py`
 - Test: `tests/test_control_plane_boundary_audit.py`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Create `tests/test_control_plane_boundary_audit.py`:
 
@@ -2199,7 +2203,7 @@ def test_hash_manifest_verification(tmp_path: Path) -> None:
         verify_hash_manifest(manifest)
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -2209,7 +2213,7 @@ pixi run pytest tests/test_control_plane_boundary_audit.py -q
 
 Expected: FAIL with missing module.
 
-- [ ] **Step 3: Implement boundary audit helpers**
+- [x] **Step 3: Implement boundary audit helpers**
 
 Create `agent_control_plane/control_plane/boundary_audit.py`:
 
@@ -2283,7 +2287,7 @@ def _normalize_relative(path: str | Path) -> str:
     return value
 ```
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run:
 
@@ -2293,7 +2297,7 @@ pixi run pytest tests/test_control_plane_boundary_audit.py -q
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Run:
 
@@ -2308,7 +2312,7 @@ git commit -m "add boundary audit helpers"
 - Create: `agent_control_plane/research_experiment_controller/worktree.py`
 - Test: `tests/test_research_worktree.py`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Create `tests/test_research_worktree.py`:
 
@@ -2372,7 +2376,7 @@ def test_dirty_existing_worktree_fails(tmp_path: Path) -> None:
         )
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -2382,7 +2386,7 @@ pixi run pytest tests/test_research_worktree.py -q
 
 Expected: FAIL with missing module.
 
-- [ ] **Step 3: Implement worktree helper**
+- [x] **Step 3: Implement worktree helper**
 
 Create `agent_control_plane/research_experiment_controller/worktree.py`:
 
@@ -2450,7 +2454,7 @@ def _branch_name(research_run_id: str, experiment_id: str) -> str:
     return raw[:120]
 ```
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run:
 
@@ -2460,7 +2464,7 @@ pixi run pytest tests/test_research_worktree.py -q
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Run:
 
@@ -2475,7 +2479,7 @@ git commit -m "prepare experiment worktrees"
 - Create: `agent_control_plane/research_experiment_controller/evaluation.py`
 - Test: `tests/test_research_evaluation.py`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Create `tests/test_research_evaluation.py`:
 
@@ -2574,7 +2578,7 @@ def test_boundary_audit_detects_worktree_change(tmp_path: Path) -> None:
         run_evaluation_boundary_audit(workspace.manifest_path)
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -2584,7 +2588,7 @@ pixi run pytest tests/test_research_evaluation.py -q
 
 Expected: FAIL with missing module.
 
-- [ ] **Step 3: Implement evaluator workspace**
+- [x] **Step 3: Implement evaluator workspace**
 
 Create `agent_control_plane/research_experiment_controller/evaluation.py`:
 
@@ -2659,7 +2663,7 @@ def run_evaluation_boundary_audit(manifest_path: str | Path) -> None:
             raise EvaluationBoundaryError(f"Locked artifact hash changed: {path}")
 ```
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run:
 
@@ -2669,7 +2673,7 @@ pixi run pytest tests/test_research_evaluation.py -q
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Run:
 
@@ -2684,48 +2688,27 @@ git commit -m "add evaluator workspace audit"
 - Create: `agent_control_plane/research_experiment_controller/context.py`
 - Test: `tests/test_research_context.py`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Create `tests/test_research_context.py`:
 
 ```python
 from __future__ import annotations
 
-from pathlib import Path
-
-from agent_control_plane.research_experiment_controller.context import build_context_pack
+from agent_control_plane.research_experiment_controller.context import write_context_outputs
 
 
-def test_context_pack_includes_brief_budget_data_root_and_prior_runs(tmp_path: Path) -> None:
-    run_dir = tmp_path / "run"
-    run_dir.mkdir()
-    previous = run_dir / "experiments" / "EXP-0001"
-    previous.mkdir(parents=True)
-    (previous / "summary.json").write_text(
-        '{"outcome": "completed_rejected", "summary": "IC under gate"}\n',
-        encoding="utf-8",
-    )
+def test_context_outputs_include_spec_facts_and_prior_synthesis(run_dir) -> None:
+    outputs = write_context_outputs(run_dir)
 
-    text = build_context_pack(
-        research_run_id="peer-residual-v1",
-        research_brief="Test peer residual forecasting.",
-        budget_name="smoke",
-        budget={"month_start": "2026-01", "month_end": "2026-01", "max_runtime_minutes": 5},
-        data_root=Path("/mnt/redbackup/data"),
-        target_repository=tmp_path,
-        run_directory=run_dir,
-    )
-
-    assert "Research Run: peer-residual-v1" in text
-    assert "Test peer residual forecasting." in text
-    assert "Budget: smoke" in text
-    assert "month_start: 2026-01" in text
-    assert "Data Root: /mnt/redbackup/data" in text
-    assert "EXP-0001" in text
-    assert "completed_rejected" in text
+    assert outputs.context_pack_path.name == "context_pack.md"
+    assert outputs.context_summary_path.name == "context_summary.json"
+    assert outputs.context_summary["spec"]["research_run_id"] == "peer-residual-v1"
+    assert outputs.context_summary["budget"]["name"] == "smoke"
+    assert "prior_synthesis" in outputs.context_summary
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -2735,81 +2718,44 @@ pixi run pytest tests/test_research_context.py -q
 
 Expected: FAIL with missing module.
 
-- [ ] **Step 3: Implement context pack builder**
+- [x] **Step 3: Implement context output writer**
 
-Create `agent_control_plane/research_experiment_controller/context.py`:
+Create `agent_control_plane/research_experiment_controller/context.py` with:
 
 ```python
 from __future__ import annotations
 
-import json
-import subprocess
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
+
+from agent_control_plane.control_plane.json_artifacts import read_json_object, read_jsonl, write_json, write_text
+from agent_control_plane.research_experiment_controller.research_run_spec import load_research_run_spec
 
 
-def build_context_pack(
-    *,
-    research_run_id: str,
-    research_brief: str,
-    budget_name: str,
-    budget: Mapping[str, Any],
-    data_root: str | Path,
-    target_repository: str | Path,
+def write_context_outputs(
     run_directory: str | Path,
-) -> str:
-    repo = Path(target_repository).resolve()
+    output_directory: str | Path | None = None,
+    current_experiment_id: str | None = None,
+) -> ContextOutputs:
     run_dir = Path(run_directory)
-    lines = [
-        f"# Research Context Pack",
-        "",
-        f"Research Run: {research_run_id}",
-        f"Target Repository: {repo}",
-        f"Git SHA: {_git_sha(repo)}",
-        f"Data Root: {Path(data_root)}",
-        "",
-        "## Research Brief",
-        "",
-        research_brief.strip(),
-        "",
-        "## Budget",
-        "",
-        f"Budget: {budget_name}",
-    ]
-    for key, value in budget.items():
-        lines.append(f"{key}: {value}")
-    lines.extend(["", "## Prior Run Synthesis", ""])
-    lines.extend(_prior_run_synthesis(run_dir))
-    return "\n".join(lines).rstrip() + "\n"
+    output_dir = Path(output_directory) if output_directory is not None else run_dir
+    spec = load_research_run_spec(run_dir / "research_run_spec.yaml")
+    state = read_json_object(run_dir / "state.json")
+    ledger_events = read_jsonl(run_dir / "ledger.jsonl")
 
-
-def _git_sha(repo: Path) -> str:
-    result = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=repo,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    return result.stdout.strip() if result.returncode == 0 else "unknown"
-
-
-def _prior_run_synthesis(run_dir: Path) -> list[str]:
-    experiments_dir = run_dir / "experiments"
-    if not experiments_dir.exists():
-        return ["No prior experiments in this Research Run."]
-    rows = []
-    for experiment_dir in sorted(path for path in experiments_dir.iterdir() if path.is_dir()):
-        summary_path = experiment_dir / "summary.json"
-        if summary_path.exists():
-            data = json.loads(summary_path.read_text(encoding="utf-8"))
-            rows.append(
-                f"- {experiment_dir.name}: {data.get('outcome', 'unknown')} - {data.get('summary', '')}"
-            )
-    return rows or ["No prior experiment summaries available."]
+    summary: dict[str, Any] = {
+        "spec": {"research_run_id": spec.research_run_id},
+        "budget": {"name": spec.budget},
+        "ledger_history": ledger_events,
+        "prior_synthesis": _build_prior_synthesis(run_dir, state),
+    }
+    text = _render_context_pack(summary)
+    write_text(output_dir / "context_pack.md", text)
+    write_json(output_dir / "context_summary.json", summary)
+    return ContextOutputs(output_dir / "context_pack.md", output_dir / "context_summary.json", text, summary)
 ```
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run:
 
@@ -2819,7 +2765,7 @@ pixi run pytest tests/test_research_context.py -q
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Run:
 
@@ -2838,7 +2784,7 @@ git commit -m "build research context packs"
 - Create: `agent_control_plane/research_experiment_controller/agents.py`
 - Test: `tests/test_research_agents.py`
 
-- [ ] **Step 1: Add role config tests**
+- [x] **Step 1: Add role config tests**
 
 Create `tests/test_research_agents.py`:
 
@@ -2868,7 +2814,7 @@ def test_research_agent_names_are_workflow_scoped(tmp_path: Path) -> None:
     assert agent_config(ResearchAgentRole.EVALUATOR, tmp_path).role == "research-evaluator"
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -2878,7 +2824,7 @@ pixi run pytest tests/test_research_agents.py -q
 
 Expected: FAIL with missing `agents.py`.
 
-- [ ] **Step 3: Create prompts**
+- [x] **Step 3: Create prompts**
 
 Create `agent_control_plane/research_experiment_controller/prompts/strategist-agent.md`:
 
@@ -2934,7 +2880,7 @@ Exploratory diagnostics may motivate future experiments but must not upgrade the
 Return only JSON matching the requested artifact schema.
 ```
 
-- [ ] **Step 4: Implement agent config helper**
+- [x] **Step 4: Implement agent config helper**
 
 Create `agent_control_plane/research_experiment_controller/agents.py`:
 
@@ -2989,7 +2935,7 @@ def _capabilities(role: ResearchAgentRole) -> RoleCapabilities:
     return RoleCapabilities.READ_ONLY
 ```
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 Run:
 
@@ -2999,7 +2945,7 @@ pixi run pytest tests/test_research_agents.py -q
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 Run:
 
@@ -3015,7 +2961,7 @@ git commit -m "add research agent roles"
 - Create: `agent_control_plane/research_experiment_controller/mlflow_mirror.py`
 - Test: `tests/test_research_mlflow_mirror.py`
 
-- [ ] **Step 1: Write failing adapter tests**
+- [x] **Step 1: Write failing adapter tests**
 
 Create `tests/test_research_mlflow_mirror.py` with a small fake MLflow client. Assert:
 
@@ -3024,7 +2970,7 @@ Create `tests/test_research_mlflow_mirror.py` with a small fake MLflow client. A
 - All run-dir files are logged recursively, including nested evaluation outputs.
 - The fake client is visible only to `mlflow_mirror.py` tests, not to controller or experiment-flow tests.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -3034,7 +2980,7 @@ pixi run pytest tests/test_research_mlflow_mirror.py -q
 
 Expected: FAIL with missing module.
 
-- [ ] **Step 3: Implement provider-neutral mirror interface**
+- [x] **Step 3: Implement provider-neutral mirror interface**
 
 Create `agent_control_plane/research_experiment_controller/research_run_mirror.py`:
 
@@ -3065,7 +3011,7 @@ ResearchRunMirror = Callable[[ResearchRunMirrorRequest], dict[str, Any]]
 
 This is the only caller-facing Research Run Mirror interface. Do not expose MLflow clients, run handles, or SDK result types outside `mlflow_mirror.py`.
 
-- [ ] **Step 4: Implement MLflow adapter**
+- [x] **Step 4: Implement MLflow adapter**
 
 Create `agent_control_plane/research_experiment_controller/mlflow_mirror.py`:
 
@@ -3152,7 +3098,7 @@ Rules:
 - `mlflow_client` is an adapter test seam only.
 - Research code may construct `ResearchRunMirrorRequest` and call `mirror_research_run(...)` later. It must not import `mlflow_mirror.py`, call MLflow methods, pass MLflow modules around, or treat mirror success as controller correctness.
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 Run:
 
@@ -3162,7 +3108,7 @@ pixi run pytest tests/test_research_mlflow_mirror.py -q
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 Run:
 
@@ -3177,7 +3123,7 @@ git commit -m "mirror research runs to mlflow"
 - Create: `agent_control_plane/research_experiment_controller/controller.py`
 - Test: `tests/test_research_controller.py`
 
-- [ ] **Step 1: Add failing start-run test**
+- [x] **Step 1: Add failing start-run test**
 
 Append to `tests/test_research_controller.py`:
 
@@ -3236,10 +3182,10 @@ def test_start_research_run_snapshots_spec_and_state(tmp_path: Path) -> None:
     assert run.ledger_path.exists()
     state = json.loads(run.state_path.read_text(encoding="utf-8"))
     assert state["research_run_id"] == "run-1"
-    assert state["current_phase"] == "ready_for_experiment"
+    assert state["current_phase"] == "initialized"
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -3249,7 +3195,7 @@ pixi run pytest tests/test_research_controller.py::test_start_research_run_snaps
 
 Expected: FAIL with missing `start_research_run`.
 
-- [ ] **Step 3: Implement start_research_run**
+- [x] **Step 3: Implement start_research_run**
 
 Create `agent_control_plane/research_experiment_controller/controller.py` with:
 
@@ -3314,7 +3260,7 @@ def start_research_run(
     )
 ```
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run:
 
@@ -3324,7 +3270,7 @@ pixi run pytest tests/test_research_controller.py::test_start_research_run_snaps
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Run:
 
@@ -3339,7 +3285,7 @@ git commit -m "start research runs"
 - Create: `agent_control_plane/research_experiment_controller/outcomes.py`
 - Test: `tests/test_research_controller.py`
 
-- [ ] **Step 1: Add failing classification tests**
+- [x] **Step 1: Add failing classification tests**
 
 Append to `tests/test_research_controller.py`:
 
@@ -3379,7 +3325,7 @@ def test_stop_on_prerequisites_failed_boolean() -> None:
     )
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -3389,7 +3335,7 @@ pixi run pytest tests/test_research_controller.py::test_classify_data_audit_fail
 
 Expected: FAIL with missing `outcomes.py`.
 
-- [ ] **Step 3: Implement outcomes**
+- [x] **Step 3: Implement outcomes**
 
 Create `agent_control_plane/research_experiment_controller/outcomes.py`:
 
@@ -3434,7 +3380,7 @@ def should_stop_research_run(*, outcome: str, stop_on_prerequisites_failed: bool
     return bool(stop_on_prerequisites_failed and outcome == ResearchOutcome.prerequisites_failed.value)
 ```
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run:
 
@@ -3444,7 +3390,7 @@ pixi run pytest tests/test_research_controller.py::test_classify_data_audit_fail
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Run:
 
@@ -3459,7 +3405,7 @@ git commit -m "classify research outcomes"
 - Modify: `agent_control_plane/research_experiment_controller/controller.py`
 - Test: `tests/test_research_controller.py`
 
-- [ ] **Step 1: Add failing phase-order test**
+- [x] **Step 1: Add failing phase-order test**
 
 Append to `tests/test_research_controller.py`:
 
@@ -3490,7 +3436,7 @@ def test_run_research_loop_repeats_until_max_experiments(tmp_path: Path) -> None
     assert seen == ["ready_for_experiment", "ready_for_experiment"]
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -3500,7 +3446,7 @@ pixi run pytest tests/test_research_controller.py::test_run_research_loop_repeat
 
 Expected: FAIL with missing `run_research_loop`.
 
-- [ ] **Step 3: Implement loop skeleton**
+- [x] **Step 3: Implement loop skeleton**
 
 Extend `controller.py`:
 
@@ -3617,7 +3563,7 @@ def _record_experiment_completion(
 
 Add imports for `next_experiment_id` and `should_stop_research_run`. Keep state reading behind the JSON artifact helper.
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run:
 
@@ -3627,7 +3573,7 @@ pixi run pytest tests/test_research_controller.py::test_run_research_loop_repeat
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Run:
 
@@ -3642,7 +3588,7 @@ git commit -m "add research loop skeleton"
 - Create: `agent_control_plane/research_experiment_controller/prerequisites.py`
 - Test: `tests/test_research_controller.py`
 
-- [ ] **Step 1: Add failing data-audit test**
+- [x] **Step 1: Add failing data-audit test**
 
 Append to `tests/test_research_controller.py`:
 
@@ -3671,7 +3617,7 @@ def test_data_audit_missing_data_root_returns_prerequisites_failed(tmp_path: Pat
     assert result["failure_classification"] == "data_root_missing"
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -3681,7 +3627,7 @@ pixi run pytest tests/test_research_controller.py::test_data_audit_missing_data_
 
 Expected: FAIL with missing `run_data_audit_phase`.
 
-- [ ] **Step 3: Implement prerequisite/data-audit module**
+- [x] **Step 3: Implement prerequisite/data-audit module**
 
 Create `agent_control_plane/research_experiment_controller/prerequisites.py`:
 
@@ -3740,7 +3686,7 @@ def run_data_audit_phase(request: PrerequisiteAuditRequest) -> dict[str, Any]:
     return {"status": "data_audit_passed", "command_results": [result.__dict__ for result in command_results]}
 ```
 
-- [ ] **Step 4: Run test**
+- [x] **Step 4: Run test**
 
 Run:
 
@@ -3750,7 +3696,7 @@ pixi run pytest tests/test_research_controller.py::test_data_audit_missing_data_
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Run:
 
@@ -3765,7 +3711,7 @@ git commit -m "classify prerequisite failures"
 - Create: `agent_control_plane/research_experiment_controller/verification.py`
 - Test: `tests/test_research_controller.py`
 
-- [ ] **Step 1: Add failing repair-loop test**
+- [x] **Step 1: Add failing repair-loop test**
 
 Append to `tests/test_research_controller.py`:
 
@@ -3796,7 +3742,7 @@ def test_verification_failure_routes_to_same_implementer_until_limit(tmp_path: P
     assert calls
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -3806,7 +3752,7 @@ pixi run pytest tests/test_research_controller.py::test_verification_failure_rou
 
 Expected: FAIL with missing `run_verification_commands`.
 
-- [ ] **Step 3: Implement verification module**
+- [x] **Step 3: Implement verification module**
 
 Create `agent_control_plane/research_experiment_controller/verification.py`:
 
@@ -3861,7 +3807,7 @@ def run_verification_commands(
 
 The real controller callback must run the same Implementer thread with the failed command logs. Do not add evaluator-to-implementer repair.
 
-- [ ] **Step 4: Run test**
+- [x] **Step 4: Run test**
 
 Run:
 
@@ -3871,7 +3817,7 @@ pixi run pytest tests/test_research_controller.py::test_verification_failure_rou
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Run:
 
@@ -3888,7 +3834,7 @@ git commit -m "add implementation verification loop"
 - Create: `agent_control_plane/research_experiment_controller/hatchet_worker.py`
 - Test: `tests/test_research_hatchet_workflow.py`
 
-- [ ] **Step 1: Write failing shell/adapter tests**
+- [x] **Step 1: Write failing shell/adapter tests**
 
 Create `tests/test_research_hatchet_workflow.py` with tiny fakes. Assert:
 
@@ -3897,7 +3843,7 @@ Create `tests/test_research_hatchet_workflow.py` with tiny fakes. Assert:
 - Metadata updates contain only generic fields: `research_run_id`, `controller_state_version`, `current_phase`, and `status`.
 - No test outside this file imports Hatchet.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -3907,7 +3853,7 @@ pixi run pytest tests/test_research_hatchet_workflow.py -q
 
 Expected: FAIL with missing modules.
 
-- [ ] **Step 3: Implement provider-neutral shell**
+- [x] **Step 3: Implement provider-neutral shell**
 
 Create `agent_control_plane/research_experiment_controller/durable_shell.py`:
 
@@ -3973,7 +3919,7 @@ def _run_controller_loop(input: ResearchRunInput) -> dict[str, Any]:
     return run_research_loop(input.research_run_id, runtime_root=input.runtime_root)
 ```
 
-- [ ] **Step 4: Implement Hatchet adapter and worker**
+- [x] **Step 4: Implement Hatchet adapter and worker**
 
 Create `agent_control_plane/research_experiment_controller/hatchet_workflow.py`:
 
@@ -4036,7 +3982,7 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 5: Keep the boundary narrow**
+- [x] **Step 5: Keep the boundary narrow**
 
 Rules:
 
@@ -4048,7 +3994,7 @@ Rules:
 - Hatchet decorators contain generic durable metadata only. No materiality, outcome classification, or research artifact semantics in decorators.
 - Future executor replacement must be local to the shell contract, adapter module, worker startup, and `pixi` worker wiring.
 
-- [ ] **Step 6: Run tests**
+- [x] **Step 6: Run tests**
 
 Run:
 
@@ -4058,7 +4004,7 @@ pixi run pytest tests/test_research_hatchet_workflow.py -q
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 Run:
 
@@ -4075,7 +4021,7 @@ git commit -m "add research hatchet shell"
 - Modify: `pixi.toml`
 - Test: `tests/test_research_cli.py`
 
-- [ ] **Step 1: Write failing CLI tests**
+- [x] **Step 1: Write failing CLI tests**
 
 Create `tests/test_research_cli.py`:
 
@@ -4125,7 +4071,7 @@ stop_on_prerequisites_failed: true
     assert "Started Research Run: cli-run" in captured.out
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -4135,7 +4081,7 @@ pixi run pytest tests/test_research_cli.py -q
 
 Expected: FAIL with missing CLI.
 
-- [ ] **Step 3: Implement CLI**
+- [x] **Step 3: Implement CLI**
 
 Create `agent_control_plane/research_experiment_controller/cli.py`:
 
@@ -4207,7 +4153,7 @@ Add to `[feature.dev.tasks]` in `pixi.toml`:
 research-experiment-worker = "python -m agent_control_plane.research_experiment_controller.hatchet_worker"
 ```
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run:
 
@@ -4217,7 +4163,7 @@ pixi run pytest tests/test_research_cli.py -q
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Run:
 
@@ -4233,7 +4179,7 @@ git commit -m "add research cli"
 - Modify: `agent_control_plane/research_experiment_controller/controller.py`
 - Test: `tests/test_research_e2e.py`
 
-- [ ] **Step 1: Write end-to-end test**
+- [x] **Step 1: Write end-to-end test**
 
 Create `tests/test_research_e2e.py`:
 
@@ -4289,7 +4235,7 @@ stop_on_prerequisites_failed: true
     assert len(state["experiments"]) == 1
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -4299,7 +4245,7 @@ pixi run pytest tests/test_research_e2e.py -q
 
 Expected: FAIL until `run_current_phase_once` delegates to the first `experiment_flow.py` path.
 
-- [ ] **Step 3: Implement minimal first phase path**
+- [x] **Step 3: Implement minimal first phase path**
 
 Create `experiment_flow.py` and keep the controller thin:
 
@@ -4327,7 +4273,7 @@ For this first slice, `run_experiment_flow` builds `context_pack.md`, runs the d
 
 In `controller.py`, `run_current_phase_once` only loads state/spec, allocates `experiment_id`, creates the experiment directory, and calls `run_experiment_flow(ExperimentFlowRequest(...))`. Include `ledger_path` in the request so experiment-level helpers can append audit events without importing controller internals. Do not put command execution or context-building internals in `controller.py`.
 
-- [ ] **Step 4: Run end-to-end test**
+- [x] **Step 4: Run end-to-end test**
 
 Run:
 
@@ -4337,7 +4283,7 @@ pixi run pytest tests/test_research_e2e.py -q
 
 Expected: PASS.
 
-- [ ] **Step 5: Run all research tests**
+- [x] **Step 5: Run all research tests**
 
 Run:
 
@@ -4347,7 +4293,7 @@ pixi run pytest tests/test_research_*.py -q
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 Run:
 
@@ -4364,7 +4310,7 @@ git commit -m "add research e2e prerequisite path"
 - Test: `tests/test_research_controller.py`
 - Test: `tests/test_research_e2e.py`
 
-- [ ] **Step 1: Add fake agent runtime contract test**
+- [x] **Step 1: Add fake agent runtime contract test**
 
 Append a fake-runtime test to `tests/test_research_controller.py`.
 
@@ -4377,17 +4323,17 @@ Use a tiny `FakeResearchRuntime.open_thread(config)` that returns queued JSON re
 
 Assert the loop completes, writes every core artifact, uses the expected role names, and does not require real agents, MLflow, Hatchet, or external data.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
 ```bash
-pixi run pytest tests/test_research_controller.py::test_full_phase_writes_core_artifacts_with_fake_agents -q
+pixi run pytest tests/test_research_e2e.py::test_fake_runtime_drives_completed_candidate_research_run -q
 ```
 
 Expected: FAIL until controller invokes role chain and writes artifacts.
 
-- [ ] **Step 3: Implement experiment flow role chain**
+- [x] **Step 3: Implement experiment flow role chain**
 
 In `experiment_flow.py`, implement the full single-experiment path inside `run_experiment_flow`. Keep this file as the phase coordinator: put command execution in `prerequisites.py`/`verification.py`, worktree setup in `worktree.py`, implementation path checks in `implementation_boundary.py`, evaluator setup/audits in `evaluation.py`, and mirror wrapping in `research_run_mirror.py`.
 
@@ -4434,17 +4380,17 @@ def _write_artifact(path: Path, model) -> None:
 
 Do not add evaluator-to-implementer repair. If evaluation produces a runtime/source defect, classify as `run_failed` and preserve artifacts. Keep `controller.py` as the run loop only; do not move MLflow, Hatchet, prerequisite command execution, verification repair, evaluator boundary logic, or implementation boundary audit logic back into it. Task 25 wires the Research Run Mirror hook after ledger-failure behavior exists.
 
-- [ ] **Step 4: Run the fake-agent test**
+- [x] **Step 4: Run the fake-agent test**
 
 Run:
 
 ```bash
-pixi run pytest tests/test_research_controller.py::test_full_phase_writes_core_artifacts_with_fake_agents -q
+pixi run pytest tests/test_research_e2e.py::test_fake_runtime_drives_completed_candidate_research_run -q
 ```
 
 Expected: PASS.
 
-- [ ] **Step 5: Run research controller tests**
+- [x] **Step 5: Run research controller tests**
 
 Run:
 
@@ -4454,7 +4400,7 @@ pixi run pytest tests/test_research_controller.py tests/test_research_e2e.py -q
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 Run:
 
@@ -4470,7 +4416,7 @@ git commit -m "run research experiment phases"
 - Modify: `agent_control_plane/research_experiment_controller/experiment_flow.py`
 - Test: `tests/test_research_controller.py`
 
-- [ ] **Step 1: Add failing materiality tests**
+- [x] **Step 1: Add failing materiality tests**
 
 Append to `tests/test_research_controller.py`:
 
@@ -4505,7 +4451,7 @@ def test_material_policy_ignores_minor_command_formatting() -> None:
     )
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -4515,7 +4461,7 @@ pixi run pytest tests/test_research_controller.py::test_material_policy_trusts_a
 
 Expected: FAIL with missing `materiality.py`.
 
-- [ ] **Step 3: Implement materiality helper**
+- [x] **Step 3: Implement materiality helper**
 
 Create `agent_control_plane/research_experiment_controller/materiality.py`:
 
@@ -4557,11 +4503,11 @@ def _normalize(value: str) -> str:
     return value.strip().lower().replace("_", " ")
 ```
 
-- [ ] **Step 4: Wire into experiment flow**
+- [x] **Step 4: Wire into experiment flow**
 
 In `experiment_flow.py`, after design critique and any Strategist revision, call `requires_fresh_critic`. If true, start a fresh Critic thread and write `critique_revision.json`. Use flow-detected changed categories from artifact comparison and agent-declared categories from `SelectedPlan.material_revision_categories` or `Critique.material_revision_categories`.
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 Run:
 
@@ -4571,7 +4517,7 @@ pixi run pytest tests/test_research_controller.py -q
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 Run:
 
@@ -4587,7 +4533,7 @@ git commit -m "add material revision policy"
 - Modify: `agent_control_plane/research_experiment_controller/experiment_flow.py`
 - Test: `tests/test_research_controller.py`
 
-- [ ] **Step 1: Add failing allowed-path audit test**
+- [x] **Step 1: Add failing allowed-path audit test**
 
 Append to `tests/test_research_controller.py`:
 
@@ -4606,7 +4552,7 @@ def test_implementation_path_audit_rejects_changed_file_outside_allowed_paths() 
     assert result["failure_classification"] == "allowed_path_violation"
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -4616,7 +4562,7 @@ pixi run pytest tests/test_research_controller.py::test_implementation_path_audi
 
 Expected: FAIL with missing helper.
 
-- [ ] **Step 3: Implement implementation boundary module**
+- [x] **Step 3: Implement implementation boundary module**
 
 Create `agent_control_plane/research_experiment_controller/implementation_boundary.py`:
 
@@ -4647,7 +4593,7 @@ def audit_implementation_paths(
 
 `experiment_flow.py` calls this helper after Implementer returns and before verification. If it fails, write `implementation_diff_summary.json`, preserve the worktree, return an experiment completion with `run_failed`.
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run:
 
@@ -4657,7 +4603,7 @@ pixi run pytest tests/test_research_controller.py::test_implementation_path_audi
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Run:
 
@@ -4673,7 +4619,7 @@ git commit -m "audit implementation boundaries"
 - Modify: `agent_control_plane/research_experiment_controller/experiment_flow.py`
 - Test: `tests/test_research_mlflow_mirror.py`
 
-- [ ] **Step 1: Add failing Research Run Mirror failure test**
+- [x] **Step 1: Add failing Research Run Mirror failure test**
 
 Append to `tests/test_research_mlflow_mirror.py`:
 
@@ -4712,7 +4658,7 @@ def test_mlflow_failure_appends_ledger_event_and_continues(tmp_path: Path) -> No
     assert read_events(ledger_path)[0]["event"] == "MLFLOW_MIRROR_FAILED"
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -4722,7 +4668,7 @@ pixi run pytest tests/test_research_mlflow_mirror.py::test_mlflow_failure_append
 
 Expected: FAIL with missing helper.
 
-- [ ] **Step 3: Implement Research Run Mirror wrapper**
+- [x] **Step 3: Implement Research Run Mirror wrapper**
 
 Add to `research_run_mirror.py`:
 
@@ -4759,7 +4705,7 @@ def _default_research_run_mirror(request: ResearchRunMirrorRequest) -> dict[str,
     return mirror_to_mlflow(request)
 ```
 
-- [ ] **Step 4: Wire Research Run Mirror request**
+- [x] **Step 4: Wire Research Run Mirror request**
 
 In `experiment_flow.py`, after end-of-experiment artifacts are written:
 
@@ -4783,7 +4729,7 @@ if spec.mlflow.enabled:
 
 The flow may construct the request, but it must not import `mlflow_mirror.py`, import MLflow, call MLflow client methods, or inspect mirror internals. Do not call the mirror phase-by-phase. `controller.py` must not know whether MLflow exists.
 
-- [ ] **Step 5: Run test**
+- [x] **Step 5: Run test**
 
 Run:
 
@@ -4793,7 +4739,7 @@ pixi run pytest tests/test_research_mlflow_mirror.py::test_mlflow_failure_append
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 Run:
 
@@ -4810,7 +4756,7 @@ git commit -m "wire research run mirror"
 - Test: `tests/test_research_run_spec.py`
 - Test: `tests/test_research_controller.py`
 
-- [ ] **Step 1: Add failing resolved snapshot test**
+- [x] **Step 1: Add failing resolved snapshot test**
 
 Append to `tests/test_research_run_spec.py`:
 
@@ -4852,7 +4798,7 @@ def test_start_research_run_writes_resolved_spec_snapshot(tmp_path: Path) -> Non
     assert "stop_on_prerequisites_failed: true" in snapshot_text
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -4862,7 +4808,7 @@ pixi run pytest tests/test_research_run_spec.py::test_resolved_spec_dict_include
 
 Expected: FAIL because `resolved_spec_dict` does not exist and `start_research_run` copies the raw source file.
 
-- [ ] **Step 3: Implement resolved spec serialization**
+- [x] **Step 3: Implement resolved spec serialization**
 
 Add to `agent_control_plane/research_experiment_controller/research_run_spec.py`:
 
@@ -4904,7 +4850,7 @@ def resolved_spec_dict(spec: ResearchRunSpec) -> dict[str, Any]:
     }
 ```
 
-- [ ] **Step 4: Write resolved YAML snapshot in controller**
+- [x] **Step 4: Write resolved YAML snapshot in controller**
 
 In `agent_control_plane/research_experiment_controller/controller.py`, replace the `shutil.copyfile` snapshot line in `start_research_run` with:
 
@@ -4921,7 +4867,7 @@ spec_snapshot_path.write_text(
 
 Remove the now-unused `shutil` import if no longer needed.
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 Run:
 
@@ -4931,7 +4877,7 @@ pixi run pytest tests/test_research_run_spec.py tests/test_research_controller.p
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 Run:
 
@@ -4947,7 +4893,7 @@ git commit -m "snapshot resolved research specs"
 - Modify: `agent_control_plane/research_experiment_controller/experiment_flow.py`
 - Test: `tests/test_research_controller.py`
 
-- [ ] **Step 1: Add failing classification tests**
+- [x] **Step 1: Add failing classification tests**
 
 Append to `tests/test_research_controller.py`:
 
@@ -4984,7 +4930,7 @@ def test_selected_without_commands_is_not_healthy_no_op() -> None:
     assert outcome["failure_classification"] == "no_deterministic_commands"
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -4994,7 +4940,7 @@ pixi run pytest tests/test_research_controller.py::test_classify_no_op_means_no_
 
 Expected: FAIL with missing functions.
 
-- [ ] **Step 3: Implement classification helpers**
+- [x] **Step 3: Implement classification helpers**
 
 Add to `agent_control_plane/research_experiment_controller/outcomes.py`:
 
@@ -5030,7 +4976,7 @@ def classify_selected_without_commands() -> dict[str, str]:
     )
 ```
 
-- [ ] **Step 4: Wire selected-without-commands path**
+- [x] **Step 4: Wire selected-without-commands path**
 
 In `run_experiment_flow`, after `selected_plan.json` is written and before data audit, add:
 
@@ -5043,7 +4989,7 @@ if selected_plan.selected and not experiment_design.verification_commands and no
 
 Implementation-only experiments are allowed when verification commands exist. A selected plan with neither verification nor confirmatory commands is `blocked`, not `no_op`.
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 Run:
 
@@ -5053,7 +4999,7 @@ pixi run pytest tests/test_research_controller.py -q
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 Run:
 
@@ -5070,7 +5016,7 @@ git commit -m "classify no op blocked outcomes"
 - Test: `tests/test_research_artifacts.py`
 - Test: `tests/test_research_controller.py`
 
-- [ ] **Step 1: Add failing FeatureSpec tests**
+- [x] **Step 1: Add failing FeatureSpec tests**
 
 Append to `tests/test_research_artifacts.py`:
 
@@ -5099,24 +5045,23 @@ def test_feature_spec_records_point_in_time_validity() -> None:
 Append to `tests/test_research_controller.py`:
 
 ```python
-from agent_control_plane.research_experiment_controller.experiment_flow import feature_spec_path
-
-
-def test_feature_spec_path_is_material_feature_scoped(tmp_path: Path) -> None:
-    assert feature_spec_path(tmp_path, "peer_residual").name == "feature_spec_peer_residual.json"
+def test_feature_specs_are_written_and_locked_for_evaluation(tmp_path: Path) -> None:
+    ...
+    assert (experiment_dir / "feature_specs.json").exists()
+    assert "feature_specs" in manifest["canonical_artifacts"]
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
 ```bash
-pixi run pytest tests/test_research_artifacts.py::test_feature_spec_records_point_in_time_validity tests/test_research_controller.py::test_feature_spec_path_is_material_feature_scoped -q
+pixi run pytest tests/test_research_artifacts.py::test_feature_spec_records_point_in_time_validity tests/test_research_controller.py::test_feature_specs_are_written_and_locked_for_evaluation -q
 ```
 
-Expected: FAIL with missing `FeatureSpec` and `feature_spec_path`.
+Expected: FAIL with missing `FeatureSpec` and locked `feature_specs.json`.
 
-- [ ] **Step 3: Add FeatureSpec model**
+- [x] **Step 3: Add FeatureSpec model**
 
 Add to `agent_control_plane/research_experiment_controller/artifacts.py`:
 
@@ -5134,34 +5079,32 @@ class FeatureSpec(BaseModel):
     expected_failure_modes: list[str] = Field(default_factory=list)
 ```
 
-- [ ] **Step 4: Add feature spec path helper**
+- [x] **Step 4: Add feature specs artifact**
 
-Add to `agent_control_plane/research_experiment_controller/experiment_flow.py`:
+Add consolidated feature spec artifact handling to `agent_control_plane/research_experiment_controller/experiment_flow.py`:
 
 ```python
-def feature_spec_path(experiment_dir: str | Path, feature_id: str) -> Path:
-    safe_feature_id = "".join(
-        character if character.isalnum() or character in {"-", "_"} else "_"
-        for character in feature_id
-    ).strip("_")
-    if not safe_feature_id:
-        raise ResearchRunError("Feature spec id must contain at least one safe character.")
-    return Path(experiment_dir) / f"feature_spec_{safe_feature_id}.json"
+if selection.feature_specs is not None:
+    _write_artifact_once(
+        experiment_dir / "feature_specs.json",
+        request.experiment_id,
+        selection.feature_specs.model_dump(mode="json"),
+    )
 ```
 
-When Strategist or Implementer declares generated material features, write one `feature_spec_<feature_id>.json` per feature using `FeatureSpec`. If no material features are declared, write none.
+When Strategist or Implementer declares generated material features, write them as one locked `feature_specs.json` using `FeatureSpecs`. If no material features are declared, write none.
 
-- [ ] **Step 5: Run tests**
+- [x] **Step 5: Run tests**
 
 Run:
 
 ```bash
-pixi run pytest tests/test_research_artifacts.py tests/test_research_controller.py::test_feature_spec_path_is_material_feature_scoped -q
+pixi run pytest tests/test_research_artifacts.py tests/test_research_controller.py::test_feature_specs_are_written_and_locked_for_evaluation -q
 ```
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 Run:
 
@@ -5177,7 +5120,7 @@ git commit -m "support feature spec artifacts"
 - Test: `tests/test_task_control_plane.py`
 - Test: `tests/test_control_plane_command_runner.py`
 
-- [ ] **Step 1: Add regression test for Task combined command log**
+- [x] **Step 1: Add regression test for Task combined command log**
 
 Append to `tests/test_task_control_plane.py`:
 
@@ -5196,7 +5139,7 @@ def test_task_tests_still_write_combined_command_log_after_shared_runner(tmp_pat
     assert (target_repository / "test-created.txt").exists()
 ```
 
-- [ ] **Step 2: Run test before refactor**
+- [x] **Step 2: Run test before refactor**
 
 Run:
 
@@ -5206,7 +5149,7 @@ pixi run pytest tests/test_task_control_plane.py::test_task_tests_still_write_co
 
 Expected: PASS before refactor. This proves current behavior is captured.
 
-- [ ] **Step 3: Refactor Task test command execution**
+- [x] **Step 3: Refactor Task test command execution**
 
 In `agent_control_plane/task_control_plane/controller.py`, replace internal subprocess streaming in `_run_test_command` with shared `run_command_combined_log` while preserving Task result shape.
 
@@ -5241,7 +5184,7 @@ def _run_test_command(
 
 Keep Task behavior: one combined `command.log`, all declared commands run, no shell strings.
 
-- [ ] **Step 4: Run Task command tests**
+- [x] **Step 4: Run Task command tests**
 
 Run:
 
@@ -5251,7 +5194,7 @@ pixi run pytest tests/test_task_control_plane.py tests/test_control_plane_comman
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Run:
 
@@ -5267,7 +5210,7 @@ git commit -m "reuse command runner in task tests"
 - Fix only the violating module if a boundary check fails
 - Test: no runtime tests
 
-- [ ] **Step 1: Verify replaceable integration boundaries**
+- [x] **Step 1: Verify replaceable integration boundaries**
 
 Run:
 
@@ -5293,7 +5236,7 @@ rg -n "from .*mlflow_mirror|import .*mlflow_mirror" agent_control_plane/research
 
 Expected: only `research_run_mirror.py` imports the MLflow adapter.
 
-- [ ] **Step 2: Verify controller and experiment flow stay coordinators**
+- [x] **Step 2: Verify controller and experiment flow stay coordinators**
 
 Run:
 
@@ -5303,7 +5246,7 @@ rg -n "run_command\\(|subprocess|[Hh]atchet|assert_allowed_paths|from .*mlflow_m
 
 Expected: no matches. Command execution belongs in `prerequisites.py` and `verification.py`; allowed-path internals belong in `implementation_boundary.py`; MLflow SDK calls and adapter imports belong outside controller/flow; Hatchet belongs in `hatchet_workflow.py` and `hatchet_worker.py`.
 
-- [ ] **Step 3: Verify PRD out-of-scope exclusions**
+- [x] **Step 3: Verify PRD out-of-scope exclusions**
 
 Run:
 
@@ -5313,7 +5256,7 @@ rg -n "eval_inputs|phase-by-phase MLflow|MLflow tracing|event wait|auto.*promoti
 
 Expected: no implementation of excluded behavior. Test names or prompt text may mention exclusions only to forbid them.
 
-- [ ] **Step 4: Commit if fixes were needed**
+- [x] **Step 4: Commit if fixes were needed**
 
 Run only when Step 1-3 found violations and code was changed:
 
@@ -5329,7 +5272,7 @@ git commit -m "tighten research boundaries"
 - Do not modify `.scratch/research-experiment-plane/PRD.md`; treat it as source of truth
 - No code files unless tests require a direct fix
 
-- [ ] **Step 1: Run all tests**
+- [x] **Step 1: Run all tests**
 
 Run:
 
@@ -5339,7 +5282,7 @@ pixi run pytest -q
 
 Expected: PASS.
 
-- [ ] **Step 2: Run formatting**
+- [x] **Step 2: Run formatting**
 
 Run:
 
@@ -5350,7 +5293,7 @@ pixi run ruff check . --fix
 
 Expected: PASS or files reformatted with no remaining lint errors.
 
-- [ ] **Step 3: Run tests after formatting**
+- [x] **Step 3: Run tests after formatting**
 
 Run:
 
@@ -5360,7 +5303,7 @@ pixi run pytest -q
 
 Expected: PASS.
 
-- [ ] **Step 4: Update issue status**
+- [x] **Step 4: Update issue status**
 
 Modify `.scratch/research-experiment-plane/issues/01-implement-research-experiment-plane.md`:
 
@@ -5381,7 +5324,7 @@ Verification:
 - `pixi run pytest -q`
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Run:
 
@@ -5463,5 +5406,5 @@ Use these names consistently:
 - `classify_blocked`
 - `classify_selected_without_commands`
 - `FeatureSpec`
-- `feature_spec_path`
+- `FeatureSpecs`
 - `run_command_combined_log`

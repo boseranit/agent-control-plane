@@ -40,6 +40,7 @@ class CommandResult:
     timeout_seconds: float | None
     stdout_path: str
     stderr_path: str
+    env: dict[str, str] = field(default_factory=dict)
 
     def to_record(self) -> dict[str, Any]:
         return {
@@ -49,6 +50,7 @@ class CommandResult:
             "status": self.status,
             "exit_code": self.exit_code,
             "duration_seconds": self.duration_seconds,
+            "env": self.env,
             "timeout_seconds": self.timeout_seconds,
             "stdout_path": self.stdout_path,
             "stderr_path": self.stderr_path,
@@ -108,6 +110,7 @@ def run_command(
         status=status,
         exit_code=exit_code,
         duration_seconds=round(time.monotonic() - started, 3),
+        env=dict(env or {}),
         timeout_seconds=command.timeout_seconds,
         stdout_path=str(resolved_stdout_path),
         stderr_path=str(resolved_stderr_path),
@@ -161,6 +164,7 @@ def run_command_combined_log(
         status=status,
         exit_code=exit_code,
         duration_seconds=round(time.monotonic() - started, 3),
+        env=dict(env or {}),
         timeout_seconds=command.timeout_seconds,
         stdout_path=str(resolved_log_path),
         stderr_path=str(resolved_log_path),
