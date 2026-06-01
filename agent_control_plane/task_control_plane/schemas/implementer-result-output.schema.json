@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "ImplementerResultOutput",
   "type": "object",
-  "additionalProperties": true,
+  "additionalProperties": false,
   "properties": {
     "status": {
       "type": "string",
@@ -12,16 +12,16 @@
       "type": "string"
     },
     "changed_files": {
-      "type": "array",
+      "type": ["array", "null"],
       "items": {
         "type": "string"
       }
     },
     "recommended_commands": {
-      "type": "array",
+      "type": ["array", "null"],
       "items": {
         "type": "object",
-        "additionalProperties": true,
+        "additionalProperties": false,
         "properties": {
           "name": {
             "type": "string"
@@ -37,8 +37,14 @@
       }
     },
     "notes": {
-      "type": "string"
+      "type": ["string", "null"]
     }
   },
-  "required": ["status", "summary"]
+  "required": [
+    "status",
+    "summary",
+    "changed_files",
+    "recommended_commands",
+    "notes"
+  ]
 }

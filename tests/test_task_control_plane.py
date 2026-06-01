@@ -1660,6 +1660,7 @@ def test_run_active_task_reviewer_uses_fresh_read_only_threads_and_records_appro
     assert str(Path(artifacts["approved_plan"])) in reviewer_input
     assert str(Path(artifacts["command_log"])) in reviewer_input
     assert str(Path(artifacts["review_log"])) in reviewer_input
+    assert "Task Source untracked root excluded from commits: None" in reviewer_input
     assert "diff --git" not in reviewer_input
     assert reviewer_run_call["cwd"] == str(target_repository.resolve())
     assert sdk_value(reviewer_run_call["approval_mode"]) == "deny_all"
@@ -3295,15 +3296,86 @@ def test_planner_prompt_and_output_schema_are_source_controlled() -> None:
 
     jsonschema.Draft202012Validator.check_schema(schema)
     jsonschema.validate(
-        {"status": "planned", "plan_markdown": "Do the scoped work."}, schema
+        {
+            "status": "planned",
+            "plan_markdown": "Do the scoped work.",
+            "questions": None,
+        },
+        schema,
     )
     jsonschema.validate(
         {
             "status": "needs_answers",
-            "questions": [{"id": "q1", "question": "What should happen next?"}],
+            "plan_markdown": None,
+            "questions": [
+                {
+                    "id": "q1",
+                    "context": None,
+                    "question": "What should happen next?",
+                    "type": None,
+                }
+            ],
         },
         schema,
     )
+
+
+def test_task_control_plane_output_schemas_avoid_codex_combinators() -> None:
+    schema_paths = [
+        PLANNER_OUTPUT_SCHEMA_PATH,
+        CONTEXT_ANSWERS_SCHEMA_PATH,
+        IMPLEMENTER_RESULT_SCHEMA_PATH,
+        REVIEWER_OUTPUT_SCHEMA_PATH,
+    ]
+    unsupported = {"allOf", "anyOf", "oneOf"}
+
+    def find_unsupported(value: object, path: str = "$") -> list[str]:
+        if isinstance(value, dict):
+            matches = [f"{path}.{key}" for key in value if key in unsupported]
+            for key, child in value.items():
+                matches.extend(find_unsupported(child, f"{path}.{key}"))
+            return matches
+        if isinstance(value, list):
+            matches = []
+            for index, child in enumerate(value):
+                matches.extend(find_unsupported(child, f"{path}[{index}]"))
+            return matches
+        return []
+
+    for schema_path in schema_paths:
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        assert find_unsupported(schema) == []
+
+
+def test_task_control_plane_output_schemas_disable_additional_properties() -> None:
+    schema_paths = [
+        PLANNER_OUTPUT_SCHEMA_PATH,
+        CONTEXT_ANSWERS_SCHEMA_PATH,
+        IMPLEMENTER_RESULT_SCHEMA_PATH,
+        REVIEWER_OUTPUT_SCHEMA_PATH,
+    ]
+
+    def object_paths_missing_false(value: object, path: str = "$") -> list[str]:
+        if isinstance(value, dict):
+            matches = []
+            if (
+                value.get("type") == "object"
+                and value.get("additionalProperties") is not False
+            ):
+                matches.append(path)
+            for key, child in value.items():
+                matches.extend(object_paths_missing_false(child, f"{path}.{key}"))
+            return matches
+        if isinstance(value, list):
+            matches = []
+            for index, child in enumerate(value):
+                matches.extend(object_paths_missing_false(child, f"{path}[{index}]"))
+            return matches
+        return []
+
+    for schema_path in schema_paths:
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        assert object_paths_missing_false(schema) == []
 
 
 def test_context_prompt_and_output_schema_are_source_controlled() -> None:
@@ -3330,6 +3402,7 @@ def test_context_prompt_and_output_schema_are_source_controlled() -> None:
                 {
                     "question_id": "q2",
                     "status": "unresolved",
+                    "answer": None,
                     "reason": "The repository cannot answer user policy.",
                 }
             ]
@@ -3349,6 +3422,7 @@ def test_implementer_prompt_and_result_schema_are_source_controlled() -> None:
             "summary": "Implemented the approved plan.",
             "changed_files": ["agent_control_plane/task_control_plane/controller.py"],
             "recommended_commands": [{"name": "unit", "argv": ["pytest", "-q"]}],
+            "notes": None,
         },
         schema,
     )
@@ -3357,7 +3431,11 @@ def test_implementer_prompt_and_result_schema_are_source_controlled() -> None:
 def test_reviewer_prompt_and_output_schema_are_source_controlled() -> None:
     prompt = REVIEWER_PROMPT_PATH.read_text(encoding="utf-8")
     assert "Reviewer Agent" in prompt
-    assert "Controller will commit all current Target Repository changes" in prompt
+    assert "excluding any Task Source untracked root" in prompt
+    assert (
+        "Do not reject solely because files under the Task Source untracked root"
+        in prompt
+    )
     assert "non-blocking issues do not prevent commit" in prompt
     schema = json.loads(REVIEWER_OUTPUT_SCHEMA_PATH.read_text(encoding="utf-8"))
 
@@ -3369,7 +3447,11 @@ def test_reviewer_prompt_and_output_schema_are_source_controlled() -> None:
             "blocking_issues": [],
             "requested_changes": [],
             "non_blocking_issues": [
-                {"path": "app.py", "message": "Consider a follow-up cleanup."}
+                {
+                    "path": "app.py",
+                    "line": None,
+                    "message": "Consider a follow-up cleanup.",
+                }
             ],
         },
         schema,
@@ -3380,7 +3462,11 @@ def test_reviewer_prompt_and_output_schema_are_source_controlled() -> None:
             "summary": "Needs a requested change before commit.",
             "blocking_issues": [],
             "requested_changes": [
-                {"path": "app.py", "message": "Add the missing empty-input guard."}
+                {
+                    "path": "app.py",
+                    "line": None,
+                    "message": "Add the missing empty-input guard.",
+                }
             ],
             "non_blocking_issues": [],
         },

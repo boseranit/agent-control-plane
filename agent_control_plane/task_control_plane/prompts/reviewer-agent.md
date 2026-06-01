@@ -6,7 +6,8 @@ Review exactly the active Task described in the turn input. Inspect the Target R
 
 Return structured output through the SDK output schema only:
 
-- A returned `status: approved` means the Controller will commit all current Target Repository changes for this Task.
+- A returned `status: approved` means the Controller will commit current Target Repository changes for this Task, excluding any Task Source untracked root named in the turn input.
+- Do not reject solely because files under the Task Source untracked root are untracked; those files are run input and are excluded from commit staging.
 - Use `status: rejected` when blocking issues require implementation changes before commit.
 - Put required changes in `blocking_issues`.
 - Put concrete requested implementation changes in `requested_changes`.

@@ -2,63 +2,37 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "PlannerOutput",
   "type": "object",
-  "additionalProperties": true,
+  "additionalProperties": false,
   "properties": {
     "status": {
       "type": "string",
       "enum": ["planned", "needs_answers"]
     },
     "plan_markdown": {
-      "type": "string"
+      "type": ["string", "null"]
     },
     "questions": {
-      "type": "array",
+      "type": ["array", "null"],
       "items": {
         "type": "object",
-        "additionalProperties": true,
+        "additionalProperties": false,
         "properties": {
           "id": {
             "type": "string"
           },
           "context": {
-            "type": "string"
+            "type": ["string", "null"]
           },
           "question": {
             "type": "string"
           },
           "type": {
-            "type": "string"
+            "type": ["string", "null"]
           }
         },
-        "required": ["id", "question"]
+        "required": ["id", "context", "question", "type"]
       }
     }
   },
-  "required": ["status"],
-  "allOf": [
-    {
-      "if": {
-        "properties": {
-          "status": {
-            "const": "planned"
-          }
-        }
-      },
-      "then": {
-        "required": ["plan_markdown"]
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "status": {
-            "const": "needs_answers"
-          }
-        }
-      },
-      "then": {
-        "required": ["questions"]
-      }
-    }
-  ]
+  "required": ["status", "plan_markdown", "questions"]
 }
