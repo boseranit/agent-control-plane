@@ -688,6 +688,7 @@ def run_active_task_reviewer(
             active_task_state=active_task_state,
             artifacts=artifacts,
             latest_test_status=latest_test_status,
+            untracked_source_root=_state_untracked_source_root(state),
         ),
         target_repository=target_repository,
         effort=task_spec.codex.effort,
@@ -1781,6 +1782,7 @@ def _reviewer_turn_input(
     active_task_state: Mapping[str, Any],
     artifacts: Mapping[str, str],
     latest_test_status: Mapping[str, Any],
+    untracked_source_root: str | None,
 ) -> str:
     active_task_id = active_task_state.get("id")
     task = next(
@@ -1805,6 +1807,10 @@ def _reviewer_turn_input(
             f"Approved Plan artifact: {artifacts['approved_plan']}",
             f"Command log artifact: {command_log_path}",
             f"Review log artifact: {artifacts['review_log']}",
+            (
+                "Task Source untracked root excluded from commits: "
+                f"{untracked_source_root or 'None'}"
+            ),
         ]
     )
 

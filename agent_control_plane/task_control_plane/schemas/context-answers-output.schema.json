@@ -2,13 +2,13 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "ContextAnswersOutput",
   "type": "object",
-  "additionalProperties": true,
+  "additionalProperties": false,
   "properties": {
     "answers": {
       "type": "array",
       "items": {
         "type": "object",
-        "additionalProperties": true,
+        "additionalProperties": false,
         "properties": {
           "question_id": {
             "type": "string"
@@ -18,27 +18,13 @@
             "enum": ["answered", "unresolved"]
           },
           "answer": {
-            "type": "string"
+            "type": ["string", "null"]
           },
           "reason": {
             "type": "string"
           }
         },
-        "required": ["question_id", "status", "reason"],
-        "allOf": [
-          {
-            "if": {
-              "properties": {
-                "status": {
-                  "const": "answered"
-                }
-              }
-            },
-            "then": {
-              "required": ["answer"]
-            }
-          }
-        ]
+        "required": ["question_id", "status", "answer", "reason"]
       }
     }
   },

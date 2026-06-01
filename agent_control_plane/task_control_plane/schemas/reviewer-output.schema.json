@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "ReviewerOutput",
   "type": "object",
-  "additionalProperties": true,
+  "additionalProperties": false,
   "properties": {
     "status": {
       "type": "string",
@@ -15,60 +15,57 @@
       "type": "array",
       "items": {
         "type": "object",
-        "additionalProperties": true,
+        "additionalProperties": false,
         "properties": {
           "path": {
-            "type": "string"
+            "type": ["string", "null"]
           },
           "line": {
-            "type": "integer",
-            "minimum": 1
+            "type": ["integer", "null"]
           },
           "message": {
             "type": "string"
           }
         },
-        "required": ["message"]
+        "required": ["path", "line", "message"]
       }
     },
     "requested_changes": {
       "type": "array",
       "items": {
         "type": "object",
-        "additionalProperties": true,
+        "additionalProperties": false,
         "properties": {
           "path": {
-            "type": "string"
+            "type": ["string", "null"]
           },
           "line": {
-            "type": "integer",
-            "minimum": 1
+            "type": ["integer", "null"]
           },
           "message": {
             "type": "string"
           }
         },
-        "required": ["message"]
+        "required": ["path", "line", "message"]
       }
     },
     "non_blocking_issues": {
       "type": "array",
       "items": {
         "type": "object",
-        "additionalProperties": true,
+        "additionalProperties": false,
         "properties": {
           "path": {
-            "type": "string"
+            "type": ["string", "null"]
           },
           "line": {
-            "type": "integer",
-            "minimum": 1
+            "type": ["integer", "null"]
           },
           "message": {
             "type": "string"
           }
         },
-        "required": ["message"]
+        "required": ["path", "line", "message"]
       }
     }
   },
@@ -78,53 +75,5 @@
     "blocking_issues",
     "requested_changes",
     "non_blocking_issues"
-  ],
-  "allOf": [
-    {
-      "if": {
-        "properties": {
-          "status": {
-            "const": "approved"
-          }
-        }
-      },
-      "then": {
-        "properties": {
-          "blocking_issues": {
-            "maxItems": 0
-          },
-          "requested_changes": {
-            "maxItems": 0
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "status": {
-            "const": "rejected"
-          }
-        }
-      },
-      "then": {
-        "anyOf": [
-          {
-            "properties": {
-              "blocking_issues": {
-                "minItems": 1
-              }
-            }
-          },
-          {
-            "properties": {
-              "requested_changes": {
-                "minItems": 1
-              }
-            }
-          }
-        ]
-      }
-    }
   ]
 }
