@@ -362,7 +362,7 @@ def run_id_from_cli_output(output: str) -> str:
     return match.group("run_id")
 
 
-def test_cli_run_and_resume_complete_happy_path_without_real_codex_or_network(
+def test_cli_run_starts_and_resumes_happy_path_without_real_codex_or_network(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -375,8 +375,6 @@ def test_cli_run_and_resume_complete_happy_path_without_real_codex_or_network(
     )
     monkeypatch.chdir(tmp_path)
 
-    assert main(["run", str(task_spec_path)]) == 0
-    run_id = run_id_from_cli_output(capsys.readouterr().out)
     fake_codex = FakeCodexClient(
         planner_turns=[{"status": "planned", "plan_markdown": "Write done.txt."}],
         implementer_turns=[
@@ -388,9 +386,12 @@ def test_cli_run_and_resume_complete_happy_path_without_real_codex_or_network(
         reviewer_turns=[approved_review()],
     )
 
-    assert main(["resume", run_id], codex_client_factory=lambda: fake_codex) == 0
-
+    assert (
+        main(["run", str(task_spec_path)], codex_client_factory=lambda: fake_codex) == 0
+    )
     cli_output = capsys.readouterr().out
+    run_id = run_id_from_cli_output(cli_output)
+    assert f"Resumed Task Run: {run_id}" in cli_output
     assert "Status: completed" in cli_output
     state = json.loads(
         (tmp_path / "runs" / run_id / "task-state.json").read_text(encoding="utf-8")

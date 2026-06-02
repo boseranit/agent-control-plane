@@ -33,6 +33,11 @@ def main(
         dest="repo_path",
         help="Target Repository override for issue directory Task Sources.",
     )
+    run_parser.add_argument(
+        "--start-only",
+        action="store_true",
+        help="Create Task Run state without resuming agents.",
+    )
 
     resume_parser = subparsers.add_parser(
         "resume", help="Resume an existing Task Run from saved Task State."
@@ -41,14 +46,25 @@ def main(
 
     args = parser.parse_args(argv)
     if args.command == "run":
-        return _run(args.task_source_path, repo_path=args.repo_path)
+        return _run(
+            args.task_source_path,
+            repo_path=args.repo_path,
+            start_only=args.start_only,
+            codex_client_factory=codex_client_factory,
+        )
     if args.command == "resume":
         return _resume(args.run_id, codex_client_factory=codex_client_factory)
     parser.error(f"Unsupported command: {args.command}")
     return 2
 
 
-def _run(task_source_path: str, *, repo_path: str | None = None) -> int:
+def _run(
+    task_source_path: str,
+    *,
+    repo_path: str | None = None,
+    start_only: bool = False,
+    codex_client_factory: Callable[[], Any] | None = None,
+) -> int:
     try:
         task_run = start_task_run(task_source_path, repo_path=repo_path)
     except (OSError, TaskSpecError, TaskRunError) as exc:
@@ -59,7 +75,9 @@ def _run(task_source_path: str, *, repo_path: str | None = None) -> int:
     print(f"Run directory: {task_run.run_directory}")
     print(f"Task State: {task_run.task_state_path}")
     print(f"First task context: {task_run.first_task_context_path}")
-    return 0
+    if start_only:
+        return 0
+    return _resume(task_run.run_id, codex_client_factory=codex_client_factory)
 
 
 def _resume(

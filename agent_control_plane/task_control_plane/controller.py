@@ -668,6 +668,20 @@ def run_active_task_reviewer(
 
     task_spec = load_task_spec(state["task_spec_snapshot_path"])
     target_repository = Path(state["target_repository"]).resolve()
+    untracked_source_root = _state_untracked_source_root(state)
+    included_untracked_args = ["ls-files", "--others", "--exclude-standard", "--", "."]
+    if untracked_source_root is not None:
+        included_untracked_args.append(f":(exclude){untracked_source_root}")
+    commit_candidates = {
+        "tracked_changes": _run_git_command(
+            ["status", "--porcelain", "--untracked-files=no"],
+            target_repository,
+        ).stdout,
+        "included_untracked": _run_git_command(
+            included_untracked_args,
+            target_repository,
+        ).stdout,
+    }
 
     reviewer_developer_instructions = REVIEWER_PROMPT_PATH.read_text(encoding="utf-8")
     reviewer_output_schema = _read_json(REVIEWER_OUTPUT_SCHEMA_PATH)
@@ -688,7 +702,8 @@ def run_active_task_reviewer(
             active_task_state=active_task_state,
             artifacts=artifacts,
             latest_test_status=latest_test_status,
-            untracked_source_root=_state_untracked_source_root(state),
+            commit_candidates=commit_candidates,
+            untracked_source_root=untracked_source_root,
         ),
         target_repository=target_repository,
         effort=task_spec.codex.effort,
@@ -1782,6 +1797,7 @@ def _reviewer_turn_input(
     active_task_state: Mapping[str, Any],
     artifacts: Mapping[str, str],
     latest_test_status: Mapping[str, Any],
+    commit_candidates: Mapping[str, str],
     untracked_source_root: str | None,
 ) -> str:
     active_task_id = active_task_state.get("id")
@@ -1811,6 +1827,10 @@ def _reviewer_turn_input(
                 "Task Source untracked root excluded from commits: "
                 f"{untracked_source_root or 'None'}"
             ),
+            "Commit candidates:",
+            json.dumps(commit_candidates, indent=2, sort_keys=True),
+            "Review only tracked_changes + included_untracked as commit candidates.",
+            "Do not reject on untracked files under the excluded Task Source root.",
         ]
     )
 

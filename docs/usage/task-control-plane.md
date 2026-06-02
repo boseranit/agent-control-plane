@@ -42,16 +42,18 @@ pixi run task-control-run \
   /path/to/target-repo/.planning/issues/my-task-run
 ```
 
-The command prints:
+The command starts the run, then immediately resumes agents. It prints:
 
 ```text
 Started Task Run: RUN-...
 Run directory: /home/boser/agent-control-plane/runs/RUN-...
 Task State: /home/boser/agent-control-plane/runs/RUN-.../task-state.json
 First task context: /home/boser/agent-control-plane/runs/RUN-.../tasks/.../context.json
+Resumed Task Run: RUN-...
+Status: ...
 ```
 
-Resume with that run ID:
+Resume with that run ID after interruptions:
 
 ```bash
 pixi run task-control-resume RUN-...
@@ -60,6 +62,8 @@ pixi run task-control-resume RUN-...
 `resume` advances the active Task through planning, optional human answers, plan
 approval, implementation, deterministic tests, review, repair loops, and commit.
 Run the same command again after interruptions or plan-approval waits.
+Use `pixi run task-control-run --start-only ...` only when you want to create
+state without starting agents.
 
 ## Start From YAML
 
@@ -87,7 +91,6 @@ Start it:
 ```bash
 cd /home/boser/agent-control-plane
 pixi run task-control-run path/to/task-spec.yaml
-pixi run task-control-resume RUN-...
 ```
 
 ## Operational Rules
@@ -100,7 +103,7 @@ pixi run task-control-resume RUN-...
 - Before each next Task, the Target Repository must be clean.
 - The default Issue Directory import has no `test_commands`; use YAML for
   controller-run verification.
-- Plan approval uses `$VISUAL` or `$EDITOR`; set one before `resume`.
+- Plan approval uses `$VISUAL` or `$EDITOR`; set one before `run` or `resume`.
 - Do not edit `runs/<run-id>/task-state.json` by hand.
 
 ## Example
@@ -115,6 +118,4 @@ export EDITOR=nvim
 
 pixi run task-control-run \
   /home/boser/HyperliquidMomentum/.planning/issues/cross-sectional-samples-collapse
-
-pixi run task-control-resume RUN-...
 ```

@@ -1661,6 +1661,17 @@ def test_run_active_task_reviewer_uses_fresh_read_only_threads_and_records_appro
     assert str(Path(artifacts["command_log"])) in reviewer_input
     assert str(Path(artifacts["review_log"])) in reviewer_input
     assert "Task Source untracked root excluded from commits: None" in reviewer_input
+    assert "Commit candidates:" in reviewer_input
+    assert '"included_untracked": ""' in reviewer_input
+    assert '"tracked_changes": ""' in reviewer_input
+    assert (
+        "Review only tracked_changes + included_untracked as commit candidates."
+        in reviewer_input
+    )
+    assert (
+        "Do not reject on untracked files under the excluded Task Source root."
+        in reviewer_input
+    )
     assert "diff --git" not in reviewer_input
     assert reviewer_run_call["cwd"] == str(target_repository.resolve())
     assert sdk_value(reviewer_run_call["approval_mode"]) == "deny_all"
@@ -1679,6 +1690,73 @@ def test_run_active_task_reviewer_uses_fresh_read_only_threads_and_records_appro
         for line in review_log_path.read_text(encoding="utf-8").splitlines()
     ]
     assert review_log_entries == [first_review_output, second_review_output]
+
+
+def test_reviewer_input_excludes_untracked_issue_directory_source(
+    tmp_path: Path,
+) -> None:
+    target_repository = tmp_path / "target"
+    target_repository.mkdir()
+    subprocess.run(
+        ["git", "init"], cwd=target_repository, check=True, capture_output=True
+    )
+    configure_git_identity(target_repository)
+    (target_repository / "README.md").write_text("initial\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "README.md"],
+        cwd=target_repository,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "Initial target state"],
+        cwd=target_repository,
+        check=True,
+        capture_output=True,
+    )
+    issue_directory = write_issue_directory(target_repository)
+    task_run = start_task_run(issue_directory, runtime_root=tmp_path / "runs")
+    (target_repository / "README.md").write_text("changed\n", encoding="utf-8")
+    (target_repository / "done.txt").write_text("done\n", encoding="utf-8")
+    (issue_directory / "agent-note.md").write_text("note\n", encoding="utf-8")
+    run_active_task_tests(task_run.task_state_path)
+
+    review_output = {
+        "status": "approved",
+        "summary": "Ready.",
+        "blocking_issues": [],
+        "requested_changes": [],
+        "non_blocking_issues": [],
+    }
+    codex_client = FakeCodexClient(
+        {"status": "planned", "plan_markdown": "Unused."},
+        reviewer_outputs=[review_output],
+    )
+
+    run_active_task_reviewer(task_run.task_state_path, codex_client)
+
+    reviewer_input = codex_client.thread_history_by_role["reviewer"][0].run_calls[0][
+        "input"
+    ]
+    assert "Commit candidates:" in reviewer_input
+    assert '"tracked_changes": " M README.md\\n"' in reviewer_input
+    assert '"included_untracked": "done.txt\\n"' in reviewer_input
+    assert (
+        ".planning/issues/cross-sectional-samples-collapse/agent-note.md"
+        not in reviewer_input
+    )
+    assert (
+        "Task Source untracked root excluded from commits: "
+        ".planning/issues/cross-sectional-samples-collapse"
+    ) in reviewer_input
+    assert (
+        "Review only tracked_changes + included_untracked as commit candidates."
+        in reviewer_input
+    )
+    assert (
+        "Do not reject on untracked files under the excluded Task Source root."
+        in reviewer_input
+    )
 
 
 def test_run_active_task_reviewer_requires_passing_deterministic_tests(
@@ -3432,6 +3510,8 @@ def test_reviewer_prompt_and_output_schema_are_source_controlled() -> None:
     prompt = REVIEWER_PROMPT_PATH.read_text(encoding="utf-8")
     assert "Reviewer Agent" in prompt
     assert "excluding any Task Source untracked root" in prompt
+    assert "commit candidates in the turn input" in prompt
+    assert "Treat only `tracked_changes` and `included_untracked`" in prompt
     assert (
         "Do not reject solely because files under the Task Source untracked root"
         in prompt
@@ -3527,7 +3607,7 @@ tasks:
     )
     monkeypatch.chdir(tmp_path)
 
-    exit_code = main(["run", str(task_spec_path)])
+    exit_code = main(["run", "--start-only", str(task_spec_path)])
 
     assert exit_code == 0
     run_directories = list((tmp_path / "runs").iterdir())
