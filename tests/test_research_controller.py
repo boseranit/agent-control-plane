@@ -49,6 +49,7 @@ def write_minimal_research_run_spec(
     init_repo_if_needed(repo)
     path = tmp_path / f"{research_run_id}.yaml"
     data_root_value = data_root or tmp_path / "data"
+    experiment_data_root = tmp_path / "experiment-data"
     if data_root is None:
         data_root_value.mkdir()
     path.write_text(
@@ -65,6 +66,7 @@ budgets:
     month_end: "2026-01"
     max_runtime_minutes: 5
 data_root: {data_root_value}
+experiment_data_root: {experiment_data_root}
 worktree:
   create: {str(worktree_create).lower()}
   root: .worktrees

@@ -90,6 +90,7 @@ def write_context_outputs(
             ),
         },
         "data_root": str(spec.data_root),
+        "experiment_data_root": str(spec.experiment_data_root),
         "git": {
             "repo_root": str(spec.target_repository),
             "head": snapshot.head,
@@ -395,6 +396,7 @@ def _render_context_pack(summary: dict[str, Any]) -> str:
         "",
         "## Repository",
         f"- data root: {summary['data_root']}",
+        f"- experiment data root: {summary['experiment_data_root']}",
         f"- repo root: {git['repo_root']}",
         f"- git head: {git['head']}",
         "- git status:",

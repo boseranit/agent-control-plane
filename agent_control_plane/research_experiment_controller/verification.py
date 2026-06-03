@@ -16,6 +16,9 @@ from agent_control_plane.research_experiment_controller.artifacts import (
     CommandDeclaration,
     command_declaration_record,
 )
+from agent_control_plane.research_experiment_controller.command_environment import (
+    research_command_env,
+)
 
 
 @dataclass(frozen=True)
@@ -35,6 +38,7 @@ def run_verification_commands(
     cwd: str | Path,
     run_dir: str | Path,
     data_root: str | Path | None = None,
+    experiment_data_root: str | Path | None = None,
     repo_root: str | Path | None = None,
     timeout_seconds: float,
     max_repairs: int,
@@ -51,8 +55,9 @@ def run_verification_commands(
             verification_commands=verification_commands,
             cwd=resolved_cwd,
             run_dir=resolved_run_dir,
-            env=_research_env(
+            env=research_command_env(
                 data_root=data_root,
+                experiment_data_root=experiment_data_root,
                 run_dir=resolved_run_dir,
                 repo_root=repo_root,
             ),
@@ -147,20 +152,6 @@ def _log_path(
 def _safe_name(name: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("._")
     return safe or "verification"
-
-
-def _research_env(
-    *,
-    data_root: str | Path | None,
-    run_dir: Path,
-    repo_root: str | Path | None,
-) -> dict[str, str]:
-    env: dict[str, str] = {"RESEARCH_RUN_DIR": str(run_dir.resolve())}
-    if data_root is not None:
-        env["RESEARCH_DATA_ROOT"] = str(Path(data_root).expanduser().resolve())
-    if repo_root is not None:
-        env["RESEARCH_REPO_ROOT"] = str(Path(repo_root).resolve())
-    return env
 
 
 def _failure_reason(repairs: int) -> str:

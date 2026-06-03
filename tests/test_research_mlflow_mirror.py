@@ -439,6 +439,7 @@ def _spec(tmp_path: Path, repo: Path, *, mlflow_enabled: bool) -> ResearchRunSpe
         budgets={"smoke": budget},
         selected_budget=budget,
         data_root=tmp_path / "data",
+        experiment_data_root=tmp_path / "experiment-data",
         worktree=WorktreeConfig(create=False, root=Path(".worktrees")),
         mlflow=MLflowConfig(
             enabled=mlflow_enabled,

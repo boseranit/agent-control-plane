@@ -46,6 +46,7 @@ def test_failed_data_audit_command_records_prerequisite_failure_and_metrics(
 ) -> None:
     repo = tmp_path / "repo"
     data_root = tmp_path / "data"
+    experiment_data_root = tmp_path / "experiment-data" / "run" / "EXP-0001"
     run_dir = tmp_path / "run"
     repo.mkdir()
     data_root.mkdir()
@@ -53,6 +54,7 @@ def test_failed_data_audit_command_records_prerequisite_failure_and_metrics(
     result = run_data_audit_phase(
         PrerequisiteAuditRequest(
             data_root=data_root,
+            experiment_data_root=experiment_data_root,
             prerequisite_commands=[],
             data_audit_commands=[
                 {
@@ -63,6 +65,8 @@ def test_failed_data_audit_command_records_prerequisite_failure_and_metrics(
                         (
                             "import os, sys; "
                             "print(os.environ['RESEARCH_DATA_ROOT']); "
+                            "print(os.environ['RESEARCH_EXPERIMENT_DATA_ROOT']); "
+                            "print(os.environ['HLM_DATA_ROOT']); "
                             "print('schema failed', file=sys.stderr); "
                             "raise SystemExit(9)"
                         ),
@@ -87,7 +91,12 @@ def test_failed_data_audit_command_records_prerequisite_failure_and_metrics(
     assert result["data_audit"]["command_results"][0]["status"] == "failed"
     assert metrics["failed_count"] == 1
     assert metrics["commands"][0]["name"] == "schema-check"
-    assert stdout.read_text(encoding="utf-8").strip() == str(data_root)
+    assert stdout.read_text(encoding="utf-8").splitlines() == [
+        str(data_root),
+        str(experiment_data_root),
+        str(data_root),
+    ]
+    assert experiment_data_root.is_dir()
     assert "schema failed" in stderr.read_text(encoding="utf-8")
 
 
@@ -96,6 +105,7 @@ def test_failed_data_audit_command_can_declare_failure_classification(
 ) -> None:
     repo = tmp_path / "repo"
     data_root = tmp_path / "data"
+    experiment_data_root = tmp_path / "experiment-data" / "run" / "EXP-0001"
     run_dir = tmp_path / "run"
     repo.mkdir()
     data_root.mkdir()
@@ -103,6 +113,7 @@ def test_failed_data_audit_command_can_declare_failure_classification(
     result = run_data_audit_phase(
         PrerequisiteAuditRequest(
             data_root=data_root,
+            experiment_data_root=experiment_data_root,
             prerequisite_commands=[],
             data_audit_commands=[
                 {

@@ -1,0 +1,13 @@
+[Unit]
+Description=MLflow UI for imported HyperliquidMomentum research runs
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/agent-control-plane
+ExecStart=%h/.pixi/bin/pixi run -e dev mlflow ui --backend-store-uri sqlite:///%h/agent-control-plane/runs/imported-hyperliquid-momentum-legacy/mlflow/mlflow.db --default-artifact-root file://%h/agent-control-plane/runs/imported-hyperliquid-momentum-legacy/mlruns --host 0.0.0.0 --port 5000 --allowed-hosts localhost,127.0.0.1,192.168.1.104:5000,192.168.* --cors-allowed-origins http://localhost:5000,http://127.0.0.1:5000,http://192.168.1.104:5000
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

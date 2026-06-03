@@ -290,6 +290,7 @@ def _run_selected_experiment_pipeline(
         data_audit_result = run_data_audit_phase(
             PrerequisiteAuditRequest(
                 data_root=request.spec.data_root,
+                experiment_data_root=_experiment_data_directory(request),
                 prerequisite_commands=experiment_design.prerequisite_commands,
                 data_audit_commands=experiment_design.data_audit_commands,
                 cwd=request.spec.target_repository,
@@ -903,6 +904,7 @@ def _run_verification_if_needed(
         cwd=worktree.path,
         run_dir=request.experiment_directory,
         data_root=request.spec.data_root,
+        experiment_data_root=_experiment_data_directory(request),
         repo_root=worktree.path,
         timeout_seconds=_data_audit_timeout_seconds(request.spec, experiment_design),
         max_repairs=request.spec.implementation.max_repairs,
@@ -930,6 +932,7 @@ def _run_evaluation_if_needed(
         experiment_dir=request.experiment_directory,
         worktree_path=worktree_path,
         data_root=request.spec.data_root,
+        experiment_data_root=_experiment_data_directory(request),
         git_sha=git_snapshot(worktree_path).head or "",
         canonical_artifacts=_canonical_artifacts(request.experiment_directory),
         locked_artifacts=_locked_artifacts(request),
@@ -1024,6 +1027,16 @@ def _locked_artifacts(request: ExperimentFlowRequest) -> list[Path]:
 
 def _command_records(commands: list[Any]) -> list[dict[str, Any]]:
     return command_declaration_records(commands)
+
+
+def _experiment_data_directory(request: ExperimentFlowRequest) -> Path:
+    path = (
+        request.spec.experiment_data_root
+        / request.research_run_id
+        / request.experiment_id
+    )
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def _evaluation_input(

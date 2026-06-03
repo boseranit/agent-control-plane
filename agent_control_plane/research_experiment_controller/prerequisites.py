@@ -14,6 +14,9 @@ from agent_control_plane.research_experiment_controller.artifacts import (
     DataAudit,
     command_declaration_record,
 )
+from agent_control_plane.research_experiment_controller.command_environment import (
+    research_command_env,
+)
 from agent_control_plane.research_experiment_controller.outcomes import (
     classify_data_audit_failure,
 )
@@ -22,6 +25,7 @@ from agent_control_plane.research_experiment_controller.outcomes import (
 @dataclass(frozen=True)
 class PrerequisiteAuditRequest:
     data_root: str | Path
+    experiment_data_root: str | Path
     prerequisite_commands: Sequence[CommandDeclaration | dict[str, Any]]
     data_audit_commands: Sequence[CommandDeclaration | dict[str, Any]]
     cwd: str | Path
@@ -31,7 +35,13 @@ class PrerequisiteAuditRequest:
 
 def run_data_audit_phase(request: PrerequisiteAuditRequest) -> dict[str, Any]:
     run_dir = Path(request.run_dir)
-    data_root = Path(request.data_root).expanduser()
+    data_root = Path(request.data_root).expanduser().resolve()
+    env = research_command_env(
+        data_root=data_root,
+        experiment_data_root=request.experiment_data_root,
+        run_dir=run_dir,
+        repo_root=request.cwd,
+    )
     command_results = []
     failure_classification: str | None = None
 
@@ -56,11 +66,7 @@ def run_data_audit_phase(request: PrerequisiteAuditRequest) -> dict[str, Any]:
                 cwd=request.cwd,
                 stdout_path=run_dir / "commands" / f"{phase}_{index}_stdout.log",
                 stderr_path=run_dir / "commands" / f"{phase}_{index}_stderr.log",
-                env={
-                    "RESEARCH_DATA_ROOT": str(data_root),
-                    "RESEARCH_RUN_DIR": str(run_dir),
-                    "RESEARCH_REPO_ROOT": str(Path(request.cwd).resolve()),
-                },
+                env=env,
             )
             command_results.append(result)
             if result.status != "passed" and failure_classification is None:

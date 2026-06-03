@@ -54,6 +54,7 @@ class ResearchRunSpec:
     budgets: dict[str, ResearchBudget]
     selected_budget: ResearchBudget
     data_root: Path
+    experiment_data_root: Path
     worktree: WorktreeConfig
     mlflow: MLflowConfig
     codex: CodexConfig
@@ -82,6 +83,15 @@ def load_research_run_spec(path: str | Path) -> ResearchRunSpec:
     if version != 1:
         raise ResearchRunSpecError("Research Run Spec field 'version' must be 1.")
 
+    data_root = Path(_required_string(data, "data_root")).expanduser()
+    experiment_data_root = Path(
+        _required_string(data, "experiment_data_root")
+    ).expanduser()
+    _require_experiment_data_root_outside_data_root(
+        data_root=data_root,
+        experiment_data_root=experiment_data_root,
+    )
+
     return ResearchRunSpec(
         source_path=source_path.resolve(),
         version=version,
@@ -94,7 +104,8 @@ def load_research_run_spec(path: str | Path) -> ResearchRunSpec:
         budget=budget_name,
         budgets=budgets,
         selected_budget=selected_budget,
-        data_root=Path(_required_string(data, "data_root")).expanduser(),
+        data_root=data_root,
+        experiment_data_root=experiment_data_root,
         worktree=_load_worktree(data.get("worktree")),
         mlflow=_load_mlflow(data.get("mlflow")),
         codex=_load_codex(data.get("codex")),
@@ -124,6 +135,7 @@ def resolved_spec_dict(spec: ResearchRunSpec) -> dict[str, Any]:
             )
         },
         "data_root": str(spec.data_root),
+        "experiment_data_root": str(spec.experiment_data_root),
         "worktree": {
             "create": spec.worktree.create,
             "root": str(spec.worktree.root),
@@ -197,6 +209,22 @@ def _load_codex(value: Any) -> CodexConfig:
 def _load_implementation(value: Any) -> ImplementationConfig:
     data = _optional_mapping(value, "implementation")
     return ImplementationConfig(max_repairs=_positive_int(data, "max_repairs", 3))
+
+
+def _require_experiment_data_root_outside_data_root(
+    *,
+    data_root: Path,
+    experiment_data_root: Path,
+) -> None:
+    resolved_data_root = data_root.resolve()
+    resolved_experiment_data_root = experiment_data_root.resolve()
+    if (
+        resolved_experiment_data_root == resolved_data_root
+        or resolved_data_root in resolved_experiment_data_root.parents
+    ):
+        raise ResearchRunSpecError(
+            "Research Run Spec field 'experiment_data_root' must be outside data_root."
+        )
 
 
 def _optional_mapping(value: Any, field: str) -> dict[str, Any]:
