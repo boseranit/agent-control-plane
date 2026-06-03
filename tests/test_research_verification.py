@@ -35,6 +35,7 @@ def test_verification_commands_receive_research_environment(
 ) -> None:
     run_dir = tmp_path / "run"
     data_root = tmp_path / "data"
+    experiment_data_root = tmp_path / "experiment-data" / "run" / "EXP-0001"
     data_root.mkdir()
 
     result = run_verification_commands(
@@ -48,6 +49,10 @@ def test_verification_commands_receive_research_environment(
                         "import os, pathlib; "
                         "assert os.environ['RESEARCH_DATA_ROOT'] == "
                         "str(pathlib.Path('data').resolve()); "
+                        "assert os.environ['RESEARCH_EXPERIMENT_DATA_ROOT'] == "
+                        "str(pathlib.Path('experiment-data/run/EXP-0001').resolve()); "
+                        "assert os.environ['HLM_DATA_ROOT'] == "
+                        "str(pathlib.Path('data').resolve()); "
                         "assert os.environ['RESEARCH_RUN_DIR'] == "
                         "str(pathlib.Path('run').resolve()); "
                         "assert os.environ['RESEARCH_REPO_ROOT'] == "
@@ -59,12 +64,14 @@ def test_verification_commands_receive_research_environment(
         cwd=tmp_path,
         run_dir=run_dir,
         data_root=data_root,
+        experiment_data_root=experiment_data_root,
         repo_root=tmp_path,
         timeout_seconds=60,
         max_repairs=0,
     )
 
     assert result["status"] == "passed"
+    assert experiment_data_root.is_dir()
 
 
 def test_verification_failure_repairs_and_retries_until_pass(

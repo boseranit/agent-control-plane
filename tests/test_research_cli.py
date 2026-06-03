@@ -19,6 +19,7 @@ def write_research_run_spec(tmp_path: Path, repo: Path) -> Path:
     init_repo(repo)
     data_root = tmp_path / "data"
     data_root.mkdir()
+    experiment_data_root = tmp_path / "experiment-data"
     spec_path = tmp_path / "research-run.yaml"
     spec_path.write_text(
         f"""
@@ -34,6 +35,7 @@ budgets:
     month_end: "2026-01"
     max_runtime_minutes: 5
 data_root: {data_root}
+experiment_data_root: {experiment_data_root}
 """,
         encoding="utf-8",
     )

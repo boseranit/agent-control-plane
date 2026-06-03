@@ -39,6 +39,7 @@ def create_evaluator_workspace(
     experiment_dir: str | Path,
     worktree_path: str | Path,
     data_root: str | Path,
+    experiment_data_root: str | Path,
     git_sha: str,
     canonical_artifacts: Mapping[str, str | Path],
     locked_artifacts: Sequence[str | Path],
@@ -70,6 +71,9 @@ def create_evaluator_workspace(
             "experiment_dir": str(resolved_experiment_dir),
             "worktree_path": str(resolved_worktree),
             "data_root": str(Path(data_root).expanduser().resolve()),
+            "experiment_data_root": str(
+                Path(experiment_data_root).expanduser().resolve()
+            ),
             "git_sha": git_sha,
             "canonical_artifacts": {
                 name: str(Path(path).resolve())

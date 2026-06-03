@@ -28,8 +28,9 @@ plans inside one experiment. It does not pause for human input mid-run in v1.
 Research Run Spec:
 Human-managed YAML input. It includes the research brief and operational
 controls: run id, target repository, max experiment count, budget profiles,
-selected budget, data root, worktree behavior, MLflow mirror settings, agent
-model/effort, implementation repair limit, and stop-on-prerequisite-failure.
+selected budget, canonical input data root, experiment data root, worktree
+behavior, MLflow mirror settings, agent model/effort, implementation repair
+limit, and stop-on-prerequisite-failure.
 
 Research Run:
 One execution of a snapshotted Research Run Spec. It owns a run directory,
@@ -40,6 +41,17 @@ One bounded attempt to test one selected research plan. It owns its experiment
 directory, selected plan, locked research spec/design, command logs, worktree or
 read-only execution path, evaluator workspace, evaluation artifacts, summary,
 and mirror output.
+
+Default Hyperliquid research storage:
+
+- controller run state: `/home/boser/agent-control-plane-runs/runs/<run-id>`
+- target repository: `/home/boser/HyperliquidMomentum`
+- experiment worktrees: `/home/boser/agent-control-plane-runs/HyperliquidMomentum-worktrees/<run-id>/<experiment-id>`
+- canonical read-only inputs: `/mnt/redbackup/data`
+- generated experiment data: `/mnt/redbackup/experiment-data/<run-id>/<experiment-id>`
+
+The controller must reject `experiment_data_root` when it equals or sits under
+`data_root`.
 
 Research Outcome:
 Terminal outcome enum for an experiment:
@@ -311,7 +323,8 @@ Context includes:
 
 - Research Run Spec snapshot fields
 - selected budget and default command timeout
-- data root
+- canonical input data root
+- experiment data root
 - target repository root
 - git head, status text, changed files
 - ledger history
@@ -496,16 +509,19 @@ invalid setup before spending effort on source changes.
 
 Inputs:
 
-- data root
+- canonical input data root
 - prerequisite commands
 - data audit commands
 - target repository cwd
 - experiment directory
+- experiment data directory
 - timeout
 
 Command environment:
 
 - `RESEARCH_DATA_ROOT`
+- `RESEARCH_EXPERIMENT_DATA_ROOT`
+- `HLM_DATA_ROOT`
 - `RESEARCH_RUN_DIR`
 - `RESEARCH_REPO_ROOT`
 
@@ -534,6 +550,10 @@ If an experiment outcome is `prerequisites_failed` and the spec has
 By default, create one preserved worktree per selected experiment. Branch naming
 and directory layout are implementation details, but the path should be stable
 from research run id and experiment id.
+
+`worktree.root` may be absolute and outside the target repository. For
+Hyperliquid research, use
+`/home/boser/agent-control-plane-runs/HyperliquidMomentum-worktrees`.
 
 If the expected worktree already exists:
 
@@ -595,7 +615,8 @@ Manifest contents:
 
 - experiment directory
 - worktree path or target repository path
-- data root
+- canonical input data root
+- experiment data root
 - git SHA
 - canonical artifact paths
 - locked artifact hashes
@@ -708,6 +729,13 @@ Start command:
 - validates and snapshots spec
 - creates state and ledger
 - prints run id, run directory, spec snapshot path, and state path
+
+Hyperliquid research runs should use:
+
+```bash
+research-experiment-controller run spec.yaml \
+  --runtime-root /home/boser/agent-control-plane-runs/runs
+```
 
 Resume command:
 

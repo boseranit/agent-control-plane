@@ -566,6 +566,7 @@ def test_controller_does_not_run_git_subprocess_for_worktree_cleanup() -> None:
 def write_research_run_spec(tmp_path: Path, *, worktree_create: bool = False) -> Path:
     repo = tmp_path / "repo"
     data_root = tmp_path / "data"
+    experiment_data_root = tmp_path / "experiment-data"
     repo.mkdir()
     data_root.mkdir()
     init_git_repo(repo)
@@ -584,6 +585,7 @@ budgets:
     month_end: "2026-01"
     max_runtime_minutes: 5
 data_root: {data_root}
+experiment_data_root: {experiment_data_root}
 worktree:
   create: {str(worktree_create).lower()}
 implementation:

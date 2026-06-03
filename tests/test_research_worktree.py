@@ -49,6 +49,25 @@ def test_prepare_experiment_worktree_creates_scoped_worktree(
     assert worktree.branch == "research/run-1/EXP-0001"
 
 
+def test_absolute_worktree_root_can_live_outside_target_repository(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    external_root = tmp_path / "external" / "hlm-worktrees"
+    init_repo(repo)
+
+    worktree = prepare_experiment_worktree(
+        target_repository=repo,
+        worktree_root=external_root,
+        research_run_id="run-1",
+        experiment_id="EXP-0001",
+    )
+
+    assert worktree.path == external_root / "run-1" / "EXP-0001"
+    assert worktree.path.is_dir()
+    assert repo not in worktree.path.parents
+
+
 def test_prepare_experiment_worktree_rejects_dirty_existing_worktree(
     tmp_path: Path,
 ) -> None:

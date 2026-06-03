@@ -50,6 +50,7 @@ def test_create_evaluator_workspace_writes_manifest_without_eval_inputs(
         experiment_dir=experiment_dir,
         worktree_path=repo,
         data_root=tmp_path / "data",
+        experiment_data_root=tmp_path / "experiment-data",
         git_sha="abc123",
         canonical_artifacts={
             "selected_plan": selected_plan,
@@ -68,6 +69,9 @@ def test_create_evaluator_workspace_writes_manifest_without_eval_inputs(
     assert manifest["experiment_dir"] == str(experiment_dir.resolve())
     assert manifest["worktree_path"] == str(repo.resolve())
     assert manifest["data_root"] == str((tmp_path / "data").resolve())
+    assert manifest["experiment_data_root"] == str(
+        (tmp_path / "experiment-data").resolve()
+    )
     assert manifest["git_sha"] == "abc123"
     assert manifest["canonical_artifacts"] == {
         "experiment_design": str(experiment_design.resolve()),
@@ -95,6 +99,7 @@ def test_evaluation_boundary_audit_rejects_path_mode(
         experiment_dir=experiment_dir,
         worktree_path=repo,
         data_root=tmp_path / "data",
+        experiment_data_root=tmp_path / "experiment-data",
         git_sha="abc123",
         canonical_artifacts={"selected_plan": selected_plan},
         locked_artifacts=[selected_plan],
@@ -118,6 +123,7 @@ def test_evaluation_boundary_audit_detects_locked_artifact_hash_change(
         experiment_dir=experiment_dir,
         worktree_path=repo,
         data_root=tmp_path / "data",
+        experiment_data_root=tmp_path / "experiment-data",
         git_sha="abc123",
         canonical_artifacts={"selected_plan": selected_plan},
         locked_artifacts=[selected_plan],
@@ -143,6 +149,7 @@ def test_evaluation_boundary_audit_detects_worktree_mutation(
         experiment_dir=experiment_dir,
         worktree_path=repo,
         data_root=tmp_path / "data",
+        experiment_data_root=tmp_path / "experiment-data",
         git_sha="abc123",
         canonical_artifacts={"selected_plan": selected_plan},
         locked_artifacts=[selected_plan],
@@ -171,6 +178,7 @@ def test_evaluation_boundary_audit_detects_ignored_worktree_file(
         experiment_dir=experiment_dir,
         worktree_path=repo,
         data_root=tmp_path / "data",
+        experiment_data_root=tmp_path / "experiment-data",
         git_sha="abc123",
         canonical_artifacts={"selected_plan": selected_plan},
         locked_artifacts=[selected_plan],

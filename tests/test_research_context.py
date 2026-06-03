@@ -48,6 +48,7 @@ def commit_file(repo: Path, relative_path: str, text: str) -> str:
 
 def write_research_run_spec(tmp_path: Path, repo: Path, data_root: Path) -> Path:
     path = tmp_path / "research-run.yaml"
+    experiment_data_root = tmp_path / "experiment-data"
     path.write_text(
         f"""
 research_run_id: peer-residual-v1
@@ -62,6 +63,7 @@ budgets:
     month_end: "2026-02"
     max_runtime_minutes: 7
 data_root: {data_root}
+experiment_data_root: {experiment_data_root}
 stop_on_prerequisites_failed: true
 """,
         encoding="utf-8",
@@ -94,6 +96,8 @@ def test_context_outputs_include_spec_budget_and_git_facts(tmp_path: Path) -> No
         "default_command_timeout_seconds": 420,
     }
     assert summary["data_root"] == str(data_root)
+    assert summary["experiment_data_root"] == str(tmp_path / "experiment-data")
+    assert "experiment data root:" in output.context_pack_text
     assert summary["git"]["repo_root"] == str(repo.resolve())
     assert summary["git"]["head"] == git_head
     assert summary["git"]["status_text"] == "?? scratch.txt\n"

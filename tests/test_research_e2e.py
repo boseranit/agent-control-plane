@@ -575,6 +575,7 @@ budgets:
     month_end: "2026-01"
     max_runtime_minutes: 5
 data_root: {data_root}
+experiment_data_root: {tmp_path / "experiment-data"}
 worktree:
   create: true
   root: .worktrees

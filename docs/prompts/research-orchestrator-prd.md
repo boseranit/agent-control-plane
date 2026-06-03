@@ -128,8 +128,10 @@ researcher unable to answer basic experiment-audit questions:
 
 7. Shared data-root assumptions were not visible to all agents.
    The orchestration loop needed one canonical data root, configured once, with
-   all agents and deterministic commands aware that `data_root=/mnt/redbackup/data`
-   and `HLM_DATA_ROOT=/mnt/redbackup/data` are the shared source of data truth.
+   all agents and deterministic commands aware that `data_root=/mnt/redbackup/data`,
+   `experiment_data_root=/mnt/redbackup/experiment-data`, and
+   `HLM_DATA_ROOT=/mnt/redbackup/data` are the shared source/input/output
+   boundaries.
 
 8. Usage-limit errors caused tight retries.
    When Codex returned messages like "You've hit your usage limit ... try again
@@ -208,7 +210,7 @@ researcher unable to answer basic experiment-audit questions:
 A run is one cycle under:
 
 ```text
-research/experiments/<loop-id>/runs/<experiment-id>/
+/home/boser/agent-control-plane-runs/runs/<research-run-id>/experiments/<experiment-id>/
 ```
 
 It should contain the full chain of agent outputs, command results, logs, and
@@ -219,7 +221,7 @@ final summaries needed to reconstruct what happened.
 Each selected experiment gets an isolated worktree under:
 
 ```text
-.worktrees/<loop-id>/<experiment-id>/
+/home/boser/agent-control-plane-runs/HyperliquidMomentum-worktrees/<research-run-id>/<experiment-id>/
 ```
 
 The worktree is the inspection surface for implementation edits. It should be
@@ -253,8 +255,10 @@ Commands should receive:
 
 ```text
 HLM_DATA_ROOT=/mnt/redbackup/data
-ORCHESTRATOR_RUN_DIR=<current run directory>
-ORCHESTRATOR_REPO_ROOT=<main checkout>
+RESEARCH_DATA_ROOT=/mnt/redbackup/data
+RESEARCH_EXPERIMENT_DATA_ROOT=/mnt/redbackup/experiment-data/<research-run-id>/<experiment-id>
+RESEARCH_RUN_DIR=<current experiment controller directory>
+RESEARCH_REPO_ROOT=<main checkout or worktree>
 ```
 
 Worktree-relative `data/...` paths are noncanonical.
@@ -339,9 +343,9 @@ The orchestrator should use a simple output convention:
 
 - deterministic runner always writes `experiment_result.json`
 - command metrics are written to `command_metrics.json`
-- experiment code should write `metrics.json` into `$ORCHESTRATOR_RUN_DIR`
+- experiment code should write `metrics.json` into `$RESEARCH_RUN_DIR`
 - experiment code may write `result.md`, plots, and tables under
-  `$ORCHESTRATOR_RUN_DIR`
+  `$RESEARCH_RUN_DIR` or `$RESEARCH_EXPERIMENT_DATA_ROOT`
 - selected commands should not write primary outputs to arbitrary relative paths
 
 The original desired direction was to fail cycles when selected commands exited
@@ -443,9 +447,11 @@ Requirements:
 - accept structured command objects with `argv`
 - reject shell strings for selected commands
 - execute commands with `shell=False`
-- set `ORCHESTRATOR_RUN_DIR`
+- set `RESEARCH_RUN_DIR`
+- set `RESEARCH_DATA_ROOT`
+- set `RESEARCH_EXPERIMENT_DATA_ROOT`
 - set `HLM_DATA_ROOT`
-- set `ORCHESTRATOR_REPO_ROOT`
+- set `RESEARCH_REPO_ROOT`
 - stream stdout and stderr to files while the process runs
 - write command headers showing command and `cwd`
 - record exit code, duration, timeout, status, stdout path, and stderr path
@@ -488,9 +494,9 @@ access must use the configured data root, not worktree-local `data/...`.
 
 Requirements:
 
-- context pack states canonical data root and `HLM_DATA_ROOT`
-- runner injects `HLM_DATA_ROOT`
-- runner injects `ORCHESTRATOR_REPO_ROOT`
+- context pack states canonical data root, experiment data root, and `HLM_DATA_ROOT`
+- runner injects `RESEARCH_DATA_ROOT`, `RESEARCH_EXPERIMENT_DATA_ROOT`, and `HLM_DATA_ROOT`
+- runner injects `RESEARCH_REPO_ROOT`
 - agents are told that worktree-relative data paths are noncanonical
 - artifact surface checks resolve logical `data/...` paths under the configured
   data root
@@ -618,8 +624,9 @@ The researcher should be able to open one MLflow experiment and:
 
 The researcher should be able to inspect:
 
-- `research/experiments/<loop-id>/runs/<experiment-id>/`
-- `.worktrees/<loop-id>/<experiment-id>/`
+- `/home/boser/agent-control-plane-runs/runs/<research-run-id>/experiments/<experiment-id>/`
+- `/home/boser/agent-control-plane-runs/HyperliquidMomentum-worktrees/<research-run-id>/<experiment-id>/`
+- `/mnt/redbackup/experiment-data/<research-run-id>/<experiment-id>/`
 
 These two surfaces should be enough to reconstruct the experiment without tmux
 logs or hidden state.
@@ -655,8 +662,9 @@ The orchestrator work is successful when:
 4. The implementer context includes `prerequisite_result.json` and its stdout
    and stderr log paths.
 
-5. Selected commands run with `ORCHESTRATOR_RUN_DIR`, `HLM_DATA_ROOT`, and
-   `ORCHESTRATOR_REPO_ROOT` set.
+5. Selected commands run with `RESEARCH_RUN_DIR`, `RESEARCH_DATA_ROOT`,
+   `RESEARCH_EXPERIMENT_DATA_ROOT`, `HLM_DATA_ROOT`, and
+   `RESEARCH_REPO_ROOT` set.
 
 6. Command stdout and stderr are visible in log files while the command is still
    running.
@@ -732,11 +740,12 @@ They are product choices, not mechanical implementation details.
 
 4. Plot and table convention.
    Recommended default: keep copying all run-directory files to MLflow while
-   encouraging experiment code to write outputs under `$ORCHESTRATOR_RUN_DIR`.
+   encouraging experiment code to write outputs under `$RESEARCH_RUN_DIR` or
+   `$RESEARCH_EXPERIMENT_DATA_ROOT`.
 
    Decision needed: should the orchestrator require a standard
-   `$ORCHESTRATOR_RUN_DIR/artifacts/` directory for plots and tables, or keep the
-   looser run-directory convention?
+   `$RESEARCH_EXPERIMENT_DATA_ROOT/artifacts/` directory for plots and tables,
+   or keep the looser run-directory convention?
 
 5. Long prerequisite budgets.
    Recommended default: allow command-level `timeout_minutes` for long

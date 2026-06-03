@@ -39,6 +39,7 @@ budgets:
     max_runtime_minutes: 240
 
 data_root: /mnt/redbackup/data
+experiment_data_root: /mnt/redbackup/experiment-data
 
 worktree:
   create: true
@@ -77,6 +78,7 @@ def minimal_spec_data(repo: Path) -> dict[str, Any]:
             }
         },
         "data_root": "/mnt/redbackup/data",
+        "experiment_data_root": "/mnt/redbackup/experiment-data",
     }
 
 
@@ -111,6 +113,7 @@ budgets:
     month_end: "2026-01"
     max_runtime_minutes: 5
 data_root: /mnt/redbackup/data
+experiment_data_root: /mnt/redbackup/experiment-data
 stop_on_prerequisites_failed: false
 """,
         encoding="utf-8",
@@ -131,6 +134,7 @@ def test_loads_prd_minimal_research_run_spec(tmp_path: Path) -> None:
     assert spec.research_brief.strip() == "Test peer residual forecasting."
     assert spec.budget == "smoke"
     assert spec.data_root == Path("/mnt/redbackup/data")
+    assert spec.experiment_data_root == Path("/mnt/redbackup/experiment-data")
     assert spec.worktree.create is True
     assert spec.worktree.root == Path(".worktrees")
     assert spec.mlflow.enabled is True
@@ -194,6 +198,21 @@ def test_applies_defaults_and_accepts_stop_on_prerequisites_failed_false(
             "research_brief.*required",
         ),
         ("missing_data_root", {"data_root": DELETE}, "data_root.*required"),
+        (
+            "missing_experiment_data_root",
+            {"experiment_data_root": DELETE},
+            "experiment_data_root.*required",
+        ),
+        (
+            "experiment_data_root_equal_data_root",
+            {"experiment_data_root": "/mnt/redbackup/data"},
+            "experiment_data_root.*outside data_root",
+        ),
+        (
+            "experiment_data_root_inside_data_root",
+            {"experiment_data_root": "/mnt/redbackup/data/experiments"},
+            "experiment_data_root.*outside data_root",
+        ),
         ("missing_budget", {"budget": DELETE}, "budget.*required"),
         ("missing_selected_budget", {"budget": "missing"}, "selected budget"),
         ("budgets_not_mapping", {"budgets": []}, "budgets.*mapping"),
@@ -281,6 +300,7 @@ def test_resolved_spec_dict_is_deterministic_snapshot_data(tmp_path: Path) -> No
     assert resolved["budget"] == "smoke"
     assert list(resolved["budgets"]) == ["research", "smoke"]
     assert resolved["data_root"] == "/mnt/redbackup/data"
+    assert resolved["experiment_data_root"] == "/mnt/redbackup/experiment-data"
     assert resolved["worktree"] == {"create": True, "root": ".worktrees"}
     assert resolved["mlflow"] == {
         "enabled": False,
