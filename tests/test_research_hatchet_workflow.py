@@ -111,7 +111,10 @@ def test_run_research_shell_delegates_once_and_returns_result() -> None:
 
     result = asyncio.run(
         run_research_shell(
-            ResearchRunInput(research_run_id="run-1", runtime_root="tmp-runs"),
+            ResearchRunInput(
+                research_run_id="run-1",
+                research_program_root="tmp-program",
+            ),
             controller_runner=controller_runner,
         )
     )
@@ -121,7 +124,12 @@ def test_run_research_shell_delegates_once_and_returns_result() -> None:
         "research_run_id": "run-1",
         "experiments_completed": 1,
     }
-    assert seen == [ResearchRunInput(research_run_id="run-1", runtime_root="tmp-runs")]
+    assert seen == [
+        ResearchRunInput(
+            research_run_id="run-1",
+            research_program_root="tmp-program",
+        )
+    ]
 
 
 def test_default_shell_controller_uses_agent_runtime(
@@ -144,11 +152,11 @@ def test_default_shell_controller_uses_agent_runtime(
     def fake_run_research_loop(
         research_run_id: str,
         *,
-        runtime_root: str,
+        research_program_root: str,
         agent_runtime: object,
     ) -> dict[str, object]:
         seen["research_run_id"] = research_run_id
-        seen["runtime_root"] = runtime_root
+        seen["research_program_root"] = research_program_root
         seen["agent_runtime"] = agent_runtime
         return {"status": "completed", "research_run_id": research_run_id}
 
@@ -159,7 +167,10 @@ def test_default_shell_controller_uses_agent_runtime(
     )
 
     result = durable_shell._run_controller_loop(
-        ResearchRunInput(research_run_id="run-1", runtime_root=str(tmp_path / "runs"))
+        ResearchRunInput(
+            research_run_id="run-1",
+            research_program_root=str(tmp_path / "programs" / "run-1"),
+        )
     )
 
     assert result == {"status": "completed", "research_run_id": "run-1"}
@@ -184,7 +195,10 @@ def test_run_research_shell_reports_only_generic_metadata() -> None:
 
     result = asyncio.run(
         run_research_shell(
-            ResearchRunInput(research_run_id="run-1"),
+            ResearchRunInput(
+                research_run_id="run-1",
+                research_program_root="tmp-program",
+            ),
             controller_runner=controller_runner,
             metadata_sink=metadata.append,
         )
@@ -216,7 +230,10 @@ def test_usage_limit_wait_sleeps_durably_and_retries_same_run() -> None:
 
     result = asyncio.run(
         run_research_shell(
-            ResearchRunInput(research_run_id="run-1", runtime_root="tmp-runs"),
+            ResearchRunInput(
+                research_run_id="run-1",
+                research_program_root="tmp-program",
+            ),
             controller_runner=controller_runner,
             durable_sleep=durable_sleep,
         )
@@ -225,8 +242,8 @@ def test_usage_limit_wait_sleeps_durably_and_retries_same_run() -> None:
     assert result == {"status": "completed", "research_run_id": "run-1"}
     assert sleeps == [5.0]
     assert seen == [
-        ResearchRunInput(research_run_id="run-1", runtime_root="tmp-runs"),
-        ResearchRunInput(research_run_id="run-1", runtime_root="tmp-runs"),
+        ResearchRunInput(research_run_id="run-1", research_program_root="tmp-program"),
+        ResearchRunInput(research_run_id="run-1", research_program_root="tmp-program"),
     ]
 
 
@@ -234,7 +251,7 @@ def test_controller_usage_limit_wait_sleeps_and_retries_without_run_failed(
     tmp_path: Path,
 ) -> None:
     spec_path = write_research_run_spec(tmp_path)
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
     attempts: list[str] = []
     sleeps: list[float] = []
 
@@ -265,11 +282,11 @@ def test_controller_usage_limit_wait_sleeps_and_retries_without_run_failed(
         run_research_shell(
             ResearchRunInput(
                 research_run_id=run.research_run_id,
-                runtime_root=str(tmp_path / "runs"),
+                research_program_root=str(run.run_directory.parents[1]),
             ),
             controller_runner=lambda input: run_research_loop(
                 input.research_run_id,
-                runtime_root=input.runtime_root,
+                research_program_root=input.research_program_root,
                 experiment_runner=experiment_runner,
             ),
             durable_sleep=durable_sleep,
@@ -294,7 +311,7 @@ def test_evaluation_agent_usage_limit_wait_sleeps_and_retries_without_run_failed
     tmp_path: Path,
 ) -> None:
     spec_path = write_research_run_spec(tmp_path)
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
     runtime = UsageLimitThenEvaluationRuntime()
     sleeps: list[float] = []
     selection = ExperimentFlowSelection(
@@ -322,11 +339,11 @@ def test_evaluation_agent_usage_limit_wait_sleeps_and_retries_without_run_failed
         run_research_shell(
             ResearchRunInput(
                 research_run_id=run.research_run_id,
-                runtime_root=str(tmp_path / "runs"),
+                research_program_root=str(run.run_directory.parents[1]),
             ),
             controller_runner=lambda input: run_research_loop(
                 input.research_run_id,
-                runtime_root=input.runtime_root,
+                research_program_root=input.research_program_root,
                 experiment_runner=experiment_runner,
             ),
             durable_sleep=durable_sleep,
@@ -345,7 +362,7 @@ def test_plain_evaluation_usage_limit_error_sleeps_durably_not_run_failed(
     tmp_path: Path,
 ) -> None:
     spec_path = write_research_run_spec(tmp_path)
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
     runtime = PlainUsageLimitThenEvaluationRuntime()
     sleeps: list[float] = []
     selection = ExperimentFlowSelection(
@@ -373,11 +390,11 @@ def test_plain_evaluation_usage_limit_error_sleeps_durably_not_run_failed(
         run_research_shell(
             ResearchRunInput(
                 research_run_id=run.research_run_id,
-                runtime_root=str(tmp_path / "runs"),
+                research_program_root=str(run.run_directory.parents[1]),
             ),
             controller_runner=lambda input: run_research_loop(
                 input.research_run_id,
-                runtime_root=input.runtime_root,
+                research_program_root=input.research_program_root,
                 experiment_runner=experiment_runner,
             ),
             durable_sleep=durable_sleep,
@@ -396,7 +413,7 @@ def test_usage_limit_retry_preserves_dirty_in_progress_worktree(
     tmp_path: Path,
 ) -> None:
     spec_path = write_research_run_spec(tmp_path, worktree_create=True)
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
     runtime = DirtyWorktreeUsageLimitThenEvaluationRuntime()
     sleeps: list[float] = []
     selection = ExperimentFlowSelection(
@@ -424,11 +441,11 @@ def test_usage_limit_retry_preserves_dirty_in_progress_worktree(
         run_research_shell(
             ResearchRunInput(
                 research_run_id=run.research_run_id,
-                runtime_root=str(tmp_path / "runs"),
+                research_program_root=str(run.run_directory.parents[1]),
             ),
             controller_runner=lambda input: run_research_loop(
                 input.research_run_id,
-                runtime_root=input.runtime_root,
+                research_program_root=input.research_program_root,
                 experiment_runner=experiment_runner,
             ),
             durable_sleep=durable_sleep,
@@ -437,7 +454,7 @@ def test_usage_limit_retry_preserves_dirty_in_progress_worktree(
 
     summary = read_json_object(run.experiments_directory / "EXP-0001" / "summary.json")
     worktree_path = (
-        (tmp_path / "repo").resolve() / ".worktrees" / run.research_run_id / "EXP-0001"
+        run.run_directory.parents[1] / "worktrees" / run.research_run_id / "EXP-0001"
     )
     assert result["status"] == "completed"
     assert sleeps == [11.0]
@@ -474,7 +491,15 @@ def test_hatchet_workflow_delegates_to_shell_with_ctx_sleep_and_metadata(
     workflow = build_hatchet_workflows(FakeHatchet())[0]
     ctx = FakeDurableContext()
 
-    result = asyncio.run(workflow(ResearchRunInput(research_run_id="run-1"), ctx))
+    result = asyncio.run(
+        workflow(
+            ResearchRunInput(
+                research_run_id="run-1",
+                research_program_root="tmp-program",
+            ),
+            ctx,
+        )
+    )
 
     assert result == {"status": "completed", "research_run_id": "run-1"}
     assert ctx.sleeps == [timedelta(seconds=3)]
@@ -586,6 +611,7 @@ budgets:
     max_runtime_minutes: 5
 data_root: {data_root}
 experiment_data_root: {experiment_data_root}
+research_program_root: {tmp_path / "programs" / "usage-limit-run"}
 worktree:
   create: {str(worktree_create).lower()}
 implementation:

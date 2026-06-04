@@ -50,6 +50,7 @@ def write_minimal_research_run_spec(
     path = tmp_path / f"{research_run_id}.yaml"
     data_root_value = data_root or tmp_path / "data"
     experiment_data_root = tmp_path / "experiment-data"
+    research_program_root = tmp_path / "programs" / research_run_id
     if data_root is None:
         data_root_value.mkdir()
     path.write_text(
@@ -67,9 +68,9 @@ budgets:
     max_runtime_minutes: 5
 data_root: {data_root_value}
 experiment_data_root: {experiment_data_root}
+research_program_root: {research_program_root}
 worktree:
   create: {str(worktree_create).lower()}
-  root: .worktrees
 implementation:
   max_repairs: {max_repairs}
 stop_on_prerequisites_failed: {str(stop_on_prerequisites_failed).lower()}
@@ -450,10 +451,15 @@ def test_start_research_run_creates_run_layout(tmp_path: Path) -> None:
     repo.mkdir()
     spec_path = write_minimal_research_run_spec(tmp_path, repo)
 
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
 
     assert run.research_run_id == "peer-residual-v1"
-    assert run.run_directory == (tmp_path / "runs" / "peer-residual-v1").resolve()
+    assert (
+        run.run_directory
+        == (
+            tmp_path / "programs" / "peer-residual-v1" / "runs" / "peer-residual-v1"
+        ).resolve()
+    )
     assert run.spec_snapshot_path == run.run_directory / "research_run_spec.yaml"
     assert run.state_path == run.run_directory / "state.json"
     assert run.ledger_path == run.run_directory / "ledger.jsonl"
@@ -464,19 +470,61 @@ def test_start_research_run_creates_run_layout(tmp_path: Path) -> None:
     assert run.experiments_directory.is_dir()
 
 
+def test_start_research_run_uses_research_program_root(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_repo_if_needed(repo)
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    program_root = tmp_path / "programs" / "peer-residuals"
+    spec_path = tmp_path / "program-run.yaml"
+    spec_path.write_text(
+        f"""
+research_run_id: peer-residual-v1
+target_repository: {repo}
+research_program_root: {program_root}
+max_experiments: 1
+research_brief: |
+  Test peer residual forecasting.
+budget: smoke
+budgets:
+  smoke:
+    month_start: "2026-01"
+    month_end: "2026-01"
+    max_runtime_minutes: 5
+data_root: {data_root}
+experiment_data_root: {tmp_path / "experiment-data"}
+worktree:
+  create: true
+""",
+        encoding="utf-8",
+    )
+
+    run = start_research_run(spec_path)
+
+    assert run.run_directory == (program_root / "runs" / "peer-residual-v1").resolve()
+    assert (program_root / "runs").is_dir()
+    assert (program_root / "worktrees").is_dir()
+    assert (program_root / "memory").is_dir()
+    snapshot = yaml.safe_load(run.spec_snapshot_path.read_text(encoding="utf-8"))
+    assert "research_program_root" not in snapshot
+    assert snapshot["worktree"] == {"create": True}
+
+
 def test_start_research_run_writes_resolved_spec_snapshot(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     spec_path = write_minimal_research_run_spec(tmp_path, repo)
 
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
 
     snapshot = yaml.safe_load(run.spec_snapshot_path.read_text(encoding="utf-8"))
     assert snapshot["version"] == 1
     assert snapshot["research_run_id"] == "peer-residual-v1"
     assert snapshot["target_repository"] == str(repo.resolve())
+    assert "research_program_root" not in snapshot
     assert snapshot["max_experiments"] == 1
-    assert snapshot["worktree"] == {"create": True, "root": ".worktrees"}
+    assert snapshot["worktree"] == {"create": True}
     assert snapshot["mlflow"] == {
         "enabled": False,
         "tracking_uri": None,
@@ -491,7 +539,7 @@ def test_start_research_run_writes_state_and_ledger_events(tmp_path: Path) -> No
     repo.mkdir()
     spec_path = write_minimal_research_run_spec(tmp_path, repo)
 
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
 
     state = read_json_object(run.state_path)
     assert state["research_run_id"] == "peer-residual-v1"
@@ -499,8 +547,8 @@ def test_start_research_run_writes_state_and_ledger_events(tmp_path: Path) -> No
     assert state["active_experiment_id"] is None
     assert state["experiment_count"] == 0
     assert state["max_experiments"] == 1
-    assert state["run_directory"] == str(run.run_directory)
-    assert state["spec_snapshot_path"] == str(run.spec_snapshot_path)
+    assert "run_directory" not in state
+    assert "spec_snapshot_path" not in state
 
     events = read_ledger_events(run.ledger_path)
     assert events == [
@@ -532,10 +580,10 @@ def test_start_research_run_rejects_existing_run_directory(tmp_path: Path) -> No
     repo = tmp_path / "repo"
     repo.mkdir()
     spec_path = write_minimal_research_run_spec(tmp_path, repo)
-    start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    start_research_run(spec_path)
 
     with pytest.raises(ResearchRunError, match="already exists"):
-        start_research_run(spec_path, runtime_root=tmp_path / "runs")
+        start_research_run(spec_path)
 
 
 def test_load_research_run_uses_snapshot_and_state_after_source_spec_deleted(
@@ -544,7 +592,7 @@ def test_load_research_run_uses_snapshot_and_state_after_source_spec_deleted(
     repo = tmp_path / "repo"
     repo.mkdir()
     spec_path = write_minimal_research_run_spec(tmp_path, repo)
-    started = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    started = start_research_run(spec_path)
     snapshot_before = yaml.safe_load(
         started.spec_snapshot_path.read_text(encoding="utf-8")
     )
@@ -552,7 +600,10 @@ def test_load_research_run_uses_snapshot_and_state_after_source_spec_deleted(
 
     spec_path.unlink()
 
-    loaded = load_research_run("peer-residual-v1", runtime_root=tmp_path / "runs")
+    loaded = load_research_run(
+        "peer-residual-v1",
+        research_program_root=started.run_directory.parents[1],
+    )
 
     assert loaded.research_run_id == "peer-residual-v1"
     assert loaded.run_directory == started.run_directory
@@ -572,7 +623,7 @@ def test_run_research_loop_repeats_until_max_experiments(tmp_path: Path) -> None
         repo,
         max_experiments=2,
     )
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
     seen: list[str] = []
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
@@ -602,7 +653,7 @@ def test_run_research_loop_repeats_until_max_experiments(tmp_path: Path) -> None
 
     result = run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         experiment_runner=experiment_runner,
     )
 
@@ -629,7 +680,7 @@ def test_run_research_loop_continues_after_no_op_until_max_experiments(
         repo,
         max_experiments=2,
     )
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
         return run_experiment_flow(
@@ -645,7 +696,7 @@ def test_run_research_loop_continues_after_no_op_until_max_experiments(
 
     result = run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         experiment_runner=experiment_runner,
     )
 
@@ -679,9 +730,11 @@ def test_run_research_loop_default_skeleton_records_no_ops_until_max(
         repo,
         max_experiments=3,
     )
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
 
-    result = run_research_loop(run.research_run_id, runtime_root=tmp_path / "runs")
+    result = run_research_loop(
+        run.research_run_id, research_program_root=run.run_directory.parents[1]
+    )
 
     state = read_json_object(run.state_path)
     first_selected_plan = read_json_object(
@@ -704,7 +757,7 @@ def test_selected_plan_without_deterministic_commands_is_blocked(
     repo = tmp_path / "repo"
     repo.mkdir()
     spec_path = write_minimal_research_run_spec(tmp_path, repo)
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
         return run_experiment_flow(
@@ -721,7 +774,7 @@ def test_selected_plan_without_deterministic_commands_is_blocked(
 
     run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         experiment_runner=experiment_runner,
     )
 
@@ -741,7 +794,7 @@ def test_selected_plan_cannot_return_no_op_terminal_summary(tmp_path: Path) -> N
     repo = tmp_path / "repo"
     repo.mkdir()
     spec_path = write_minimal_research_run_spec(tmp_path, repo)
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
         return run_experiment_flow(
@@ -769,7 +822,7 @@ def test_selected_plan_cannot_return_no_op_terminal_summary(tmp_path: Path) -> N
 
     run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         experiment_runner=experiment_runner,
     )
 
@@ -791,7 +844,7 @@ def test_missing_data_root_writes_data_audit_and_summary_before_terminal_path(
         repo,
         data_root=tmp_path / "missing-data",
     )
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
         return run_experiment_flow(
@@ -810,7 +863,7 @@ def test_missing_data_root_writes_data_audit_and_summary_before_terminal_path(
 
     run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         experiment_runner=experiment_runner,
     )
 
@@ -839,7 +892,7 @@ def test_failed_data_audit_command_writes_summary_and_command_artifacts(
     repo = tmp_path / "repo"
     repo.mkdir()
     spec_path = write_minimal_research_run_spec(tmp_path, repo)
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
         return run_experiment_flow(
@@ -864,7 +917,7 @@ def test_failed_data_audit_command_writes_summary_and_command_artifacts(
 
     run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         experiment_runner=experiment_runner,
     )
 
@@ -894,7 +947,7 @@ def test_prerequisites_failed_stops_research_run_by_default(tmp_path: Path) -> N
         max_experiments=3,
         data_root=tmp_path / "missing-data",
     )
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
         return run_experiment_flow(
@@ -913,7 +966,7 @@ def test_prerequisites_failed_stops_research_run_by_default(tmp_path: Path) -> N
 
     result = run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         experiment_runner=experiment_runner,
     )
 
@@ -936,7 +989,7 @@ def test_stop_on_prerequisites_failed_false_continues_to_max_experiments(
         data_root=tmp_path / "missing-data",
         stop_on_prerequisites_failed=False,
     )
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
         return run_experiment_flow(
@@ -955,7 +1008,7 @@ def test_stop_on_prerequisites_failed_false_continues_to_max_experiments(
 
     result = run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         experiment_runner=experiment_runner,
     )
 
@@ -976,7 +1029,7 @@ def test_worktree_create_false_rejects_selected_design_that_needs_edits(
         repo,
         worktree_create=False,
     )
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
         return run_experiment_flow(
@@ -998,7 +1051,7 @@ def test_worktree_create_false_rejects_selected_design_that_needs_edits(
 
     run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         experiment_runner=experiment_runner,
     )
 
@@ -1006,7 +1059,9 @@ def test_worktree_create_false_rejects_selected_design_that_needs_edits(
     assert summary["outcome"] == "invalid"
     assert summary["failed_stage"] == "implementation"
     assert summary["failure_classification"] == "worktree_disabled_for_editing"
-    assert not (repo / ".worktrees").exists()
+    assert not (
+        run.run_directory.parents[1] / "worktrees" / run.research_run_id
+    ).exists()
 
 
 def test_worktree_create_false_allows_read_only_selected_design(
@@ -1019,7 +1074,7 @@ def test_worktree_create_false_allows_read_only_selected_design(
         repo,
         worktree_create=False,
     )
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
         return run_experiment_flow(
@@ -1047,13 +1102,15 @@ def test_worktree_create_false_allows_read_only_selected_design(
 
     run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         experiment_runner=experiment_runner,
     )
 
     summary = read_json_object(run.experiments_directory / "EXP-0001" / "summary.json")
     assert summary["outcome"] == "completed_inconclusive"
-    assert not (repo / ".worktrees").exists()
+    assert not (
+        run.run_directory.parents[1] / "worktrees" / run.research_run_id
+    ).exists()
 
 
 def test_agent_declared_material_revision_gets_fresh_critic_review(
@@ -1062,7 +1119,7 @@ def test_agent_declared_material_revision_gets_fresh_critic_review(
     repo = tmp_path / "repo"
     repo.mkdir()
     spec_path = write_minimal_research_run_spec(tmp_path, repo)
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
     runtime = MaterialCriticRuntime()
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
@@ -1119,7 +1176,7 @@ def test_agent_declared_material_revision_gets_fresh_critic_review(
 
     run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         experiment_runner=experiment_runner,
     )
 
@@ -1144,7 +1201,7 @@ def test_controller_detected_material_revision_gets_fresh_critic_review(
     repo = tmp_path / "repo"
     repo.mkdir()
     spec_path = write_minimal_research_run_spec(tmp_path, repo)
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
     runtime = MaterialCriticRuntime()
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
@@ -1179,7 +1236,7 @@ def test_controller_detected_material_revision_gets_fresh_critic_review(
 
     run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         experiment_runner=experiment_runner,
     )
 
@@ -1211,7 +1268,7 @@ def test_controller_detects_feature_spec_material_revision(
     repo = tmp_path / "repo"
     repo.mkdir()
     spec_path = write_minimal_research_run_spec(tmp_path, repo)
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
     runtime = MaterialCriticRuntime()
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
@@ -1253,7 +1310,7 @@ def test_controller_detects_feature_spec_material_revision(
 
     run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         experiment_runner=experiment_runner,
     )
 
@@ -1275,7 +1332,7 @@ def test_rejected_material_revision_blocks_experiment(
     repo = tmp_path / "repo"
     repo.mkdir()
     spec_path = write_minimal_research_run_spec(tmp_path, repo)
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
     runtime = RejectingMaterialCriticRuntime()
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
@@ -1306,7 +1363,7 @@ def test_rejected_material_revision_blocks_experiment(
 
     run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         experiment_runner=experiment_runner,
     )
 
@@ -1334,7 +1391,7 @@ def test_revision_required_material_critic_decisions_block_experiment(
     repo = tmp_path / "repo"
     repo.mkdir()
     spec_path = write_minimal_research_run_spec(tmp_path, repo)
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
     runtime = DecisionMaterialCriticRuntime(decision)
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
@@ -1365,7 +1422,7 @@ def test_revision_required_material_critic_decisions_block_experiment(
 
     run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         experiment_runner=experiment_runner,
     )
 
@@ -1384,7 +1441,7 @@ def test_non_material_revision_does_not_get_fresh_critic_review(
     repo = tmp_path / "repo"
     repo.mkdir()
     spec_path = write_minimal_research_run_spec(tmp_path, repo)
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
     runtime = MaterialCriticRuntime()
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
@@ -1422,7 +1479,7 @@ def test_non_material_revision_does_not_get_fresh_critic_review(
 
     run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         experiment_runner=experiment_runner,
     )
 
@@ -1438,7 +1495,7 @@ def test_material_revision_without_runtime_is_invalid(
     repo = tmp_path / "repo"
     repo.mkdir()
     spec_path = write_minimal_research_run_spec(tmp_path, repo)
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
         return run_experiment_flow(
@@ -1460,7 +1517,7 @@ def test_material_revision_without_runtime_is_invalid(
 
     run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         experiment_runner=experiment_runner,
     )
 
@@ -1477,7 +1534,7 @@ def test_selected_confirmatory_only_experiment_gets_default_worktree(
     repo = tmp_path / "repo"
     repo.mkdir()
     spec_path = write_minimal_research_run_spec(tmp_path, repo)
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
         return run_experiment_flow(
@@ -1505,11 +1562,13 @@ def test_selected_confirmatory_only_experiment_gets_default_worktree(
 
     run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         experiment_runner=experiment_runner,
     )
 
-    worktree = repo / ".worktrees" / "peer-residual-v1" / "EXP-0001"
+    worktree = (
+        run.run_directory.parents[1] / "worktrees" / "peer-residual-v1" / "EXP-0001"
+    )
     assert worktree.is_dir()
 
 
@@ -1519,7 +1578,7 @@ def test_selected_editable_experiment_gets_preserved_worktree_by_default(
     repo = tmp_path / "repo"
     repo.mkdir()
     spec_path = write_minimal_research_run_spec(tmp_path, repo)
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
         return run_experiment_flow(
@@ -1548,11 +1607,13 @@ def test_selected_editable_experiment_gets_preserved_worktree_by_default(
 
     run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         experiment_runner=experiment_runner,
     )
 
-    worktree = repo / ".worktrees" / "peer-residual-v1" / "EXP-0001"
+    worktree = (
+        run.run_directory.parents[1] / "worktrees" / "peer-residual-v1" / "EXP-0001"
+    )
     summary = read_json_object(run.experiments_directory / "EXP-0001" / "summary.json")
     assert summary["outcome"] == "completed_candidate"
     assert worktree.is_dir()
@@ -1565,7 +1626,7 @@ def test_verification_repairs_reuse_same_implementer_thread_until_limit(
     repo = tmp_path / "repo"
     repo.mkdir()
     spec_path = write_minimal_research_run_spec(tmp_path, repo, max_repairs=2)
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
     runtime = FlowFakeRuntime()
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
@@ -1592,7 +1653,7 @@ def test_verification_repairs_reuse_same_implementer_thread_until_limit(
 
     run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         experiment_runner=experiment_runner,
     )
 
@@ -1641,7 +1702,7 @@ def test_selection_path_audits_repair_boundary_before_verification_failure(
     repo = tmp_path / "repo"
     repo.mkdir()
     spec_path = write_minimal_research_run_spec(tmp_path, repo, max_repairs=1)
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
     runtime = BoundaryViolatingRepairRuntime()
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
@@ -1668,7 +1729,7 @@ def test_selection_path_audits_repair_boundary_before_verification_failure(
 
     run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         experiment_runner=experiment_runner,
     )
 
@@ -1688,7 +1749,7 @@ def test_evaluator_runs_in_workspace_and_writes_result_artifacts(
     repo = tmp_path / "repo"
     repo.mkdir()
     spec_path = write_minimal_research_run_spec(tmp_path, repo)
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
     runtime = EvaluationFakeRuntime()
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
@@ -1714,7 +1775,7 @@ def test_evaluator_runs_in_workspace_and_writes_result_artifacts(
 
     run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         experiment_runner=experiment_runner,
     )
 
@@ -1745,7 +1806,7 @@ def test_feature_specs_are_written_and_locked_for_evaluation(
     repo = tmp_path / "repo"
     repo.mkdir()
     spec_path = write_minimal_research_run_spec(tmp_path, repo)
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
     runtime = EvaluationFakeRuntime()
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
@@ -1794,7 +1855,7 @@ def test_feature_specs_are_written_and_locked_for_evaluation(
 
     run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         experiment_runner=experiment_runner,
     )
 
@@ -1823,7 +1884,7 @@ def test_partial_research_spec_is_rejected_before_evaluation_lock(
     repo = tmp_path / "repo"
     repo.mkdir()
     spec_path = write_minimal_research_run_spec(tmp_path, repo)
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
     runtime = EvaluationFakeRuntime()
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
@@ -1852,7 +1913,7 @@ def test_partial_research_spec_is_rejected_before_evaluation_lock(
 
     run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         experiment_runner=experiment_runner,
     )
 
@@ -1873,7 +1934,7 @@ def test_evaluation_runtime_defect_records_run_failed_without_implementer_rerout
     repo = tmp_path / "repo"
     repo.mkdir()
     spec_path = write_minimal_research_run_spec(tmp_path, repo)
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
     runtime = FailingEvaluationRuntime()
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
@@ -1896,7 +1957,7 @@ def test_evaluation_runtime_defect_records_run_failed_without_implementer_rerout
 
     run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         experiment_runner=experiment_runner,
     )
 
@@ -1914,7 +1975,7 @@ def test_evaluation_boundary_failure_records_run_failed(
     repo = tmp_path / "repo"
     repo.mkdir()
     spec_path = write_minimal_research_run_spec(tmp_path, repo)
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
     runtime = MutatingEvaluationRuntime()
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
@@ -1937,7 +1998,7 @@ def test_evaluation_boundary_failure_records_run_failed(
 
     run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         experiment_runner=experiment_runner,
     )
 
@@ -1959,7 +2020,7 @@ def test_evaluation_boundary_failure_wins_after_malformed_evaluator_response(
     repo = tmp_path / "repo"
     repo.mkdir()
     spec_path = write_minimal_research_run_spec(tmp_path, repo)
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
     runtime = MutatingMalformedEvaluationRuntime()
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
@@ -1982,7 +2043,7 @@ def test_evaluation_boundary_failure_wins_after_malformed_evaluator_response(
 
     run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         experiment_runner=experiment_runner,
     )
 
@@ -1998,7 +2059,7 @@ def test_evaluation_boundary_failure_wins_after_evaluator_crash(
     repo = tmp_path / "repo"
     repo.mkdir()
     spec_path = write_minimal_research_run_spec(tmp_path, repo)
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
     runtime = MutatingCrashingEvaluationRuntime()
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
@@ -2021,7 +2082,7 @@ def test_evaluation_boundary_failure_wins_after_evaluator_crash(
 
     run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         experiment_runner=experiment_runner,
     )
 
@@ -2035,7 +2096,7 @@ def test_terminal_summary_routes_to_experiment_state(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     spec_path = write_minimal_research_run_spec(tmp_path, repo)
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
         return run_experiment_flow(
@@ -2064,20 +2125,27 @@ def test_terminal_summary_routes_to_experiment_state(tmp_path: Path) -> None:
 
     run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         experiment_runner=experiment_runner,
     )
 
     state = read_json_object(run.state_path)
-    summary = read_json_object(run.experiments_directory / "EXP-0001" / "summary.json")
+    experiment_dir = run.experiments_directory / "EXP-0001"
+    summary = read_json_object(experiment_dir / "summary.json")
     assert state["experiments"]["EXP-0001"] == {
         "id": "EXP-0001",
         "status": "terminal",
-        "experiment_directory": str(run.experiments_directory / "EXP-0001"),
+        "experiment_directory": str(experiment_dir),
         "outcome": "completed_candidate",
         "outcome_reason": "Locked gates passed.",
         "failed_stage": None,
         "failure_classification": None,
+        "lineage_path": str(experiment_dir / "lineage.json"),
+        "worktree_path": str(
+            run.run_directory.parents[1] / "worktrees" / "peer-residual-v1" / "EXP-0001"
+        ),
+        "worktree_branch": "research/peer-residual-v1/EXP-0001",
+        "changed_files": [],
     }
     assert summary["outcome"] == "completed_candidate"
     assert summary["confirmatory_findings"] == ["IC 0.04"]
@@ -2089,7 +2157,7 @@ def test_non_completed_runner_result_records_run_failed_experiment(
     repo = tmp_path / "repo"
     repo.mkdir()
     spec_path = write_minimal_research_run_spec(tmp_path, repo)
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
         return {
@@ -2099,7 +2167,7 @@ def test_non_completed_runner_result_records_run_failed_experiment(
 
     result = run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         experiment_runner=experiment_runner,
     )
 
@@ -2122,14 +2190,14 @@ def test_runner_exception_records_run_failed_experiment(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     spec_path = write_minimal_research_run_spec(tmp_path, repo)
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
         raise RuntimeError("agent crashed")
 
     result = run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         experiment_runner=experiment_runner,
     )
 

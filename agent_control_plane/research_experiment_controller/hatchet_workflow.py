@@ -15,7 +15,7 @@ from agent_control_plane.research_experiment_controller.durable_shell import (
 
 class HatchetResearchRunInput(BaseModel):
     research_run_id: str
-    runtime_root: str = "runs"
+    research_program_root: str
 
 
 def build_hatchet_workflows(hatchet: Hatchet) -> list[Any]:
@@ -46,7 +46,7 @@ def _to_research_run_input(
         return input
     return ResearchRunInput(
         research_run_id=input.research_run_id,
-        runtime_root=input.runtime_root,
+        research_program_root=input.research_program_root,
     )
 
 

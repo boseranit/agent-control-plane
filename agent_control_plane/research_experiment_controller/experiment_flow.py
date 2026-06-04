@@ -9,7 +9,10 @@ from typing import Any
 from pydantic import ValidationError
 
 from agent_control_plane.control_plane.boundary_audit import git_snapshot
-from agent_control_plane.control_plane.json_artifacts import write_json
+from agent_control_plane.control_plane.json_artifacts import (
+    read_json_object,
+    write_json,
+)
 from agent_control_plane.control_plane.usage_limit import (
     UsageLimitEvent,
     UsageLimitWait,
@@ -32,6 +35,7 @@ from agent_control_plane.research_experiment_controller.artifacts import (
     FeatureSpecs,
     Implementation,
     ImplementationDiffSummary,
+    Lineage,
     ExploratoryDiagnosticsResult,
     PlanUpdate,
     Proposal,
@@ -77,6 +81,9 @@ from agent_control_plane.research_experiment_controller.research_run_mirror impo
 from agent_control_plane.research_experiment_controller.research_run_spec import (
     ResearchRunSpec,
 )
+from agent_control_plane.research_experiment_controller.paths import (
+    ResearchProgramPaths,
+)
 from agent_control_plane.research_experiment_controller.verification import (
     VerificationRepairRequest,
     run_verification_commands,
@@ -89,13 +96,36 @@ from agent_control_plane.research_experiment_controller.worktree import (
 
 @dataclass(frozen=True)
 class ExperimentFlowRequest:
-    research_run_id: str
     experiment_id: str
-    run_directory: Path
-    experiment_directory: Path
-    ledger_path: Path
     spec: ResearchRunSpec
     state: dict[str, Any]
+
+    @property
+    def research_run_id(self) -> str:
+        return self.spec.research_run_id
+
+    @property
+    def paths(self) -> ResearchProgramPaths:
+        return self.spec.research_program.paths
+
+    @property
+    def research_program_root(self) -> Path:
+        return Path(self.paths.root)
+
+    @property
+    def run_directory(self) -> Path:
+        return self.paths.run_directory(self.research_run_id)
+
+    @property
+    def experiment_directory(self) -> Path:
+        return self.paths.experiment_directory(
+            self.research_run_id,
+            self.experiment_id,
+        )
+
+    @property
+    def ledger_path(self) -> Path:
+        return self.paths.ledger_path(self.research_run_id)
 
 
 @dataclass(frozen=True)
@@ -159,7 +189,8 @@ def _select_agent_driven_experiment(
     agent_runtime: Any,
 ) -> _ExperimentPipeline:
     write_context_outputs(
-        request.run_directory,
+        request.paths,
+        request.research_run_id,
         output_directory=request.experiment_directory,
         current_experiment_id=request.experiment_id,
     )
@@ -171,6 +202,7 @@ def _select_agent_driven_experiment(
         model=request.spec.codex.model,
         effort=request.spec.codex.effort,
     )
+    _persist_thread_state(request)
     proposal = _run_agent_model(
         thread=strategist,
         role=ResearchAgentRole.STRATEGIST,
@@ -322,6 +354,11 @@ def _run_selected_experiment_pipeline(
                 else _write_skipped_implementation_if_needed(request, worktree)
             )
             if implementation_summary is not None:
+                _write_lineage_artifact(
+                    request=request,
+                    worktree=worktree,
+                    replace_existing=True,
+                )
                 summary_model = implementation_summary
             else:
                 verification_result = _run_verification_if_needed(
@@ -338,6 +375,11 @@ def _run_selected_experiment_pipeline(
                         request.experiment_directory
                         / "implementation_diff_summary.json"
                     ).exists(),
+                )
+                _write_lineage_artifact(
+                    request=request,
+                    worktree=worktree,
+                    replace_existing=True,
                 )
                 if boundary_summary is not None:
                     summary_model = boundary_summary
@@ -408,6 +450,7 @@ def _run_design_critique(
         model=request.spec.codex.model,
         effort=request.spec.codex.effort,
     )
+    _persist_thread_state(request)
     append_ledger_event(
         request.ledger_path,
         event_type="design_critique",
@@ -465,6 +508,7 @@ def _run_implementation_phase(
         model=request.spec.codex.model,
         effort=request.spec.codex.effort,
     )
+    _persist_thread_state(request)
     append_ledger_event(
         request.ledger_path,
         event_type="implementation_attempt",
@@ -546,6 +590,50 @@ def _audit_implementation_boundary(
     return audit.failure_summary
 
 
+def _write_lineage_artifact(
+    *,
+    request: ExperimentFlowRequest,
+    worktree: ExperimentWorktree | None,
+    replace_existing: bool,
+) -> None:
+    path = request.experiment_directory / "lineage.json"
+    if path.exists() and not replace_existing:
+        return
+    implementation = _read_experiment_json(
+        request.experiment_directory / "implementation.json"
+    )
+    diff = _read_experiment_json(
+        request.experiment_directory / "implementation_diff_summary.json"
+    )
+    changed_files = _artifact_string_list(diff.get("changed_files"))
+    worktree_head = git_snapshot(worktree.path).head if worktree is not None else None
+    lineage = Lineage(
+        research_run_id=request.research_run_id,
+        experiment_id=request.experiment_id,
+        experiment_dir=str(request.experiment_directory),
+        worktree_path=str(worktree.path) if worktree is not None else None,
+        worktree_branch=worktree.branch if worktree is not None else None,
+        target_repo_head_at_start=git_snapshot(request.spec.target_repository).head,
+        worktree_head_after_implementation=worktree_head,
+        changed_files=changed_files,
+        implementation_summary=implementation.get("summary"),
+        reusable_for_followups=bool(worktree is not None and changed_files),
+    )
+    write_json(path, lineage.model_dump(mode="json"))
+
+
+def _read_experiment_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    return read_json_object(path)
+
+
+def _artifact_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
 def _run_empirical_critique(
     *,
     request: ExperimentFlowRequest,
@@ -558,6 +646,7 @@ def _run_empirical_critique(
         model=request.spec.codex.model,
         effort=request.spec.codex.effort,
     )
+    _persist_thread_state(request)
     append_ledger_event(
         request.ledger_path,
         event_type="empirical_critique",
@@ -596,6 +685,7 @@ def _run_strategist_closeout(
         model=request.spec.codex.model,
         effort=request.spec.codex.effort,
     )
+    _persist_thread_state(request)
     try:
         summary = _run_agent_model(
             thread=thread,
@@ -674,6 +764,10 @@ def _write_model_artifact(path: Path, model: Any) -> None:
     write_json(path, model.model_dump(mode="json"))
 
 
+def _persist_thread_state(request: ExperimentFlowRequest) -> None:
+    write_json(request.run_directory / "state.json", request.state)
+
+
 def _run_material_revision_review_if_needed(
     *,
     request: ExperimentFlowRequest,
@@ -698,6 +792,7 @@ def _run_material_revision_review_if_needed(
         model=request.spec.codex.model,
         effort=request.spec.codex.effort,
     )
+    _persist_thread_state(request)
     append_ledger_event(
         request.ledger_path,
         event_type="material_revision_critic_review",
@@ -878,7 +973,7 @@ def _prepare_experiment_worktree_if_needed(
         return None
     return prepare_experiment_worktree(
         target_repository=spec.target_repository,
-        worktree_root=spec.worktree.root,
+        paths=request.paths,
         research_run_id=request.research_run_id,
         experiment_id=request.experiment_id,
     )
@@ -951,6 +1046,7 @@ def _run_evaluation_if_needed(
             model=request.spec.codex.model,
             effort=request.spec.codex.effort,
         )
+        _persist_thread_state(request)
         append_ledger_event(
             request.ledger_path,
             event_type="evaluation_attempt",
@@ -1143,6 +1239,7 @@ def _repair_callback(
             model=request.spec.codex.model,
             effort=request.spec.codex.effort,
         )
+        _persist_thread_state(request)
         append_ledger_event(
             request.ledger_path,
             event_type="implementation_repair_attempt",

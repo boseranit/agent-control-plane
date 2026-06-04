@@ -4,6 +4,10 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from agent_control_plane.research_experiment_controller.paths import (
+    ResearchProgramPaths,
+)
+
 
 class ExperimentWorktreeError(RuntimeError):
     """Raised when an Experiment Worktree cannot be prepared safely."""
@@ -19,12 +23,12 @@ class ExperimentWorktree:
 def prepare_experiment_worktree(
     *,
     target_repository: str | Path,
-    worktree_root: str | Path,
+    paths: ResearchProgramPaths,
     research_run_id: str,
     experiment_id: str,
 ) -> ExperimentWorktree:
     repo = Path(target_repository).resolve()
-    path = _worktree_path(repo, worktree_root, research_run_id, experiment_id)
+    path = paths.worktree_directory(research_run_id, experiment_id)
     branch = _branch_name(research_run_id, experiment_id)
     if path.exists():
         _require_clean_worktree(path)
@@ -42,18 +46,6 @@ def prepare_experiment_worktree(
         detail = result.stderr.strip() or result.stdout.strip()
         raise ExperimentWorktreeError(detail or f"Could not create {path}")
     return ExperimentWorktree(path=path, branch=branch, created=True)
-
-
-def _worktree_path(
-    repo: Path,
-    worktree_root: str | Path,
-    research_run_id: str,
-    experiment_id: str,
-) -> Path:
-    root = Path(worktree_root)
-    if not root.is_absolute():
-        root = repo / root
-    return root / research_run_id / experiment_id
 
 
 def _branch_name(research_run_id: str, experiment_id: str) -> str:

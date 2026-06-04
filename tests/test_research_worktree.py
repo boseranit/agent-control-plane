@@ -5,6 +5,9 @@ from pathlib import Path
 
 import pytest
 
+from agent_control_plane.research_experiment_controller.paths import (
+    ResearchProgramPaths,
+)
 from agent_control_plane.research_experiment_controller.worktree import (
     ExperimentWorktreeError,
     prepare_experiment_worktree,
@@ -34,36 +37,38 @@ def test_prepare_experiment_worktree_creates_scoped_worktree(
     tmp_path: Path,
 ) -> None:
     repo = tmp_path / "repo"
+    paths = ResearchProgramPaths(tmp_path / "programs" / "run-1")
     init_repo(repo)
 
     worktree = prepare_experiment_worktree(
         target_repository=repo,
-        worktree_root=tmp_path / ".worktrees",
+        paths=paths,
         research_run_id="run-1",
         experiment_id="EXP-0001",
     )
 
-    assert worktree.path == (tmp_path / ".worktrees" / "run-1" / "EXP-0001")
+    assert worktree.path == paths.worktree_directory("run-1", "EXP-0001")
     assert worktree.path.is_dir()
     assert worktree.created is True
     assert worktree.branch == "research/run-1/EXP-0001"
 
 
-def test_absolute_worktree_root_can_live_outside_target_repository(
+def test_program_root_can_live_outside_target_repository(
     tmp_path: Path,
 ) -> None:
     repo = tmp_path / "repo"
-    external_root = tmp_path / "external" / "hlm-worktrees"
+    program_root = tmp_path / "programs" / "peer-residuals"
+    paths = ResearchProgramPaths(program_root)
     init_repo(repo)
 
     worktree = prepare_experiment_worktree(
         target_repository=repo,
-        worktree_root=external_root,
+        paths=paths,
         research_run_id="run-1",
         experiment_id="EXP-0001",
     )
 
-    assert worktree.path == external_root / "run-1" / "EXP-0001"
+    assert worktree.path == program_root / "worktrees" / "run-1" / "EXP-0001"
     assert worktree.path.is_dir()
     assert repo not in worktree.path.parents
 
@@ -72,10 +77,11 @@ def test_prepare_experiment_worktree_rejects_dirty_existing_worktree(
     tmp_path: Path,
 ) -> None:
     repo = tmp_path / "repo"
+    paths = ResearchProgramPaths(tmp_path / "programs" / "run-1")
     init_repo(repo)
     worktree = prepare_experiment_worktree(
         target_repository=repo,
-        worktree_root=tmp_path / ".worktrees",
+        paths=paths,
         research_run_id="run-1",
         experiment_id="EXP-0001",
     )
@@ -84,7 +90,7 @@ def test_prepare_experiment_worktree_rejects_dirty_existing_worktree(
     with pytest.raises(ExperimentWorktreeError, match="dirty"):
         prepare_experiment_worktree(
             target_repository=repo,
-            worktree_root=tmp_path / ".worktrees",
+            paths=paths,
             research_run_id="run-1",
             experiment_id="EXP-0001",
         )

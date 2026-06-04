@@ -9,6 +9,7 @@ import yaml
 from agent_control_plane.research_experiment_controller.research_run_spec import (
     ResearchRunSpecError,
     load_research_run_spec,
+    load_research_run_spec_snapshot,
     resolved_spec_dict,
 )
 
@@ -40,10 +41,10 @@ budgets:
 
 data_root: /mnt/redbackup/data
 experiment_data_root: /mnt/redbackup/experiment-data
+research_program_root: {tmp_path / "programs" / "peer-residuals"}
 
 worktree:
   create: true
-  root: .worktrees
 
 mlflow:
   enabled: true
@@ -79,6 +80,7 @@ def minimal_spec_data(repo: Path) -> dict[str, Any]:
         },
         "data_root": "/mnt/redbackup/data",
         "experiment_data_root": "/mnt/redbackup/experiment-data",
+        "research_program_root": str(repo.parent / "programs" / "peer-residuals"),
     }
 
 
@@ -114,6 +116,7 @@ budgets:
     max_runtime_minutes: 5
 data_root: /mnt/redbackup/data
 experiment_data_root: /mnt/redbackup/experiment-data
+research_program_root: {tmp_path / "programs" / "peer-residuals"}
 stop_on_prerequisites_failed: false
 """,
         encoding="utf-8",
@@ -135,8 +138,11 @@ def test_loads_prd_minimal_research_run_spec(tmp_path: Path) -> None:
     assert spec.budget == "smoke"
     assert spec.data_root == Path("/mnt/redbackup/data")
     assert spec.experiment_data_root == Path("/mnt/redbackup/experiment-data")
+    assert (
+        spec.research_program.root
+        == (tmp_path / "programs" / "peer-residuals").resolve()
+    )
     assert spec.worktree.create is True
-    assert spec.worktree.root == Path(".worktrees")
     assert spec.mlflow.enabled is True
     assert spec.mlflow.tracking_uri == "file:/tmp/mlruns"
     assert spec.mlflow.experiment_name == "peer-residual-v1"
@@ -169,7 +175,6 @@ def test_applies_defaults_and_accepts_stop_on_prerequisites_failed_false(
     assert spec.version == 1
     assert spec.max_experiments == 1
     assert spec.worktree.create is True
-    assert spec.worktree.root == Path(".worktrees")
     assert spec.mlflow.enabled is False
     assert spec.mlflow.tracking_uri is None
     assert spec.mlflow.experiment_name is None
@@ -179,9 +184,80 @@ def test_applies_defaults_and_accepts_stop_on_prerequisites_failed_false(
     assert spec.stop_on_prerequisites_failed is False
 
 
+def test_research_program_root_round_trips_in_start_spec(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    program_root = tmp_path / "programs" / "peer-residuals"
+    data = minimal_spec_data(repo)
+    data["research_program_root"] = str(program_root)
+    data["max_prior_experiments"] = 7
+
+    spec = load_research_run_spec(write_spec_data(tmp_path, data, "program-root"))
+
+    assert spec.research_program.root == program_root.resolve()
+    assert spec.research_program.max_prior_experiments == 7
+
+    resolved = resolved_spec_dict(spec)
+    assert resolved["research_program_root"] == str(program_root.resolve())
+    assert resolved["max_prior_experiments"] == 7
+    assert resolved["worktree"] == {"create": True}
+    assert (
+        resolved_spec_dict(
+            load_research_run_spec(
+                write_spec_data(tmp_path, resolved, "program-snapshot")
+            )
+        )
+        == resolved
+    )
+
+
+def test_snapshot_load_injects_controller_owned_program_root(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    program_root = tmp_path / "programs" / "peer-residuals"
+    spec = load_research_run_spec(write_minimal_spec(tmp_path, repo))
+    snapshot_path = write_spec_data(
+        tmp_path,
+        resolved_spec_dict(spec, include_research_program_root=False),
+        "rootless-snapshot",
+    )
+
+    loaded = load_research_run_spec_snapshot(
+        snapshot_path,
+        research_program_root=program_root,
+    )
+
+    assert loaded.research_program.root == program_root.resolve()
+    assert "research_program_root" not in resolved_spec_dict(
+        loaded,
+        include_research_program_root=False,
+    )
+
+
+def test_snapshot_rejects_persisted_research_program_root(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    snapshot_path = write_minimal_spec(tmp_path, repo)
+
+    with pytest.raises(ResearchRunSpecError, match="must not contain"):
+        load_research_run_spec_snapshot(
+            snapshot_path,
+            research_program_root=tmp_path / "programs" / "peer-residuals",
+        )
+
+
 @pytest.mark.parametrize(
     ("name", "patch", "match"),
     [
+        (
+            "missing_research_program_root",
+            {"research_program_root": DELETE},
+            "research_program_root.*required",
+        ),
         (
             "missing_research_run_id",
             {"research_run_id": DELETE},
@@ -251,9 +327,19 @@ def test_applies_defaults_and_accepts_stop_on_prerequisites_failed_false(
             "worktree.create.*boolean",
         ),
         (
-            "worktree_root_not_string",
+            "worktree_root_not_supported_even_when_null",
             {"worktree": {"root": None}},
-            "worktree.root.*string",
+            "worktree.root.*not supported",
+        ),
+        (
+            "worktree_root_not_supported",
+            {"worktree": {"root": ".worktrees"}},
+            "worktree.root.*not supported",
+        ),
+        (
+            "max_prior_experiments_not_positive",
+            {"max_prior_experiments": 0},
+            "max_prior_experiments.*positive",
         ),
         (
             "mlflow_enabled_not_bool",
@@ -301,7 +387,10 @@ def test_resolved_spec_dict_is_deterministic_snapshot_data(tmp_path: Path) -> No
     assert list(resolved["budgets"]) == ["research", "smoke"]
     assert resolved["data_root"] == "/mnt/redbackup/data"
     assert resolved["experiment_data_root"] == "/mnt/redbackup/experiment-data"
-    assert resolved["worktree"] == {"create": True, "root": ".worktrees"}
+    assert resolved["research_program_root"] == str(
+        (tmp_path / "programs" / "peer-residuals").resolve()
+    )
+    assert resolved["worktree"] == {"create": True}
     assert resolved["mlflow"] == {
         "enabled": False,
         "tracking_uri": None,

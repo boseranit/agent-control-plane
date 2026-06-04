@@ -11,12 +11,16 @@ from agent_control_plane.research_experiment_controller.experiment_flow import (
     ExperimentFlowSelection,
     run_experiment_flow,
 )
-from agent_control_plane.research_experiment_controller.mlflow_mirror import (
-    mirror_to_mlflow,
-)
 from agent_control_plane.research_experiment_controller.ledger import (
     read_ledger_events,
 )
+from agent_control_plane.research_experiment_controller.mlflow_mirror import (
+    mirror_to_mlflow,
+)
+from agent_control_plane.research_experiment_controller.paths import (
+    ResearchProgramPaths,
+)
+from agent_control_plane.research_experiment_controller.artifacts import SelectedPlan
 from agent_control_plane.research_experiment_controller.research_run_mirror import (
     ResearchRunMirrorRequest,
     mirror_research_run,
@@ -26,10 +30,10 @@ from agent_control_plane.research_experiment_controller.research_run_spec import
     ImplementationConfig,
     MLflowConfig,
     ResearchBudget,
+    ResearchProgramConfig,
     ResearchRunSpec,
     WorktreeConfig,
 )
-from agent_control_plane.research_experiment_controller.artifacts import SelectedPlan
 
 
 class FakeRun:
@@ -244,8 +248,9 @@ def test_run_experiment_flow_mirrors_after_summary_when_enabled(
 ) -> None:
     repo = tmp_path / "repo"
     git_sha = _init_git_repo(repo)
-    run_dir = tmp_path / "run"
-    experiment_dir = run_dir / "experiments" / "EXP-0001"
+    paths = ResearchProgramPaths(tmp_path / "programs" / "run-1")
+    run_dir = paths.run_directory("run-1")
+    experiment_dir = paths.experiment_directory("run-1", "EXP-0001")
     calls: list[tuple[ResearchRunMirrorRequest, Path]] = []
 
     def fake_mirror(
@@ -261,11 +266,7 @@ def test_run_experiment_flow_mirrors_after_summary_when_enabled(
 
     result = run_experiment_flow(
         ExperimentFlowRequest(
-            research_run_id="run-1",
             experiment_id="EXP-0001",
-            run_directory=run_dir,
-            experiment_directory=experiment_dir,
-            ledger_path=run_dir / "ledger.jsonl",
             spec=_spec(tmp_path, repo, mlflow_enabled=True),
             state={"threads": {}},
         ),
@@ -308,11 +309,7 @@ def test_run_experiment_flow_skips_mirror_when_disabled(
 
     result = run_experiment_flow(
         ExperimentFlowRequest(
-            research_run_id="run-1",
             experiment_id="EXP-0001",
-            run_directory=tmp_path / "run",
-            experiment_directory=tmp_path / "run" / "experiments" / "EXP-0001",
-            ledger_path=tmp_path / "run" / "ledger.jsonl",
             spec=_spec(tmp_path, repo, mlflow_enabled=False),
             state={"threads": {}},
         ),
@@ -344,11 +341,7 @@ def test_run_experiment_flow_ignores_mirror_failure_status(
 
     result = run_experiment_flow(
         ExperimentFlowRequest(
-            research_run_id="run-1",
             experiment_id="EXP-0001",
-            run_directory=tmp_path / "run",
-            experiment_directory=tmp_path / "run" / "experiments" / "EXP-0001",
-            ledger_path=tmp_path / "run" / "ledger.jsonl",
             spec=_spec(tmp_path, repo, mlflow_enabled=True),
             state={"threads": {}},
         ),
@@ -440,7 +433,8 @@ def _spec(tmp_path: Path, repo: Path, *, mlflow_enabled: bool) -> ResearchRunSpe
         selected_budget=budget,
         data_root=tmp_path / "data",
         experiment_data_root=tmp_path / "experiment-data",
-        worktree=WorktreeConfig(create=False, root=Path(".worktrees")),
+        research_program=ResearchProgramConfig(root=tmp_path / "programs" / "run-1"),
+        worktree=WorktreeConfig(create=False),
         mlflow=MLflowConfig(
             enabled=mlflow_enabled,
             tracking_uri="file:/tmp/mlruns",

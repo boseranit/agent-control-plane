@@ -29,37 +29,32 @@ def main(argv: Sequence[str] | None = None) -> int:
     run_parser.add_argument(
         "research_run_spec_path", help="Path to a Research Run Spec YAML file."
     )
-    run_parser.add_argument(
-        "--runtime-root",
-        default="runs",
-        help="Runtime root for Research Run directories.",
-    )
 
     resume_parser = subparsers.add_parser(
         "resume", help="Resume an existing Research Run through the Durable Shell."
     )
     resume_parser.add_argument("research_run_id", help="Research Run ID to resume.")
     resume_parser.add_argument(
-        "--runtime-root",
-        default="runs",
-        help="Runtime root for Research Run directories.",
+        "--research-program-root",
+        required=True,
+        help="Research Program root; resume uses its runs/ directory.",
     )
 
     args = parser.parse_args(argv)
     if args.command == "run":
-        return _run(args.research_run_spec_path, runtime_root=args.runtime_root)
+        return _run(args.research_run_spec_path)
     if args.command == "resume":
-        return _resume(args.research_run_id, runtime_root=args.runtime_root)
+        return _resume(
+            args.research_run_id,
+            research_program_root=args.research_program_root,
+        )
     parser.error(f"Unsupported command: {args.command}")
     return 2
 
 
-def _run(research_run_spec_path: str, *, runtime_root: str | Path = "runs") -> int:
+def _run(research_run_spec_path: str) -> int:
     try:
-        research_run = start_research_run(
-            research_run_spec_path,
-            runtime_root=runtime_root,
-        )
+        research_run = start_research_run(research_run_spec_path)
     except (OSError, ResearchRunError, ResearchRunSpecError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -71,13 +66,17 @@ def _run(research_run_spec_path: str, *, runtime_root: str | Path = "runs") -> i
     return 0
 
 
-def _resume(research_run_id: str, *, runtime_root: str | Path = "runs") -> int:
+def _resume(
+    research_run_id: str,
+    *,
+    research_program_root: str | Path,
+) -> int:
     try:
         result = asyncio.run(
             run_research_shell(
                 ResearchRunInput(
                     research_run_id=research_run_id,
-                    runtime_root=str(runtime_root),
+                    research_program_root=str(research_program_root),
                 )
             )
         )

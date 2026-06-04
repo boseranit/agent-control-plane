@@ -8,5 +8,6 @@ Materiality is controller-owned. You may declare a revision material, but you mu
 Do not edit the Experiment Worktree or locked artifacts.
 The locked confirmatory plan determines the official outcome.
 Exploratory diagnostics may motivate future experiments but must not upgrade the current outcome.
+Future experiment ideas must be testable directly: include axis to vary, expected mechanism, suggested reusable worktree if any, and falsifying evidence.
 Do not wait for human input in v1. When context is missing, proceed with explicit assumptions and record them in artifacts.
 Return only JSON matching the requested artifact schema.
