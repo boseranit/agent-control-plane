@@ -341,7 +341,7 @@ def _run_selected_experiment_pipeline(
             summary_model = _summary_from_result(data_audit_result)
         else:
             worktree = _prepare_experiment_worktree_if_needed(
-                request.spec, request, experiment_design
+                request.spec, request, experiment_design, selection.selected_plan
             )
             implementation_summary = (
                 _run_implementation_phase(
@@ -967,6 +967,7 @@ def _prepare_experiment_worktree_if_needed(
     spec: ResearchRunSpec,
     request: ExperimentFlowRequest,
     experiment_design: ExperimentDesign,
+    selected_plan: SelectedPlan,
 ) -> ExperimentWorktree | None:
     del experiment_design
     if not spec.worktree.create:
@@ -976,6 +977,7 @@ def _prepare_experiment_worktree_if_needed(
         paths=request.paths,
         research_run_id=request.research_run_id,
         experiment_id=request.experiment_id,
+        seed_worktree=selected_plan.implementation_seed_worktree,
     )
 
 
