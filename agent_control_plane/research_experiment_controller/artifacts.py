@@ -57,6 +57,10 @@ class Proposal(ResearchArtifact):
     expected_mechanism: str
     known_risks: list[str] = Field(default_factory=list)
     falsification_evidence: list[str] = Field(default_factory=list)
+    experiment_kind: str | None = None
+    builds_on_experiments: list[str] = Field(default_factory=list)
+    prior_evidence_used: list[str] = Field(default_factory=list)
+    novelty_vs_prior: str | None = None
 
 
 class ResearchSpec(ResearchArtifact):
@@ -146,6 +150,9 @@ class SelectedPlan(ResearchArtifact):
     plan_id: str | None = None
     rationale: str
     material_revision_categories: list[str] = Field(default_factory=list)
+    source_followups: list[str] = Field(default_factory=list)
+    implementation_seed_experiment: str | None = None
+    implementation_seed_worktree: str | None = None
 
 
 class Critique(ResearchArtifact):
@@ -173,6 +180,10 @@ class Implementation(ResearchArtifact):
     changed_files: list[str] = Field(default_factory=list)
     commands_declared: list[CommandDeclaration] = Field(default_factory=list)
     risks: list[str] = Field(default_factory=list)
+    inspected_prior_worktrees: list[str] = Field(default_factory=list)
+    reused_or_adapted_items: list[str] = Field(default_factory=list)
+    rewritten_items: list[str] = Field(default_factory=list)
+    reuse_risks: list[str] = Field(default_factory=list)
 
 
 class ImplementationRepair(ResearchArtifact):
@@ -232,3 +243,19 @@ class PlanUpdate(ResearchArtifact):
     followups: list[str] = Field(default_factory=list)
     revisit_conditions: list[str] = Field(default_factory=list)
     blocked_paths: list[str] = Field(default_factory=list)
+    reusable_worktree: bool = False
+    recommended_next_experiment_kind: str | None = None
+    implementation_reuse_notes: list[str] = Field(default_factory=list)
+
+
+class Lineage(ResearchArtifact):
+    research_run_id: str
+    experiment_id: str
+    experiment_dir: str
+    worktree_path: str | None = None
+    worktree_branch: str | None = None
+    target_repo_head_at_start: str | None = None
+    worktree_head_after_implementation: str | None = None
+    changed_files: list[str] = Field(default_factory=list)
+    implementation_summary: str | None = None
+    reusable_for_followups: bool = False

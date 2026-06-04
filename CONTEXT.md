@@ -72,6 +72,10 @@ _Avoid_: Shell-terminal language, MLflow State, Trace Log
 The human-managed input document for a **Research Run**. A **Research Run Spec** contains both the human research direction and the operational run controls for one or more bounded **Research Experiments**.
 _Avoid_: Separate Research Brief file, Loop Spec
 
+**Research Program**:
+The durable home for one research line across many **Research Runs**. A **Research Program** owns human steering docs, run directories, preserved worktrees, and generated continuation memory under one root.
+_Avoid_: Continuation Root, Global Memory
+
 **Research Budget**:
 A named execution profile in a **Research Run Spec** that constrains pipeline and backfill command scope for the whole **Research Run**. A **Research Budget** can define data windows and runtime limits, but it is not an experiment outcome gate.
 _Avoid_: Per-Experiment Budget, Success Gate

@@ -164,13 +164,16 @@ mlflow:
 Pair that with specs using:
 
 ```yaml
+research_program_root: /home/boser/agent-control-plane-runs/programs/<program-id>
 target_repository: /home/boser/HyperliquidMomentum
 data_root: /mnt/redbackup/data
 experiment_data_root: /mnt/redbackup/experiment-data
 worktree:
   create: true
-  root: /home/boser/agent-control-plane-runs/HyperliquidMomentum-worktrees
 ```
+
+With `research_program_root`, controller runs live under `runs/`, preserved
+worktrees under `worktrees/`, and continuation memory under `memory/`.
 
 The mirror adapter should log experiment params, tags, numeric metrics, and run
 directory files, but failures in MLflow mirroring must not change the official

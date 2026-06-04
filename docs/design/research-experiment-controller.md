@@ -30,7 +30,13 @@ Human-managed YAML input. It includes the research brief and operational
 controls: run id, target repository, max experiment count, budget profiles,
 selected budget, canonical input data root, experiment data root, worktree
 behavior, MLflow mirror settings, agent model/effort, implementation repair
-limit, and stop-on-prerequisite-failure.
+limit, required Research Program root, prior-experiment cap, and
+stop-on-prerequisite-failure.
+
+Research Program:
+Durable home for one research line across many Research Runs. Every Research
+Run Spec must configure `research_program_root`; it owns human steering docs,
+run directories, preserved worktrees, and generated continuation memory.
 
 Research Run:
 One execution of a snapshotted Research Run Spec. It owns a run directory,
@@ -44,9 +50,11 @@ and mirror output.
 
 Default Hyperliquid research storage:
 
-- controller run state: `/home/boser/agent-control-plane-runs/runs/<run-id>`
+- research program: `/home/boser/agent-control-plane-runs/programs/<program-id>`
+- controller run state: `<program-root>/runs/<run-id>`
 - target repository: `/home/boser/HyperliquidMomentum`
-- experiment worktrees: `/home/boser/agent-control-plane-runs/HyperliquidMomentum-worktrees/<run-id>/<experiment-id>`
+- experiment worktrees: `<program-root>/worktrees/<run-id>/<experiment-id>`
+- continuation memory: `<program-root>/memory`
 - canonical read-only inputs: `/mnt/redbackup/data`
 - generated experiment data: `/mnt/redbackup/experiment-data/<run-id>/<experiment-id>`
 
@@ -97,7 +105,7 @@ The run directory is the canonical inspection surface.
 
 Simplified shape:
 
-- `<runtime_root>/<research_run_id>/`
+- `<research_program_root>/runs/<research_run_id>/`
 - snapshotted Research Run Spec
 - `state.json`
 - append-only ledger
@@ -107,6 +115,7 @@ Simplified shape:
 Per-experiment artifacts:
 
 - context pack and context summary
+- continuation summary, when available
 - proposal
 - selected plan
 - locked research spec
@@ -117,6 +126,7 @@ Per-experiment artifacts:
 - implementation result
 - implementation repair records
 - implementation diff summary
+- lineage
 - verification logs and command metrics
 - evaluator manifest, scratch, and outputs
 - confirmatory evaluation result
@@ -159,6 +169,7 @@ Each terminal experiment record stores:
 - outcome reason
 - failed stage
 - failure classification
+- lineage path, worktree path/branch, and changed files when available
 
 State transitions are conservative:
 
@@ -299,6 +310,11 @@ Implementation diff summary:
 changed files, allowed path violations, evaluation logic changed flag, data
 handling changed flag, high-risk flag, notes.
 
+Lineage:
+research run id, experiment id, experiment directory, worktree path/branch,
+target repo head at start, worktree head after implementation, changed files,
+implementation summary, reusable-for-followups flag.
+
 Confirmatory evaluation result:
 outcome, outcome reason, failed stage, failure classification, metrics, gate
 results, pre-registered evidence.
@@ -311,7 +327,8 @@ outcome, outcome reason, failed stage, failure classification, human-readable
 summary, confirmatory findings, exploratory findings.
 
 Plan update:
-followups, revisit conditions, blocked paths.
+followups, revisit conditions, blocked paths, reusable worktree flag,
+recommended next experiment kind, implementation reuse notes.
 
 ## Deterministic Context Build
 
@@ -335,6 +352,9 @@ Context includes:
 - completed outcomes
 - completed prerequisites
 - metric history from approved metric sources
+- program context from existing `program.md` and `notes/*.md`
+- continuation summary from prior program runs, plan updates, exploratory ideas,
+  metrics, lineage, and reusable worktrees
 
 The context builder excludes active non-terminal experiments from prior
 synthesis, unless they already have a terminal summary.
@@ -548,12 +568,8 @@ If an experiment outcome is `prerequisites_failed` and the spec has
 ## Worktree and Implementation
 
 By default, create one preserved worktree per selected experiment. Branch naming
-and directory layout are implementation details, but the path should be stable
-from research run id and experiment id.
-
-`worktree.root` may be absolute and outside the target repository. For
-Hyperliquid research, use
-`/home/boser/agent-control-plane-runs/HyperliquidMomentum-worktrees`.
+and directory layout are derived from the Research Program root:
+`<research_program_root>/worktrees/<research_run_id>/<experiment_id>`.
 
 If the expected worktree already exists:
 
@@ -733,9 +749,11 @@ Start command:
 Hyperliquid research runs should use:
 
 ```bash
-research-experiment-controller run spec.yaml \
-  --runtime-root /home/boser/agent-control-plane-runs/runs
+research-experiment-controller run spec.yaml
 ```
+
+`spec.yaml` must include `research_program_root`; run state lives under
+`<research_program_root>/runs`.
 
 Resume command:
 

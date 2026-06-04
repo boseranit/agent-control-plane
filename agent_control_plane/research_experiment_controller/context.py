@@ -14,7 +14,10 @@ from agent_control_plane.control_plane.json_artifacts import (
     write_text,
 )
 from agent_control_plane.research_experiment_controller.research_run_spec import (
-    load_research_run_spec,
+    load_research_run_spec_snapshot,
+)
+from agent_control_plane.research_experiment_controller.paths import (
+    ResearchProgramPaths,
 )
 
 
@@ -25,7 +28,11 @@ COMPLETED_OUTCOMES = {
     "completed_inconclusive",
     "completed_candidate",
 }
-CONTEXT_OUTPUT_NAMES = {"context_pack.md", "context_summary.json"}
+CONTEXT_OUTPUT_NAMES = {
+    "context_pack.md",
+    "context_summary.json",
+    "continuation_summary.json",
+}
 METRIC_ARTIFACT_NAMES = {
     "metrics.json",
     "command_metrics.json",
@@ -46,16 +53,24 @@ class ContextOutputs:
     context_summary_path: Path
     context_pack_text: str
     context_summary: dict[str, Any]
+    continuation_summary_path: Path
+    continuation_summary: dict[str, Any]
 
 
 def write_context_outputs(
-    run_directory: str | Path,
+    paths: ResearchProgramPaths,
+    research_run_id: str,
+    *,
     output_directory: str | Path | None = None,
     current_experiment_id: str | None = None,
 ) -> ContextOutputs:
-    run_dir = Path(run_directory)
+    run_dir = paths.run_directory(research_run_id)
+    program_root = Path(paths.root)
     output_dir = Path(output_directory) if output_directory is not None else run_dir
-    spec = load_research_run_spec(run_dir / "research_run_spec.yaml")
+    spec = load_research_run_spec_snapshot(
+        run_dir / "research_run_spec.yaml",
+        research_program_root=program_root,
+    )
     state = read_json_object(run_dir / "state.json")
     ledger_events = read_jsonl(run_dir / "ledger.jsonl")
     snapshot = git_snapshot(spec.target_repository)
@@ -65,6 +80,12 @@ def write_context_outputs(
         run_dir=run_dir,
         state=state,
         ledger_events=ledger_events,
+        active_experiment_ids=active_experiment_ids,
+    )
+    continuation_summary = _build_continuation_summary(
+        spec=spec,
+        program_root=program_root,
+        current_run_dir=run_dir,
         active_experiment_ids=active_experiment_ids,
     )
 
@@ -101,19 +122,324 @@ def write_context_outputs(
         "artifact_inventory": _artifact_inventory(run_dir),
         "prior_synthesis": prior_synthesis,
     }
-    text = _render_context_pack(summary)
+    text = _render_context_pack(
+        current_context=summary,
+        continuation_context=continuation_summary,
+    )
 
     context_pack_path = output_dir / "context_pack.md"
     context_summary_path = output_dir / "context_summary.json"
     write_text(context_pack_path, text)
     write_json(context_summary_path, summary)
+    continuation_summary_path = output_dir / "continuation_summary.json"
+    write_json(continuation_summary_path, continuation_summary)
+    write_json(
+        paths.memory / "continuation_summary.json",
+        continuation_summary,
+    )
 
     return ContextOutputs(
         context_pack_path=context_pack_path,
         context_summary_path=context_summary_path,
         context_pack_text=text,
         context_summary=summary,
+        continuation_summary_path=continuation_summary_path,
+        continuation_summary=continuation_summary,
     )
+
+
+def _build_continuation_summary(
+    *,
+    spec: Any,
+    program_root: Path,
+    current_run_dir: Path,
+    active_experiment_ids: set[str],
+) -> dict[str, Any]:
+    experiments = _program_terminal_experiments(
+        program_root=program_root,
+        current_run_dir=current_run_dir,
+        active_experiment_ids=active_experiment_ids,
+        max_prior_experiments=spec.research_program.max_prior_experiments,
+    )
+    return {
+        "artifact_kind": "continuation_summary",
+        "controller_generated": True,
+        "program_id": program_root.name,
+        "program_root": str(program_root),
+        "current_run_dir": str(current_run_dir.resolve()),
+        "human_context": _human_context(program_root),
+        "memory_context": _memory_context(program_root),
+        "prior_experiments": experiments,
+        "pending_followups": _pending_followups(experiments),
+        "future_experiment_ideas": _future_experiment_ideas(experiments),
+        "reusable_implementations": _reusable_implementations(experiments),
+        "do_not_repeat": _do_not_repeat(experiments),
+        "metric_history": _continuation_metric_history(experiments),
+        "best_metric_runs": _best_metric_runs(experiments),
+    }
+
+
+def _program_terminal_experiments(
+    *,
+    program_root: Path,
+    current_run_dir: Path,
+    active_experiment_ids: set[str],
+    max_prior_experiments: int,
+) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    current_run_dir = current_run_dir.resolve()
+    for run_dir in sorted((program_root / "runs").iterdir()):
+        run_id = run_dir.name
+        for experiment_dir in sorted((run_dir / "experiments").iterdir()):
+            experiment_id = experiment_dir.name
+            if (
+                run_dir.resolve() == current_run_dir
+                and experiment_id in active_experiment_ids
+                and not (experiment_dir / "summary.json").exists()
+            ):
+                continue
+            record = _continuation_record(
+                run_id=run_id,
+                experiment_id=experiment_id,
+                experiment_dir=experiment_dir,
+            )
+            if record is not None:
+                records.append(record)
+
+    records = sorted(records, key=lambda item: item["source_experiment"])
+    if len(records) > max_prior_experiments:
+        records = records[-max_prior_experiments:]
+    return records
+
+
+def _continuation_record(
+    *,
+    run_id: str,
+    experiment_id: str,
+    experiment_dir: Path,
+) -> dict[str, Any] | None:
+    summary_path = experiment_dir / "summary.json"
+    if not summary_path.exists():
+        return None
+    summary = read_json_object(summary_path)
+
+    def artifact(name: str) -> dict[str, Any]:
+        path = experiment_dir / name
+        return read_json_object(path) if path.exists() else {}
+
+    research_spec = artifact("research_spec.json")
+    selected_plan = artifact("selected_plan.json")
+    implementation = artifact("implementation.json")
+    confirmatory = artifact("confirmatory_evaluation_result.json")
+    exploratory = artifact("exploratory_diagnostics_result.json")
+    plan_update = artifact("plan_update.json")
+    lineage_path = experiment_dir / "lineage.json"
+    lineage = read_json_object(lineage_path) if lineage_path.exists() else None
+
+    worktree_path = lineage["worktree_path"] if lineage is not None else None
+    worktree = (
+        {"path": worktree_path, "source": "lineage"}
+        if worktree_path is not None
+        else None
+    )
+    changed_files = lineage["changed_files"] if lineage is not None else []
+    seed_experiment = selected_plan.get("implementation_seed_experiment")
+    seed_worktree = selected_plan.get("implementation_seed_worktree")
+    implementation_seed = (
+        {"source_experiment": seed_experiment, "worktree_path": seed_worktree}
+        if seed_experiment is not None or seed_worktree is not None
+        else None
+    )
+    reusable = bool(
+        worktree_path
+        and (
+            plan_update.get("reusable_worktree")
+            or (lineage is not None and lineage["reusable_for_followups"])
+            or (
+                changed_files
+                and summary.get("outcome") in COMPLETED_OUTCOMES
+            )
+        )
+    )
+    source_experiment = f"{run_id}/{experiment_id}"
+    return {
+        "source_experiment": source_experiment,
+        "run_id": run_id,
+        "experiment_id": experiment_id,
+        "experiment_dir": str(experiment_dir),
+        "outcome": summary.get("outcome"),
+        "outcome_reason": summary.get("outcome_reason"),
+        "failed_stage": summary.get("failed_stage"),
+        "failure_classification": summary.get("failure_classification"),
+        "hypothesis": research_spec.get("hypothesis"),
+        "primary_metric": research_spec.get("primary_metric"),
+        "prediction_horizon": research_spec.get("prediction_horizon"),
+        "label": research_spec.get("label"),
+        "selected_plan_rationale": selected_plan.get("rationale"),
+        "implementation_summary": implementation.get("summary"),
+        "changed_files": changed_files,
+        "followups": plan_update.get("followups", []),
+        "revisit_conditions": plan_update.get("revisit_conditions", []),
+        "blocked_paths": plan_update.get("blocked_paths", []),
+        "future_experiment_ideas": exploratory.get("future_experiment_ideas", []),
+        "metrics": confirmatory.get("metrics", {}),
+        "gate_results": confirmatory.get("gate_results", {}),
+        "worktree": worktree,
+        "worktree_branch": lineage["worktree_branch"] if lineage is not None else None,
+        "implementation_seed": implementation_seed,
+        "lineage_path": str(lineage_path) if lineage is not None else None,
+        "reusable": reusable,
+        "implementation_reuse_notes": plan_update.get("implementation_reuse_notes", []),
+        "recommended_next_experiment_kind": plan_update.get(
+            "recommended_next_experiment_kind"
+        ),
+    }
+
+
+def _human_context(program_root: Path) -> dict[str, Any]:
+    program_md = program_root / "program.md"
+    program_text = (
+        program_md.read_text(encoding="utf-8") if program_md.is_file() else None
+    )
+    notes_dir = program_root / "notes"
+    notes: list[dict[str, str]] = []
+    if notes_dir.is_dir():
+        notes = [
+            {
+                "path": path.relative_to(program_root).as_posix(),
+                "text": path.read_text(encoding="utf-8"),
+            }
+            for path in sorted(notes_dir.glob("*.md"))
+            if path.is_file()
+        ]
+    return {"program_md": program_text, "notes": notes}
+
+
+def _memory_context(program_root: Path) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for path in sorted((program_root / "memory").glob("*.json")):
+        if path.name == "continuation_summary.json":
+            continue
+        records.append(
+            {
+                "path": path.relative_to(program_root).as_posix(),
+                "content": read_json_object(path),
+            }
+        )
+    return records
+
+
+def _pending_followups(experiments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    records = []
+    for experiment in experiments:
+        for followup in experiment["followups"]:
+            records.append(
+                {
+                    "source_experiment": experiment["source_experiment"],
+                    "idea": followup,
+                    "suggested_seed_worktree": (
+                        experiment["worktree"]["path"]
+                        if experiment["reusable"] and experiment["worktree"]
+                        else None
+                    ),
+                }
+            )
+    return records
+
+
+def _future_experiment_ideas(
+    experiments: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    records = []
+    for experiment in experiments:
+        for idea in experiment["future_experiment_ideas"]:
+            records.append(
+                {
+                    "source_experiment": experiment["source_experiment"],
+                    "idea": idea,
+                    "suggested_seed_worktree": (
+                        experiment["worktree"]["path"]
+                        if experiment["reusable"] and experiment["worktree"]
+                        else None
+                    ),
+                }
+            )
+    return records
+
+
+def _reusable_implementations(
+    experiments: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "source_experiment": experiment["source_experiment"],
+            "worktree_path": experiment["worktree"]["path"],
+            "changed_files": experiment["changed_files"],
+            "implementation_summary": experiment["implementation_summary"],
+        }
+        for experiment in experiments
+        if experiment["reusable"] and experiment["worktree"]
+    ]
+
+
+def _do_not_repeat(experiments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    records = []
+    for experiment in experiments:
+        for blocked_path in experiment["blocked_paths"]:
+            records.append(
+                {
+                    "source_experiment": experiment["source_experiment"],
+                    "reason": blocked_path,
+                }
+            )
+        if experiment["outcome"] in FAILURE_OUTCOMES | BLOCKER_OUTCOMES:
+            reason = (
+                experiment["failure_classification"] or experiment["outcome_reason"]
+            )
+            if reason:
+                records.append(
+                    {
+                        "source_experiment": experiment["source_experiment"],
+                        "reason": reason,
+                    }
+                )
+    return records
+
+
+def _continuation_metric_history(
+    experiments: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for experiment in experiments:
+        for metric_path, value in _numeric_leaves(experiment["metrics"]):
+            records.append(
+                {
+                    "source_experiment": experiment["source_experiment"],
+                    "metric_path": metric_path,
+                    "value": value,
+                }
+            )
+    return sorted(
+        records,
+        key=lambda item: (
+            item["source_experiment"],
+            item["metric_path"],
+        ),
+    )
+
+
+def _best_metric_runs(experiments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    best_by_metric: dict[str, dict[str, Any]] = {}
+    for experiment in experiments:
+        for metric_path, value in _numeric_leaves(experiment["metrics"]):
+            current = best_by_metric.get(metric_path)
+            if current is None or value > current["value"]:
+                best_by_metric[metric_path] = {
+                    "source_experiment": experiment["source_experiment"],
+                    "metric": f"metrics.{metric_path}",
+                    "value": value,
+                }
+    return [best_by_metric[metric_path] for metric_path in sorted(best_by_metric)]
 
 
 def _build_prior_synthesis(
@@ -373,11 +699,15 @@ def _outcome_record(
     }
 
 
-def _render_context_pack(summary: dict[str, Any]) -> str:
-    spec = summary["spec"]
-    budget = summary["budget"]
-    git = summary["git"]
-    prior = summary["prior_synthesis"]
+def _render_context_pack(
+    *,
+    current_context: dict[str, Any],
+    continuation_context: dict[str, Any],
+) -> str:
+    spec = current_context["spec"]
+    budget = current_context["budget"]
+    git = current_context["git"]
+    prior = current_context["prior_synthesis"]
     lines = [
         "# Research Context Pack",
         "",
@@ -395,8 +725,8 @@ def _render_context_pack(summary: dict[str, Any]) -> str:
         f"- default timeout seconds: {budget['default_command_timeout_seconds']}",
         "",
         "## Repository",
-        f"- data root: {summary['data_root']}",
-        f"- experiment data root: {summary['experiment_data_root']}",
+        f"- data root: {current_context['data_root']}",
+        f"- experiment data root: {current_context['experiment_data_root']}",
         f"- repo root: {git['repo_root']}",
         f"- git head: {git['head']}",
         "- git status:",
@@ -405,10 +735,10 @@ def _render_context_pack(summary: dict[str, Any]) -> str:
         *_list_lines(git["changed_files"]),
         "",
         "## Artifact Inventory",
-        *_json_lines(summary["artifact_inventory"]),
+        *_json_lines(current_context["artifact_inventory"]),
         "",
         "## Ledger History",
-        *_json_lines(summary["ledger_history"]),
+        *_json_lines(current_context["ledger_history"]),
         "",
         "## Prior Synthesis",
         "### Blockers",
@@ -425,7 +755,54 @@ def _render_context_pack(summary: dict[str, Any]) -> str:
         *_json_lines(prior["metric_history"]),
         "",
     ]
+    lines.extend(_render_continuation_context(continuation_context))
     return "\n".join(lines) + "\n"
+
+
+def _render_continuation_context(continuation: dict[str, Any]) -> list[str]:
+    lines = [
+        "## Research Program Continuation",
+        f"- program root: {continuation['program_root']}",
+        "",
+        "### Human Context",
+    ]
+    human_context = continuation.get("human_context", {})
+    program_md = human_context.get("program_md")
+    if isinstance(program_md, str) and program_md.strip():
+        lines.extend(["#### program.md", "```text", program_md.rstrip(), "```"])
+    notes = human_context.get("notes", [])
+    if isinstance(notes, list):
+        for item in notes:
+            lines.extend(
+                [
+                    f"#### {item['path']}",
+                    "```text",
+                    item["text"].rstrip(),
+                    "```",
+                ]
+            )
+    if not lines[-1].endswith("```"):
+        lines.append("- none")
+    lines.extend(
+        [
+            "### Memory Context",
+            *_json_lines(continuation["memory_context"]),
+            "### Pending Followups",
+            *_json_lines(continuation["pending_followups"]),
+            "### Future Experiment Ideas",
+            *_json_lines(continuation["future_experiment_ideas"]),
+            "### Reusable Implementations",
+            *_json_lines(continuation["reusable_implementations"]),
+            "### Do Not Repeat",
+            *_json_lines(continuation["do_not_repeat"]),
+            "### Continuation Metric History",
+            *_json_lines(continuation["metric_history"]),
+            "### Best Metric Runs",
+            *_json_lines(continuation["best_metric_runs"]),
+            "",
+        ]
+    )
+    return lines
 
 
 def _list_lines(items: list[Any]) -> list[str]:

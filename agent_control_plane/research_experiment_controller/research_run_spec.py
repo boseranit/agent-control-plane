@@ -6,6 +6,10 @@ from typing import Any
 
 import yaml
 
+from agent_control_plane.research_experiment_controller.paths import (
+    ResearchProgramPaths,
+)
+
 
 @dataclass(frozen=True)
 class ResearchBudget:
@@ -21,7 +25,29 @@ class ResearchBudget:
 @dataclass(frozen=True)
 class WorktreeConfig:
     create: bool = True
-    root: Path = Path(".worktrees")
+
+
+@dataclass(frozen=True, init=False)
+class ResearchProgramConfig:
+    paths: ResearchProgramPaths
+    max_prior_experiments: int
+
+    def __init__(
+        self,
+        root: str | Path | ResearchProgramPaths,
+        max_prior_experiments: int = 12,
+    ) -> None:
+        paths = (
+            root
+            if isinstance(root, ResearchProgramPaths)
+            else ResearchProgramPaths(root)
+        )
+        object.__setattr__(self, "paths", paths)
+        object.__setattr__(self, "max_prior_experiments", max_prior_experiments)
+
+    @property
+    def root(self) -> Path:
+        return Path(self.paths.root)
 
 
 @dataclass(frozen=True)
@@ -55,6 +81,7 @@ class ResearchRunSpec:
     selected_budget: ResearchBudget
     data_root: Path
     experiment_data_root: Path
+    research_program: ResearchProgramConfig
     worktree: WorktreeConfig
     mlflow: MLflowConfig
     codex: CodexConfig
@@ -67,6 +94,22 @@ class ResearchRunSpecError(ValueError):
 
 
 def load_research_run_spec(path: str | Path) -> ResearchRunSpec:
+    return _load_research_run_spec(path, research_program_root=None)
+
+
+def load_research_run_spec_snapshot(
+    path: str | Path,
+    *,
+    research_program_root: str | Path,
+) -> ResearchRunSpec:
+    return _load_research_run_spec(path, research_program_root=research_program_root)
+
+
+def _load_research_run_spec(
+    path: str | Path,
+    *,
+    research_program_root: str | Path | None,
+) -> ResearchRunSpec:
     source_path = Path(path)
     data = yaml.safe_load(source_path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
@@ -91,6 +134,10 @@ def load_research_run_spec(path: str | Path) -> ResearchRunSpec:
         data_root=data_root,
         experiment_data_root=experiment_data_root,
     )
+    research_program = _load_research_program(
+        data,
+        research_program_root=research_program_root,
+    )
 
     return ResearchRunSpec(
         source_path=source_path.resolve(),
@@ -106,6 +153,7 @@ def load_research_run_spec(path: str | Path) -> ResearchRunSpec:
         selected_budget=selected_budget,
         data_root=data_root,
         experiment_data_root=experiment_data_root,
+        research_program=research_program,
         worktree=_load_worktree(data.get("worktree")),
         mlflow=_load_mlflow(data.get("mlflow")),
         codex=_load_codex(data.get("codex")),
@@ -116,8 +164,12 @@ def load_research_run_spec(path: str | Path) -> ResearchRunSpec:
     )
 
 
-def resolved_spec_dict(spec: ResearchRunSpec) -> dict[str, Any]:
-    return {
+def resolved_spec_dict(
+    spec: ResearchRunSpec,
+    *,
+    include_research_program_root: bool = True,
+) -> dict[str, Any]:
+    data = {
         "version": spec.version,
         "research_run_id": spec.research_run_id,
         "target_repository": str(spec.target_repository),
@@ -136,10 +188,8 @@ def resolved_spec_dict(spec: ResearchRunSpec) -> dict[str, Any]:
         },
         "data_root": str(spec.data_root),
         "experiment_data_root": str(spec.experiment_data_root),
-        "worktree": {
-            "create": spec.worktree.create,
-            "root": str(spec.worktree.root),
-        },
+        "max_prior_experiments": spec.research_program.max_prior_experiments,
+        "worktree": {"create": spec.worktree.create},
         "mlflow": {
             "enabled": spec.mlflow.enabled,
             "tracking_uri": spec.mlflow.tracking_uri,
@@ -154,6 +204,9 @@ def resolved_spec_dict(spec: ResearchRunSpec) -> dict[str, Any]:
         },
         "stop_on_prerequisites_failed": spec.stop_on_prerequisites_failed,
     }
+    if include_research_program_root:
+        data["research_program_root"] = str(spec.research_program.root)
+    return data
 
 
 def _load_budgets(value: Any) -> dict[str, ResearchBudget]:
@@ -177,11 +230,35 @@ def _load_budgets(value: Any) -> dict[str, ResearchBudget]:
     return budgets
 
 
+def _load_research_program(
+    data: dict[str, Any],
+    *,
+    research_program_root: str | Path | None,
+) -> ResearchProgramConfig:
+    if research_program_root is None:
+        root = Path(_required_string(data, "research_program_root"))
+    else:
+        if "research_program_root" in data:
+            raise ResearchRunSpecError(
+                "Snapshotted Research Run Spec must not contain "
+                "research_program_root."
+            )
+        root = Path(research_program_root)
+    return ResearchProgramConfig(
+        root=root.expanduser().resolve(),
+        max_prior_experiments=_positive_int(data, "max_prior_experiments", 12),
+    )
+
+
 def _load_worktree(value: Any) -> WorktreeConfig:
     data = _optional_mapping(value, "worktree")
+    if "root" in data:
+        raise ResearchRunSpecError(
+            "Research Run Spec field 'worktree.root' is not supported; use "
+            "research_program_root."
+        )
     return WorktreeConfig(
         create=_optional_bool(data, "create", True, "worktree.create"),
-        root=Path(_optional_string(data, "root", ".worktrees", "worktree.root")),
     )
 
 

@@ -18,6 +18,7 @@ from agent_control_plane.research_experiment_controller.artifacts import (
     Implementation,
     ImplementationDiffSummary,
     ImplementationRepair,
+    Lineage,
     PlanUpdate,
     Proposal,
     ResearchOutcome,
@@ -87,6 +88,9 @@ def test_core_research_artifacts_validate_canonical_payloads() -> None:
         plan_id="plan-1",
         rationale="Best admissible design.",
         material_revision_categories=[],
+        source_followups=["prior-run/EXP-0003:add turnover gate"],
+        implementation_seed_experiment="prior-run/EXP-0003",
+        implementation_seed_worktree="/tmp/worktrees/prior-run/EXP-0003",
     )
     result = ConfirmatoryEvaluationResult(
         outcome=ResearchOutcome.completed_candidate,
@@ -101,6 +105,7 @@ def test_core_research_artifacts_validate_canonical_payloads() -> None:
     assert spec.success_gates == {"information_coefficient": 0.03}
     assert design.verification_commands[0].argv == ["pytest", "-q"]
     assert selected.selected is True
+    assert selected.implementation_seed_experiment == "prior-run/EXP-0003"
     assert result.outcome is ResearchOutcome.completed_candidate
 
 
@@ -304,6 +309,10 @@ def test_remaining_prd_artifacts_validate_minimum_payloads() -> None:
         expected_mechanism="temporary liquidity imbalance",
         known_risks=["leakage"],
         falsification_evidence=["shuffle null passes"],
+        experiment_kind="controlled_variation",
+        builds_on_experiments=["prior-run/EXP-0003"],
+        prior_evidence_used=["ic=0.04"],
+        novelty_vs_prior="Adds turnover gate.",
     )
     critique = Critique(
         decision="revise",
@@ -328,6 +337,10 @@ def test_remaining_prd_artifacts_validate_minimum_payloads() -> None:
         changed_files=["research/experiments/peer.py"],
         commands_declared=[{"name": "unit", "argv": ["pytest", "-q"]}],
         risks=["slow backfill"],
+        inspected_prior_worktrees=["/tmp/worktrees/prior-run/EXP-0003"],
+        reused_or_adapted_items=["feature builder"],
+        rewritten_items=["evaluation wrapper"],
+        reuse_risks=["prior split assumptions"],
     )
     repair = ImplementationRepair(
         repair_attempt=1,
@@ -368,10 +381,26 @@ def test_remaining_prd_artifacts_validate_minimum_payloads() -> None:
         followups=["Test liquidity-conditioned residual."],
         revisit_conditions=["More data available"],
         blocked_paths=["illiquid universe"],
+        reusable_worktree=True,
+        recommended_next_experiment_kind="direct_followup",
+        implementation_reuse_notes=["reuse feature builder"],
+    )
+    lineage = Lineage(
+        research_run_id="peer-residual-v1",
+        experiment_id="EXP-0001",
+        experiment_dir="/tmp/run/experiments/EXP-0001",
+        worktree_path="/tmp/worktrees/peer-residual-v1/EXP-0001",
+        worktree_branch="research/peer-residual-v1/EXP-0001",
+        target_repo_head_at_start="abc",
+        worktree_head_after_implementation="abc",
+        changed_files=["research/experiments/peer_residual.py"],
+        implementation_summary="Implemented candidate.",
+        reusable_for_followups=True,
     )
 
     assert context.summary.startswith("Prior runs")
     assert proposal.signal_family == "peer_residual"
+    assert proposal.experiment_kind == "controlled_variation"
     assert critique.material_revision_categories == ["split"]
     assert data_audit.model_dump(mode="json")["outcome"] == "prerequisites_failed"
     assert implementation.commands_declared[0].argv == ["pytest", "-q"]
@@ -382,3 +411,5 @@ def test_remaining_prd_artifacts_validate_minimum_payloads() -> None:
     assert empirical.recommended_outcome is ResearchOutcome.completed_inconclusive
     assert summary.failed_stage is None
     assert plan_update.followups == ["Test liquidity-conditioned residual."]
+    assert plan_update.reusable_worktree is True
+    assert lineage.reusable_for_followups is True

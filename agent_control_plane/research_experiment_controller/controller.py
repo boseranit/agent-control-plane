@@ -25,41 +25,53 @@ from agent_control_plane.research_experiment_controller.outcomes import (
 )
 from agent_control_plane.research_experiment_controller.research_run_spec import (
     load_research_run_spec,
+    load_research_run_spec_snapshot,
     resolved_spec_dict,
+)
+from agent_control_plane.research_experiment_controller.paths import (
+    ResearchProgramPaths,
 )
 from agent_control_plane.research_experiment_controller.state import (
     create_initial_state,
-    experiment_directory,
     load_terminal_summary,
     next_experiment_id,
     record_terminal_experiment,
-    research_run_directory,
 )
 
 
 @dataclass(frozen=True)
 class ResearchRun:
     research_run_id: str
-    run_directory: Path
-    spec_snapshot_path: Path
-    state_path: Path
-    ledger_path: Path
-    experiments_directory: Path
+    paths: ResearchProgramPaths
     state: dict[str, Any]
+
+    @property
+    def research_program_root(self) -> Path:
+        return Path(self.paths.root)
+
+    @property
+    def run_directory(self) -> Path:
+        return self.paths.run_directory(self.research_run_id)
+
+    @property
+    def spec_snapshot_path(self) -> Path:
+        return self.paths.spec_snapshot_path(self.research_run_id)
+
+    @property
+    def state_path(self) -> Path:
+        return self.paths.state_path(self.research_run_id)
+
+    @property
+    def ledger_path(self) -> Path:
+        return self.paths.ledger_path(self.research_run_id)
+
+    @property
+    def experiments_directory(self) -> Path:
+        return self.paths.experiments_directory(self.research_run_id)
 
 
 class ResearchRunError(RuntimeError):
     """Raised when a Research Run cannot be started or loaded."""
-
-
-@dataclass(frozen=True)
-class ResearchPhaseInput:
-    research_run_id: str
-    run_directory: Path
-    spec_snapshot_path: Path
-    state_path: Path
-    ledger_path: Path
-    experiments_directory: Path
 
 
 ExperimentRunner = Callable[[ExperimentFlowRequest], dict[str, Any]]
@@ -67,11 +79,11 @@ ExperimentRunner = Callable[[ExperimentFlowRequest], dict[str, Any]]
 
 def start_research_run(
     research_run_spec_path: str | Path,
-    *,
-    runtime_root: str | Path = "runs",
 ) -> ResearchRun:
     spec = load_research_run_spec(research_run_spec_path)
-    run_directory = research_run_directory(runtime_root, spec.research_run_id)
+    paths = spec.research_program.paths
+    run_directory = paths.run_directory(spec.research_run_id)
+    paths.create_directories()
     try:
         run_directory.mkdir(parents=True)
     except FileExistsError as exc:
@@ -86,13 +98,14 @@ def start_research_run(
     experiments_directory.mkdir()
 
     spec_snapshot_path.write_text(
-        yaml.safe_dump(resolved_spec_dict(spec), sort_keys=False),
+        yaml.safe_dump(
+            resolved_spec_dict(spec, include_research_program_root=False),
+            sort_keys=False,
+        ),
         encoding="utf-8",
     )
     state = create_initial_state(
         research_run_id=spec.research_run_id,
-        run_directory=run_directory,
-        spec_snapshot_path=spec_snapshot_path,
         max_experiments=spec.max_experiments,
     )
     write_json(state_path, state)
@@ -125,11 +138,7 @@ def start_research_run(
 
     return ResearchRun(
         research_run_id=spec.research_run_id,
-        run_directory=run_directory,
-        spec_snapshot_path=spec_snapshot_path,
-        state_path=state_path,
-        ledger_path=ledger_path,
-        experiments_directory=experiments_directory,
+        paths=paths,
         state=state,
     )
 
@@ -137,13 +146,14 @@ def start_research_run(
 def load_research_run(
     research_run_id: str,
     *,
-    runtime_root: str | Path = "runs",
+    research_program_root: str | Path,
 ) -> ResearchRun:
-    run_directory = research_run_directory(runtime_root, research_run_id)
-    spec_snapshot_path = run_directory / "research_run_spec.yaml"
-    state_path = run_directory / "state.json"
-    ledger_path = run_directory / "ledger.jsonl"
-    experiments_directory = run_directory / "experiments"
+    paths = ResearchProgramPaths(research_program_root)
+    run_directory = paths.run_directory(research_run_id)
+    spec_snapshot_path = paths.spec_snapshot_path(research_run_id)
+    state_path = paths.state_path(research_run_id)
+    ledger_path = paths.ledger_path(research_run_id)
+    experiments_directory = paths.experiments_directory(research_run_id)
 
     if not run_directory.exists():
         raise ResearchRunError(f"Research Run does not exist: {research_run_id}")
@@ -160,7 +170,10 @@ def load_research_run(
             f"Research Run is missing experiments directory: {experiments_directory}"
         )
 
-    snapshot = load_research_run_spec(spec_snapshot_path)
+    snapshot = load_research_run_spec_snapshot(
+        spec_snapshot_path,
+        research_program_root=paths.root,
+    )
     state = read_json_object(state_path)
     if snapshot.research_run_id != research_run_id:
         raise ResearchRunError(
@@ -170,18 +183,10 @@ def load_research_run(
         raise ResearchRunError(
             "Research Run state does not match requested Research Run ID."
         )
-    if Path(str(state.get("spec_snapshot_path", ""))).resolve() != (
-        spec_snapshot_path.resolve()
-    ):
-        raise ResearchRunError("Research Run state does not point at its snapshot.")
 
     return ResearchRun(
         research_run_id=research_run_id,
-        run_directory=run_directory,
-        spec_snapshot_path=spec_snapshot_path,
-        state_path=state_path,
-        ledger_path=ledger_path,
-        experiments_directory=experiments_directory,
+        paths=paths,
         state=state,
     )
 
@@ -189,12 +194,18 @@ def load_research_run(
 def run_research_loop(
     research_run_id: str,
     *,
-    runtime_root: str | Path = "runs",
+    research_program_root: str | Path,
     experiment_runner: ExperimentRunner | None = None,
     agent_runtime: Any | None = None,
 ) -> dict[str, Any]:
-    run = load_research_run(research_run_id, runtime_root=runtime_root)
-    spec = load_research_run_spec(run.spec_snapshot_path)
+    run = load_research_run(
+        research_run_id,
+        research_program_root=research_program_root,
+    )
+    spec = load_research_run_spec_snapshot(
+        run.spec_snapshot_path,
+        research_program_root=run.research_program_root,
+    )
     while True:
         state = read_json_object(run.state_path)
         if state.get("status") == "completed":
@@ -206,14 +217,7 @@ def run_research_loop(
             return _loop_result(research_run_id, state)
 
         result = run_current_phase_once(
-            ResearchPhaseInput(
-                research_run_id=run.research_run_id,
-                run_directory=run.run_directory,
-                spec_snapshot_path=run.spec_snapshot_path,
-                state_path=run.state_path,
-                ledger_path=run.ledger_path,
-                experiments_directory=run.experiments_directory,
-            ),
+            run,
             experiment_runner=experiment_runner,
             agent_runtime=agent_runtime,
         )
@@ -229,42 +233,44 @@ def run_research_loop(
 
 
 def run_current_phase_once(
-    phase_input: ResearchPhaseInput,
+    run: ResearchRun,
     *,
     experiment_runner: ExperimentRunner | None = None,
     agent_runtime: Any | None = None,
 ) -> dict[str, Any]:
-    state = read_json_object(phase_input.state_path)
-    spec = load_research_run_spec(phase_input.spec_snapshot_path)
+    state = read_json_object(run.state_path)
+    spec = load_research_run_spec_snapshot(
+        run.spec_snapshot_path,
+        research_program_root=run.research_program_root,
+    )
     if state.get("current_phase") not in {"initialized", "ready_for_experiment"}:
         raise ResearchRunError(
             f"Research phase is not ready for an experiment: {state.get('current_phase')}"
         )
 
     experiment_id = next_experiment_id(state)
-    experiment_dir = experiment_directory(phase_input.run_directory, experiment_id)
+    experiment_dir = run.paths.experiment_directory(
+        run.research_run_id,
+        experiment_id,
+    )
     if experiment_dir.exists():
         raise ResearchRunError(f"Research Experiment already exists: {experiment_id}")
     experiment_dir.mkdir(parents=True)
 
     state["active_experiment_id"] = experiment_id
     state["current_phase"] = "running_experiment"
-    write_json(phase_input.state_path, state)
+    write_json(run.state_path, state)
     append_ledger_event(
-        phase_input.ledger_path,
+        run.ledger_path,
         event_type="phase_changed",
-        research_run_id=phase_input.research_run_id,
+        research_run_id=run.research_run_id,
         current_phase="running_experiment",
         experiment_id=experiment_id,
     )
 
     runner = experiment_runner or _default_experiment_runner(agent_runtime)
     request = ExperimentFlowRequest(
-        research_run_id=phase_input.research_run_id,
         experiment_id=experiment_id,
-        run_directory=phase_input.run_directory,
-        experiment_directory=experiment_dir,
-        ledger_path=phase_input.ledger_path,
         spec=spec,
         state=state,
     )
@@ -272,7 +278,7 @@ def run_current_phase_once(
         result = runner(request)
     except UsageLimitWait as exc:
         return _propagate_usage_limit_wait(
-            phase_input,
+            run,
             state,
             experiment_id=experiment_id,
             experiment_dir=experiment_dir,
@@ -285,7 +291,7 @@ def run_current_phase_once(
         ).model_dump(mode="json")
         write_json(experiment_dir / "summary.json", terminal_summary)
         return _record_terminal_result(
-            phase_input,
+            run,
             state,
             experiment_id=experiment_id,
             experiment_dir=experiment_dir,
@@ -293,7 +299,7 @@ def run_current_phase_once(
 
     if result.get("status") == "usage_limit_wait":
         return _propagate_usage_limit_wait(
-            phase_input,
+            run,
             state,
             experiment_id=experiment_id,
             experiment_dir=experiment_dir,
@@ -307,14 +313,14 @@ def run_current_phase_once(
         ).model_dump(mode="json")
         write_json(experiment_dir / "summary.json", terminal_summary)
         return _record_terminal_result(
-            phase_input,
+            run,
             state,
             experiment_id=experiment_id,
             experiment_dir=experiment_dir,
         )
 
     return _record_terminal_result(
-        phase_input,
+        run,
         state,
         experiment_id=experiment_id,
         experiment_dir=experiment_dir,
@@ -322,7 +328,7 @@ def run_current_phase_once(
 
 
 def _propagate_usage_limit_wait(
-    phase_input: ResearchPhaseInput,
+    run: ResearchRun,
     state: dict[str, Any],
     *,
     experiment_id: str,
@@ -331,19 +337,19 @@ def _propagate_usage_limit_wait(
 ) -> dict[str, Any]:
     state["active_experiment_id"] = None
     state["current_phase"] = "ready_for_experiment"
-    write_json(phase_input.state_path, state)
+    write_json(run.state_path, state)
     if experiment_dir.exists():
         shutil.rmtree(experiment_dir)
     append_ledger_event(
-        phase_input.ledger_path,
+        run.ledger_path,
         event_type="usage_limit_wait",
-        research_run_id=phase_input.research_run_id,
+        research_run_id=run.research_run_id,
         experiment_id=experiment_id,
         sleep_seconds=max(sleep_seconds, 0.0),
     )
     return {
         "status": "usage_limit_wait",
-        "research_run_id": phase_input.research_run_id,
+        "research_run_id": run.research_run_id,
         "experiment_id": experiment_id,
         "current_phase": state["current_phase"],
         "controller_state_version": state.get("controller_state_version"),
@@ -352,7 +358,7 @@ def _propagate_usage_limit_wait(
 
 
 def _record_terminal_result(
-    phase_input: ResearchPhaseInput,
+    run: ResearchRun,
     state: dict[str, Any],
     *,
     experiment_id: str,
@@ -366,11 +372,11 @@ def _record_terminal_result(
         terminal_summary=terminal_summary,
     )
     state["current_phase"] = "ready_for_experiment"
-    write_json(phase_input.state_path, state)
+    write_json(run.state_path, state)
     append_ledger_event(
-        phase_input.ledger_path,
+        run.ledger_path,
         event_type="experiment_completed",
-        research_run_id=phase_input.research_run_id,
+        research_run_id=run.research_run_id,
         experiment_id=experiment_id,
         outcome=terminal_summary["outcome"],
     )

@@ -70,6 +70,20 @@ def test_research_agent_prompts_encode_shared_boundaries() -> None:
         assert "proceed with explicit assumptions" in prompt
 
 
+def test_research_agent_prompts_encode_continuation_behavior() -> None:
+    strategist = prompt_for_role(ResearchAgentRole.STRATEGIST)
+    implementer = prompt_for_role(ResearchAgentRole.IMPLEMENTER)
+    evaluator = prompt_for_role(ResearchAgentRole.EVALUATOR)
+
+    assert "continuation_summary.json" in strategist
+    assert "direct_followup" in strategist
+    assert "controlled_variation" in strategist
+    assert "reusable worktree paths" in strategist
+    assert "prior implementation worktree" in implementer
+    assert "reused/adapted pieces" in implementer
+    assert "Future experiment ideas must be testable directly" in evaluator
+
+
 def test_strategist_thread_persists_per_research_run_state(
     tmp_path: Path,
 ) -> None:

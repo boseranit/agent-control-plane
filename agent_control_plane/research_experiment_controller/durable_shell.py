@@ -16,7 +16,7 @@ from agent_control_plane.control_plane.json_artifacts import read_json_object
 @dataclass(frozen=True)
 class ResearchRunInput:
     research_run_id: str
-    runtime_root: str = "runs"
+    research_program_root: str
 
 
 ControllerRunner = Callable[[ResearchRunInput], dict[str, Any]]
@@ -71,9 +71,7 @@ def _generic_run_metadata(
 
 
 def _state_metadata(input: ResearchRunInput) -> dict[str, Any]:
-    state_path = (
-        Path(input.runtime_root).resolve() / input.research_run_id / "state.json"
-    )
+    state_path = _run_directory(input) / "state.json"
     if not state_path.exists():
         return {}
     state = read_json_object(state_path)
@@ -89,13 +87,21 @@ def _run_controller_loop(input: ResearchRunInput) -> dict[str, Any]:
         run_research_loop,
     )
 
-    run_directory = Path(input.runtime_root).resolve() / input.research_run_id
+    run_directory = _run_directory(input)
     with AgentRuntime(
         agent_name_prefix="research-experiment",
         session_db_path=run_directory / "agent_sessions.sqlite3",
     ) as agent_runtime:
         return run_research_loop(
             input.research_run_id,
-            runtime_root=input.runtime_root,
+            research_program_root=input.research_program_root,
             agent_runtime=agent_runtime,
         )
+
+
+def _run_directory(input: ResearchRunInput) -> Path:
+    return (
+        Path(input.research_program_root).expanduser().resolve()
+        / "runs"
+        / input.research_run_id
+    )

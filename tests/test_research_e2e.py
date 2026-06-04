@@ -27,10 +27,10 @@ def test_fake_runtime_drives_completed_candidate_research_run(
     runtime = FakeResearchRuntime()
     target_head_before = _git_head(repo)
 
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
     result = run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         agent_runtime=runtime,
     )
 
@@ -95,6 +95,55 @@ def test_fake_runtime_drives_completed_candidate_research_run(
     }
 
 
+def test_program_root_flow_writes_lineage_and_state_fields(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    program_root = tmp_path / "programs" / "peer-residuals"
+    spec_path = _write_spec(
+        tmp_path,
+        repo,
+        data_root,
+        program_root=program_root,
+    )
+    runtime = FakeResearchRuntime()
+    target_head_before = _git_head(repo)
+
+    run = start_research_run(spec_path)
+    run_research_loop(
+        run.research_run_id,
+        research_program_root=program_root,
+        agent_runtime=runtime,
+    )
+
+    experiment_dir = run.experiments_directory / "EXP-0001"
+    worktree = program_root / "worktrees" / "e2e-run" / "EXP-0001"
+    state = read_json_object(run.state_path)
+    lineage = read_json_object(experiment_dir / "lineage.json")
+
+    assert run.run_directory == (program_root / "runs" / "e2e-run").resolve()
+    assert worktree.is_dir()
+    assert (experiment_dir / "continuation_summary.json").exists()
+    assert lineage["worktree_path"] == str(worktree)
+    assert lineage["worktree_branch"] == "research/e2e-run/EXP-0001"
+    assert lineage["target_repo_head_at_start"] == target_head_before
+    assert lineage["worktree_head_after_implementation"] == target_head_before
+    assert lineage["changed_files"] == ["research/candidate.py"]
+    assert lineage["reusable_for_followups"] is True
+    assert state["experiments"]["EXP-0001"]["lineage_path"] == str(
+        experiment_dir / "lineage.json"
+    )
+    assert state["experiments"]["EXP-0001"]["worktree_path"] == str(worktree)
+    assert state["experiments"]["EXP-0001"]["changed_files"] == [
+        "research/candidate.py"
+    ]
+    assert state["threads"]["strategist"] == "research-strategist-thread-1"
+
+
 def test_strategist_closeout_cannot_upgrade_confirmatory_outcome(
     tmp_path: Path,
 ) -> None:
@@ -109,10 +158,10 @@ def test_strategist_closeout_cannot_upgrade_confirmatory_outcome(
         closeout_outcome="completed_candidate",
     )
 
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
     run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         agent_runtime=runtime,
     )
 
@@ -138,7 +187,7 @@ def test_agent_driven_controller_does_not_scan_prior_experiments_for_material_re
     data_root = tmp_path / "data"
     data_root.mkdir()
     spec_path = _write_spec(tmp_path, repo, data_root, max_experiments=2)
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
     previous_experiment = run.experiments_directory / "EXP-0001"
     previous_experiment.mkdir(parents=True)
     write_json(previous_experiment / "research_spec.json", _research_spec_payload())
@@ -168,7 +217,7 @@ def test_agent_driven_controller_does_not_scan_prior_experiments_for_material_re
 
     run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         agent_runtime=runtime,
     )
 
@@ -191,10 +240,10 @@ def test_repair_changes_are_audited_before_evaluation(
     spec_path = _write_spec(tmp_path, repo, data_root)
     runtime = FakeResearchRuntime(repair_outside_allowed_paths=True)
 
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
     run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         agent_runtime=runtime,
     )
 
@@ -223,10 +272,10 @@ def test_repair_boundary_failure_precedes_verification_failure(
         repair_keeps_verification_failing=True,
     )
 
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
     run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         agent_runtime=runtime,
     )
 
@@ -252,10 +301,10 @@ def test_invalid_allowed_write_paths_are_boundary_failures(
     spec_path = _write_spec(tmp_path, repo, data_root)
     runtime = FakeResearchRuntime(allowed_write_paths=["/absolute/path"])
 
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
     run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         agent_runtime=runtime,
     )
 
@@ -280,10 +329,10 @@ def test_run_failed_evaluation_is_terminal_before_empirical_closeout(
     spec_path = _write_spec(tmp_path, repo, data_root)
     runtime = FakeResearchRuntime(confirmatory_outcome="run_failed")
 
-    run = start_research_run(spec_path, runtime_root=tmp_path / "runs")
+    run = start_research_run(spec_path)
     run_research_loop(
         run.research_run_id,
-        runtime_root=tmp_path / "runs",
+        research_program_root=run.run_directory.parents[1],
         agent_runtime=runtime,
     )
 
@@ -559,12 +608,15 @@ def _write_spec(
     data_root: Path,
     *,
     max_experiments: int = 1,
+    program_root: Path | None = None,
 ) -> Path:
     path = tmp_path / "research.yaml"
+    resolved_program_root = program_root or tmp_path / "programs" / "e2e-run"
     path.write_text(
         f"""
 research_run_id: e2e-run
 target_repository: {repo}
+research_program_root: {resolved_program_root}
 max_experiments: {max_experiments}
 research_brief: |
   Test full fake-runtime flow.
@@ -578,7 +630,6 @@ data_root: {data_root}
 experiment_data_root: {tmp_path / "experiment-data"}
 worktree:
   create: true
-  root: .worktrees
 implementation:
   max_repairs: 1
 stop_on_prerequisites_failed: true
