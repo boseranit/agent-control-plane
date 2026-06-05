@@ -74,6 +74,10 @@ from agent_control_plane.research_experiment_controller.prerequisites import (
     PrerequisiteAuditRequest,
     run_data_audit_phase,
 )
+from agent_control_plane.research_experiment_controller.research_state import (
+    load_research_state,
+    research_state_path,
+)
 from agent_control_plane.research_experiment_controller.research_run_mirror import (
     ResearchRunMirrorRequest,
     mirror_research_run,
@@ -599,13 +603,14 @@ def _write_lineage_artifact(
     path = request.experiment_directory / "lineage.json"
     if path.exists() and not replace_existing:
         return
-    implementation = _read_experiment_json(
-        request.experiment_directory / "implementation.json"
+    implementation = Implementation.model_validate(
+        read_json_object(request.experiment_directory / "implementation.json")
     )
-    diff = _read_experiment_json(
-        request.experiment_directory / "implementation_diff_summary.json"
+    diff = ImplementationDiffSummary.model_validate(
+        read_json_object(
+            request.experiment_directory / "implementation_diff_summary.json"
+        )
     )
-    changed_files = _artifact_string_list(diff.get("changed_files"))
     worktree_head = git_snapshot(worktree.path).head if worktree is not None else None
     lineage = Lineage(
         research_run_id=request.research_run_id,
@@ -615,23 +620,11 @@ def _write_lineage_artifact(
         worktree_branch=worktree.branch if worktree is not None else None,
         target_repo_head_at_start=git_snapshot(request.spec.target_repository).head,
         worktree_head_after_implementation=worktree_head,
-        changed_files=changed_files,
-        implementation_summary=implementation.get("summary"),
-        reusable_for_followups=bool(worktree is not None and changed_files),
+        changed_files=diff.changed_files,
+        implementation_summary=implementation.summary,
+        reusable_for_followups=bool(worktree is not None and diff.changed_files),
     )
     write_json(path, lineage.model_dump(mode="json"))
-
-
-def _read_experiment_json(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    return read_json_object(path)
-
-
-def _artifact_string_list(value: Any) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return [item for item in value if isinstance(item, str)]
 
 
 def _run_empirical_critique(
@@ -977,8 +970,24 @@ def _prepare_experiment_worktree_if_needed(
         paths=request.paths,
         research_run_id=request.research_run_id,
         experiment_id=request.experiment_id,
-        seed_worktree=selected_plan.implementation_seed_worktree,
+        seed_worktree=_seed_worktree_for_selected_plan(request, selected_plan),
     )
+
+
+def _seed_worktree_for_selected_plan(
+    request: ExperimentFlowRequest,
+    selected_plan: SelectedPlan,
+) -> str | None:
+    if not selected_plan.seed_component_ids:
+        return None
+    state = load_research_state(research_state_path(request.paths))
+    seed_worktrees = {
+        state.reusable_components[component_id].worktree_path
+        for component_id in selected_plan.seed_component_ids
+    }
+    if len(seed_worktrees) != 1:
+        raise ExperimentFlowError("Selected seed components must share one worktree.")
+    return next(iter(seed_worktrees))
 
 
 def _run_verification_if_needed(

@@ -319,6 +319,7 @@ def test_evaluation_agent_usage_limit_wait_sleeps_and_retries_without_run_failed
             selected=True,
             plan_id="eval-plan",
             rationale="Needs evaluator.",
+            fresh_selection_reason="Fresh selected plan.",
         ),
         experiment_design=ExperimentDesign(
             confirmatory_commands=[{"name": "eval", "argv": ["/bin/true"]}]
@@ -370,6 +371,7 @@ def test_plain_evaluation_usage_limit_error_sleeps_durably_not_run_failed(
             selected=True,
             plan_id="plain-usage-limit-plan",
             rationale="Needs evaluator.",
+            fresh_selection_reason="Fresh selected plan.",
         ),
         experiment_design=ExperimentDesign(
             confirmatory_commands=[{"name": "eval", "argv": ["/bin/true"]}]
@@ -421,6 +423,7 @@ def test_usage_limit_retry_preserves_dirty_in_progress_worktree(
             selected=True,
             plan_id="dirty-worktree-plan",
             rationale="Needs worktree and evaluator.",
+            fresh_selection_reason="Fresh selected plan.",
         ),
         experiment_design=ExperimentDesign(
             confirmatory_commands=[{"name": "eval", "argv": ["/bin/true"]}]

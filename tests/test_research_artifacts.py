@@ -87,10 +87,9 @@ def test_core_research_artifacts_validate_canonical_payloads() -> None:
         selected=True,
         plan_id="plan-1",
         rationale="Best admissible design.",
+        fresh_selection_reason="Fresh selected plan.",
         material_revision_categories=[],
-        source_followups=["prior-run/EXP-0003:add turnover gate"],
-        implementation_seed_experiment="prior-run/EXP-0003",
-        implementation_seed_worktree="/tmp/worktrees/prior-run/EXP-0003",
+        seed_component_ids=[],
     )
     result = ConfirmatoryEvaluationResult(
         outcome=ResearchOutcome.completed_candidate,
@@ -105,7 +104,7 @@ def test_core_research_artifacts_validate_canonical_payloads() -> None:
     assert spec.success_gates == {"information_coefficient": 0.03}
     assert design.verification_commands[0].argv == ["pytest", "-q"]
     assert selected.selected is True
-    assert selected.implementation_seed_experiment == "prior-run/EXP-0003"
+    assert selected.fresh_selection_reason == "Fresh selected plan."
     assert result.outcome is ResearchOutcome.completed_candidate
 
 
@@ -378,12 +377,51 @@ def test_remaining_prd_artifacts_validate_minimum_payloads() -> None:
         exploratory_findings=["Volume conditioning may matter"],
     )
     plan_update = PlanUpdate(
-        followups=["Test liquidity-conditioned residual."],
-        revisit_conditions=["More data available"],
-        blocked_paths=["illiquid universe"],
-        reusable_worktree=True,
-        recommended_next_experiment_kind="direct_followup",
-        implementation_reuse_notes=["reuse feature builder"],
+        followups=[
+            {
+                "dedupe_key": "liquidity-conditioned-residual",
+                "title": "Test liquidity-conditioned residual.",
+                "kind": "controlled_variation",
+                "evidence_basis": ["EXP-0001 IC 0.02"],
+                "mechanism": "Liquidity may reduce noisy residuals.",
+                "axis_to_vary": "liquidity gate",
+                "specific_change": "Require higher median notional volume.",
+                "falsifying_evidence": ["IC stays below 0.0 after gate."],
+                "priority": 0.8,
+                "priority_reason": "Directly tests observed weakness.",
+                "seed_component_ids": ["peer-residual-feature"],
+            }
+        ],
+        learning_updates=[
+            {
+                "learning_key": "residual-needs-liquidity",
+                "evidence_basis": ["EXP-0001"],
+                "claim": "Residual signal is liquidity sensitive.",
+                "evidence": ["IC weakened in illiquid names."],
+                "implication": "Condition next run on liquidity.",
+                "metric_paths": ["ic"],
+            }
+        ],
+        blockers=[
+            {
+                "blocker_key": "illiquid-universe",
+                "blocker_type": "data_quality",
+                "description": "Illiquid universe too noisy.",
+                "resolution_condition": "Add liquidity filter.",
+                "affected_idea_ids": [],
+            }
+        ],
+        reusable_components=[
+            {
+                "component_key": "peer-residual-feature",
+                "worktree_path": "/tmp/worktrees/peer-residual-v1/EXP-0001",
+                "changed_files": ["research/experiments/peer_residual.py"],
+                "summary": "Reusable peer residual builder.",
+                "reusable_for": ["liquidity-conditioned residual"],
+                "risk_notes": ["Check data timing."],
+            }
+        ],
+        superseded_idea_ids=[],
     )
     lineage = Lineage(
         research_run_id="peer-residual-v1",
@@ -410,6 +448,6 @@ def test_remaining_prd_artifacts_validate_minimum_payloads() -> None:
     assert analysis_ledger.entries == [{"phase": "evaluation"}]
     assert empirical.recommended_outcome is ResearchOutcome.completed_inconclusive
     assert summary.failed_stage is None
-    assert plan_update.followups == ["Test liquidity-conditioned residual."]
-    assert plan_update.reusable_worktree is True
+    assert plan_update.followups[0].title == "Test liquidity-conditioned residual."
+    assert plan_update.reusable_components[0].component_key == "peer-residual-feature"
     assert lineage.reusable_for_followups is True

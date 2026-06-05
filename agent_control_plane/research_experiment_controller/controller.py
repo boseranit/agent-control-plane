@@ -31,6 +31,10 @@ from agent_control_plane.research_experiment_controller.research_run_spec import
 from agent_control_plane.research_experiment_controller.paths import (
     ResearchProgramPaths,
 )
+from agent_control_plane.research_experiment_controller.research_state import (
+    ensure_research_state,
+    merge_terminal_experiment,
+)
 from agent_control_plane.research_experiment_controller.state import (
     create_initial_state,
     load_terminal_summary,
@@ -84,6 +88,7 @@ def start_research_run(
     paths = spec.research_program.paths
     run_directory = paths.run_directory(spec.research_run_id)
     paths.create_directories()
+    ensure_research_state(paths)
     try:
         run_directory.mkdir(parents=True)
     except FileExistsError as exc:
@@ -365,6 +370,12 @@ def _record_terminal_result(
     experiment_dir: Path,
 ) -> dict[str, Any]:
     terminal_summary = load_terminal_summary(experiment_dir)
+    merge_terminal_experiment(
+        paths=run.paths,
+        research_run_id=run.research_run_id,
+        experiment_id=experiment_id,
+        experiment_dir=experiment_dir,
+    )
     record_terminal_experiment(
         state,
         experiment_id=experiment_id,

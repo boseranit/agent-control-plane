@@ -86,7 +86,7 @@ def test_fake_runtime_drives_completed_candidate_research_run(
     assert implementation["status"] == "completed"
     assert confirmatory["outcome"] == "completed_candidate"
     assert empirical_critique["recommended_outcome"] == "completed_candidate"
-    assert plan_update["followups"] == ["inspect candidate worktree"]
+    assert plan_update["followups"][0]["title"] == "inspect candidate worktree"
     assert {config.role for config in runtime.configs} == {
         "research-strategist",
         "research-critic",
@@ -523,6 +523,7 @@ def _strategist_response(
             "selected": True,
             "plan_id": "candidate-1",
             "rationale": "Admissible bounded experiment.",
+            "fresh_selection_reason": "Fresh selected plan.",
             "material_revision_categories": material_revision_categories,
         }
     if "summary.json" in input:
@@ -537,9 +538,25 @@ def _strategist_response(
         }
     if "plan_update.json" in input:
         return {
-            "followups": ["inspect candidate worktree"],
-            "revisit_conditions": ["gate drift"],
-            "blocked_paths": [],
+            "followups": [
+                {
+                    "dedupe_key": "inspect-candidate-worktree",
+                    "title": "inspect candidate worktree",
+                    "kind": "direct_followup",
+                    "evidence_basis": ["candidate worktree available"],
+                    "mechanism": "Manual inspection may find reusable parts.",
+                    "axis_to_vary": "implementation inspection",
+                    "specific_change": "Inspect candidate worktree before followup.",
+                    "falsifying_evidence": ["No reusable changes found."],
+                    "priority": 0.7,
+                    "priority_reason": "Builds on completed candidate.",
+                    "seed_component_ids": [],
+                }
+            ],
+            "learning_updates": [],
+            "blockers": [],
+            "reusable_components": [],
+            "superseded_idea_ids": [],
         }
     raise AssertionError(f"unexpected strategist input: {input}")
 

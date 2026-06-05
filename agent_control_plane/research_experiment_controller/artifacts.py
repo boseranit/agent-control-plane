@@ -4,7 +4,7 @@ from enum import Enum
 from collections.abc import Sequence
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ResearchArtifact(BaseModel):
@@ -146,13 +146,43 @@ class FeatureSpecs(ResearchArtifact):
 
 
 class SelectedPlan(ResearchArtifact):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
     selected: bool
     plan_id: str | None = None
     rationale: str
     material_revision_categories: list[str] = Field(default_factory=list)
-    source_followups: list[str] = Field(default_factory=list)
-    implementation_seed_experiment: str | None = None
-    implementation_seed_worktree: str | None = None
+    selected_idea_ids: list[str] = Field(default_factory=list)
+    fresh_selection_reason: str | None = None
+    seed_component_ids: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_selection_source(self) -> "SelectedPlan":
+        if self.selected_idea_ids and self.fresh_selection_reason is not None:
+            raise ValueError(
+                "fresh_selection_reason must be null when selected_idea_ids are set"
+            )
+        if not self.selected:
+            if (
+                self.selected_idea_ids
+                or self.fresh_selection_reason is not None
+                or self.seed_component_ids
+            ):
+                raise ValueError(
+                    "unselected plans must not include idea ids, seed components, "
+                    "or fresh_selection_reason"
+                )
+            return self
+        if self.selected_idea_ids:
+            return self
+        if (
+            self.fresh_selection_reason is None
+            or not self.fresh_selection_reason.strip()
+        ):
+            raise ValueError(
+                "fresh_selection_reason is required when no selected_idea_ids are set"
+            )
+        return self
 
 
 class Critique(ResearchArtifact):
@@ -239,13 +269,62 @@ class Summary(ResearchArtifact):
     exploratory_findings: list[str] = Field(default_factory=list)
 
 
+class FollowupCandidate(ResearchArtifact):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    dedupe_key: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    kind: str = Field(min_length=1)
+    evidence_basis: list[str] = Field(min_length=1)
+    mechanism: str = Field(min_length=1)
+    axis_to_vary: str = Field(min_length=1)
+    specific_change: str = Field(min_length=1)
+    falsifying_evidence: list[str] = Field(min_length=1)
+    priority: float = Field(ge=0.0, le=1.0)
+    priority_reason: str = Field(min_length=1)
+    seed_component_ids: list[str]
+
+
+class LearningUpdate(ResearchArtifact):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    learning_key: str = Field(min_length=1)
+    evidence_basis: list[str] = Field(min_length=1)
+    claim: str = Field(min_length=1)
+    evidence: list[str] = Field(min_length=1)
+    implication: str = Field(min_length=1)
+    metric_paths: list[str]
+
+
+class BlockerCard(ResearchArtifact):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    blocker_key: str = Field(min_length=1)
+    blocker_type: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    resolution_condition: str = Field(min_length=1)
+    affected_idea_ids: list[str]
+
+
+class ReusableComponentCard(ResearchArtifact):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    component_key: str = Field(min_length=1)
+    worktree_path: str = Field(min_length=1)
+    changed_files: list[str]
+    summary: str = Field(min_length=1)
+    reusable_for: list[str] = Field(min_length=1)
+    risk_notes: list[str]
+
+
 class PlanUpdate(ResearchArtifact):
-    followups: list[str] = Field(default_factory=list)
-    revisit_conditions: list[str] = Field(default_factory=list)
-    blocked_paths: list[str] = Field(default_factory=list)
-    reusable_worktree: bool = False
-    recommended_next_experiment_kind: str | None = None
-    implementation_reuse_notes: list[str] = Field(default_factory=list)
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    followups: list[FollowupCandidate]
+    learning_updates: list[LearningUpdate]
+    blockers: list[BlockerCard]
+    reusable_components: list[ReusableComponentCard]
+    superseded_idea_ids: list[str]
 
 
 class Lineage(ResearchArtifact):

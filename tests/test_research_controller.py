@@ -6,8 +6,12 @@ from pathlib import Path
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
-from agent_control_plane.control_plane.json_artifacts import read_json_object
+from agent_control_plane.control_plane.json_artifacts import (
+    read_json_object,
+    write_json,
+)
 from agent_control_plane.research_experiment_controller.artifacts import (
     ExperimentDesign,
     FeatureSpec,
@@ -381,7 +385,10 @@ class MutatingEvaluationThread(EvaluationFakeThread):
     def run(self, input: str, config) -> object:
         manifest = read_json_object(Path(config.cwd) / "manifest.json")
         selected_plan = Path(manifest["canonical_artifacts"]["selected_plan"])
-        selected_plan.write_text('{"selected": false}\n', encoding="utf-8")
+        selected_plan.write_text(
+            '{"selected": false, "rationale": "mutated"}\n',
+            encoding="utf-8",
+        )
         return super().run(input, config)
 
 
@@ -404,7 +411,10 @@ class MutatingCrashingEvaluationThread:
         del input
         manifest = read_json_object(Path(config.cwd) / "manifest.json")
         selected_plan = Path(manifest["canonical_artifacts"]["selected_plan"])
-        selected_plan.write_text('{"selected": false}\n', encoding="utf-8")
+        selected_plan.write_text(
+            '{"selected": false, "rationale": "mutated"}\n',
+            encoding="utf-8",
+        )
         raise RuntimeError("evaluation crashed after mutation")
 
 
@@ -427,7 +437,10 @@ class MutatingMalformedEvaluationThread:
         del input
         manifest = read_json_object(Path(config.cwd) / "manifest.json")
         selected_plan = Path(manifest["canonical_artifacts"]["selected_plan"])
-        selected_plan.write_text('{"selected": false}\n', encoding="utf-8")
+        selected_plan.write_text(
+            '{"selected": false, "rationale": "mutated"}\n',
+            encoding="utf-8",
+        )
         return type(
             "TurnResult",
             (),
@@ -468,6 +481,16 @@ def test_start_research_run_creates_run_layout(tmp_path: Path) -> None:
     assert run.state_path.exists()
     assert run.ledger_path.exists()
     assert run.experiments_directory.is_dir()
+    assert read_json_object(run.paths.memory / "research_state.json") == {
+        "artifact_kind": "research_state",
+        "schema_version": 1,
+        "ideas": {},
+        "experiments": {},
+        "learning_updates": {},
+        "known_blockers": {},
+        "reusable_components": {},
+        "metric_observations": [],
+    }
 
 
 def test_start_research_run_uses_research_program_root(tmp_path: Path) -> None:
@@ -635,6 +658,7 @@ def test_run_research_loop_repeats_until_max_experiments(tmp_path: Path) -> None
                     selected=True,
                     plan_id=f"plan-{request.experiment_id}",
                     rationale="Admissible bounded experiment.",
+                    fresh_selection_reason="Fresh selected plan.",
                 ),
                 experiment_design=ExperimentDesign(
                     verification_commands=[
@@ -668,6 +692,48 @@ def test_run_research_loop_repeats_until_max_experiments(tmp_path: Path) -> None
     assert state["current_phase"] == "completed"
     assert state["experiment_count"] == 2
     assert list(state["experiments"]) == ["EXP-0001", "EXP-0002"]
+
+
+def test_memory_merge_failure_prevents_terminal_state_and_ledger_persistence(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    spec_path = write_minimal_research_run_spec(tmp_path, repo)
+    run = start_research_run(spec_path)
+
+    def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        write_json(
+            request.experiment_directory / "summary.json",
+            {
+                "outcome": "completed_candidate",
+                "outcome_reason": "Locked gates passed.",
+                "failed_stage": None,
+                "failure_classification": None,
+                "summary": "Candidate.",
+            },
+        )
+        write_json(
+            request.experiment_directory / "plan_update.json",
+            {"followups": ["old loose followup"]},
+        )
+        return {"status": "experiment_completed"}
+
+    with pytest.raises(ValidationError):
+        run_research_loop(
+            run.research_run_id,
+            research_program_root=run.run_directory.parents[1],
+            experiment_runner=experiment_runner,
+        )
+
+    state = read_json_object(run.state_path)
+    events = read_ledger_events(run.ledger_path)
+    research_state = read_json_object(run.paths.memory / "research_state.json")
+    assert state["current_phase"] == "running_experiment"
+    assert state["active_experiment_id"] == "EXP-0001"
+    assert state["experiments"] == {}
+    assert not any(event["event_type"] == "experiment_completed" for event in events)
+    assert research_state["experiments"] == {}
 
 
 def test_run_research_loop_continues_after_no_op_until_max_experiments(
@@ -767,6 +833,7 @@ def test_selected_plan_without_deterministic_commands_is_blocked(
                     selected=True,
                     plan_id="plan-without-commands",
                     rationale="Design is interesting but not executable.",
+                    fresh_selection_reason="Fresh selected plan.",
                 ),
                 experiment_design=ExperimentDesign(),
             ),
@@ -804,6 +871,7 @@ def test_selected_plan_cannot_return_no_op_terminal_summary(tmp_path: Path) -> N
                     selected=True,
                     plan_id="selected-plan",
                     rationale="Plan selected.",
+                    fresh_selection_reason="Fresh selected plan.",
                 ),
                 experiment_design=ExperimentDesign(
                     verification_commands=[
@@ -854,6 +922,7 @@ def test_missing_data_root_writes_data_audit_and_summary_before_terminal_path(
                     selected=True,
                     plan_id="needs-data",
                     rationale="Plan needs data audit.",
+                    fresh_selection_reason="Fresh selected plan.",
                 ),
                 experiment_design=ExperimentDesign(
                     verification_commands=[{"name": "unit", "argv": ["pytest", "-q"]}],
@@ -902,6 +971,7 @@ def test_failed_data_audit_command_writes_summary_and_command_artifacts(
                     selected=True,
                     plan_id="bad-schema",
                     rationale="Plan needs schema audit.",
+                    fresh_selection_reason="Fresh selected plan.",
                 ),
                 experiment_design=ExperimentDesign(
                     data_audit_commands=[
@@ -957,6 +1027,7 @@ def test_prerequisites_failed_stops_research_run_by_default(tmp_path: Path) -> N
                     selected=True,
                     plan_id=f"needs-data-{request.experiment_id}",
                     rationale="Plan needs data audit.",
+                    fresh_selection_reason="Fresh selected plan.",
                 ),
                 experiment_design=ExperimentDesign(
                     verification_commands=[{"name": "unit", "argv": ["pytest", "-q"]}],
@@ -999,6 +1070,7 @@ def test_stop_on_prerequisites_failed_false_continues_to_max_experiments(
                     selected=True,
                     plan_id=f"needs-data-{request.experiment_id}",
                     rationale="Plan needs data audit.",
+                    fresh_selection_reason="Fresh selected plan.",
                 ),
                 experiment_design=ExperimentDesign(
                     verification_commands=[{"name": "unit", "argv": ["pytest", "-q"]}],
@@ -1039,6 +1111,7 @@ def test_worktree_create_false_rejects_selected_design_that_needs_edits(
                     selected=True,
                     plan_id="editing-plan",
                     rationale="Needs implementation.",
+                    fresh_selection_reason="Fresh selected plan.",
                 ),
                 experiment_design=ExperimentDesign(
                     allowed_write_paths=["src"],
@@ -1084,6 +1157,7 @@ def test_worktree_create_false_allows_read_only_selected_design(
                     selected=True,
                     plan_id="read-only-plan",
                     rationale="Evaluate locked artifacts only.",
+                    fresh_selection_reason="Fresh selected plan.",
                 ),
                 experiment_design=ExperimentDesign(
                     confirmatory_commands=[
@@ -1130,6 +1204,7 @@ def test_agent_declared_material_revision_gets_fresh_critic_review(
                     selected=True,
                     plan_id="revised-plan",
                     rationale="Split changed after critique.",
+                    fresh_selection_reason="Fresh selected plan.",
                     material_revision_categories=["split"],
                 ),
                 experiment_design=ExperimentDesign(
@@ -1212,6 +1287,7 @@ def test_controller_detected_material_revision_gets_fresh_critic_review(
                     selected=True,
                     plan_id="metric-revision",
                     rationale="Primary metric revised.",
+                    fresh_selection_reason="Fresh selected plan.",
                 ),
                 experiment_design=ExperimentDesign(
                     verification_commands=[
@@ -1279,6 +1355,7 @@ def test_controller_detects_feature_spec_material_revision(
                     selected=True,
                     plan_id=f"{field}-revision",
                     rationale="Feature spec changed.",
+                    fresh_selection_reason="Fresh selected plan.",
                 ),
                 experiment_design=ExperimentDesign(
                     verification_commands=[
@@ -1343,6 +1420,7 @@ def test_rejected_material_revision_blocks_experiment(
                     selected=True,
                     plan_id="bad-revision",
                     rationale="Split changed after critique.",
+                    fresh_selection_reason="Fresh selected plan.",
                     material_revision_categories=["split"],
                 ),
                 experiment_design=ExperimentDesign(
@@ -1402,6 +1480,7 @@ def test_revision_required_material_critic_decisions_block_experiment(
                     selected=True,
                     plan_id=f"{decision}-revision",
                     rationale="Split changed after critique.",
+                    fresh_selection_reason="Fresh selected plan.",
                     material_revision_categories=["split"],
                 ),
                 experiment_design=ExperimentDesign(
@@ -1452,6 +1531,7 @@ def test_non_material_revision_does_not_get_fresh_critic_review(
                     selected=True,
                     plan_id="formatting-revision",
                     rationale="Command formatting changed only.",
+                    fresh_selection_reason="Fresh selected plan.",
                 ),
                 experiment_design=ExperimentDesign(
                     verification_commands=[
@@ -1505,6 +1585,7 @@ def test_material_revision_without_runtime_is_invalid(
                     selected=True,
                     plan_id="unreviewed-revision",
                     rationale="Revision declared material.",
+                    fresh_selection_reason="Fresh selected plan.",
                     material_revision_categories=["success gate"],
                 ),
                 experiment_design=ExperimentDesign(
@@ -1544,6 +1625,7 @@ def test_selected_confirmatory_only_experiment_gets_default_worktree(
                     selected=True,
                     plan_id="confirmatory-plan",
                     rationale="Run locked confirmatory commands.",
+                    fresh_selection_reason="Fresh selected plan.",
                 ),
                 experiment_design=ExperimentDesign(
                     confirmatory_commands=[
@@ -1588,6 +1670,7 @@ def test_selected_editable_experiment_gets_preserved_worktree_by_default(
                     selected=True,
                     plan_id="editing-plan",
                     rationale="Needs implementation.",
+                    fresh_selection_reason="Fresh selected plan.",
                 ),
                 experiment_design=ExperimentDesign(
                     allowed_write_paths=["src"],
@@ -1637,6 +1720,7 @@ def test_verification_repairs_reuse_same_implementer_thread_until_limit(
                     selected=True,
                     plan_id="editing-plan",
                     rationale="Needs implementation.",
+                    fresh_selection_reason="Fresh selected plan.",
                 ),
                 experiment_design=ExperimentDesign(
                     allowed_write_paths=["src"],
@@ -1713,6 +1797,7 @@ def test_selection_path_audits_repair_boundary_before_verification_failure(
                     selected=True,
                     plan_id="editing-plan",
                     rationale="Needs implementation.",
+                    fresh_selection_reason="Fresh selected plan.",
                 ),
                 experiment_design=ExperimentDesign(
                     allowed_write_paths=["src"],
@@ -1760,6 +1845,7 @@ def test_evaluator_runs_in_workspace_and_writes_result_artifacts(
                     selected=True,
                     plan_id="confirmatory-plan",
                     rationale="Run locked evaluation.",
+                    fresh_selection_reason="Fresh selected plan.",
                 ),
                 experiment_design=ExperimentDesign(
                     confirmatory_commands=[
@@ -1817,6 +1903,7 @@ def test_feature_specs_are_written_and_locked_for_evaluation(
                     selected=True,
                     plan_id="feature-plan",
                     rationale="Evaluate material signal feature.",
+                    fresh_selection_reason="Fresh selected plan.",
                 ),
                 experiment_design=ExperimentDesign(
                     confirmatory_commands=[
@@ -1895,6 +1982,7 @@ def test_partial_research_spec_is_rejected_before_evaluation_lock(
                     selected=True,
                     plan_id="partial-spec-plan",
                     rationale="Evaluate partial research spec.",
+                    fresh_selection_reason="Fresh selected plan.",
                 ),
                 experiment_design=ExperimentDesign(
                     confirmatory_commands=[
@@ -1945,6 +2033,7 @@ def test_evaluation_runtime_defect_records_run_failed_without_implementer_rerout
                     selected=True,
                     plan_id="confirmatory-plan",
                     rationale="Run locked evaluation.",
+                    fresh_selection_reason="Fresh selected plan.",
                 ),
                 experiment_design=ExperimentDesign(
                     confirmatory_commands=[
@@ -1986,6 +2075,7 @@ def test_evaluation_boundary_failure_records_run_failed(
                     selected=True,
                     plan_id="confirmatory-plan",
                     rationale="Run locked evaluation.",
+                    fresh_selection_reason="Fresh selected plan.",
                 ),
                 experiment_design=ExperimentDesign(
                     confirmatory_commands=[
@@ -2031,6 +2121,7 @@ def test_evaluation_boundary_failure_wins_after_malformed_evaluator_response(
                     selected=True,
                     plan_id="confirmatory-plan",
                     rationale="Run locked evaluation.",
+                    fresh_selection_reason="Fresh selected plan.",
                 ),
                 experiment_design=ExperimentDesign(
                     confirmatory_commands=[
@@ -2070,6 +2161,7 @@ def test_evaluation_boundary_failure_wins_after_evaluator_crash(
                     selected=True,
                     plan_id="confirmatory-plan",
                     rationale="Run locked evaluation.",
+                    fresh_selection_reason="Fresh selected plan.",
                 ),
                 experiment_design=ExperimentDesign(
                     confirmatory_commands=[
@@ -2106,6 +2198,7 @@ def test_terminal_summary_routes_to_experiment_state(tmp_path: Path) -> None:
                     selected=True,
                     plan_id="candidate-plan",
                     rationale="Admissible bounded experiment.",
+                    fresh_selection_reason="Fresh selected plan.",
                 ),
                 experiment_design=ExperimentDesign(
                     confirmatory_commands=[
