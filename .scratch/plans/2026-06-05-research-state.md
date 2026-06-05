@@ -113,3 +113,73 @@
     - No compatibility shims, no legacy normalization, no multi-artifact memory split.
     - Controller owns memory/status/dedupe; Strategist owns research judgment.
  
+  # Tighten Research Memory Contract
+
+  ## Summary
+
+  Keep the changes that improve research learning: one canonical research_state.json, strict typed plan updates, selected-reference
+  validation, completed ideas in do_not_repeat, and lineage-owned reusable metadata.
+
+  Remove changes that add mutable/duplicate state or hide missing learning: synthetic empty plan_update.json, merged_experiments,
+  active_brief, and auto lineage:* reusable components.
+
+  ## Public Contract
+
+  - ResearchState fields:
+      - keep: artifact_kind, schema_version, program_id, next_idea_number, experiment_index, learning_updates, known_blockers,
+        reusable_components, metric_observations
+      - remove active_brief; canonical brief stays in run spec/context
+      - remove merged_experiments; experiment_index is idempotency source
+      - keep agent-owned fields: component_key, summary, reusable_for, risk_notes
+      - remove agent-owned worktree_path and changed_files
+      - controller fills ReusableComponentRecord.worktree_path and changed_files from lineage.json
+
+  ## Key Changes
+
+  - In experiment flow:
+      - validate selected_idea_ids and seed_component_ids before writing selected_plan.json
+      - delete _write_empty_plan_update_if_missing and its call
+      - require real plan_update.json from strategist/caller for completed empirical runs
+
+  - In research state merge:
+      - if source_experiment already exists in experiment_index, return state as idempotent no-op
+      - for any completed_* summary, require direct reads of selected_plan.json, research_spec.json, confirmatory_evaluation_result.json,
+        lineage.json, and plan_update.json
+
+      - optional artifact reads stay only for non-completed terminal outcomes
+      - merge typed reusable components only from plan_update.reusable_components
+      - require lineage worktree and non-empty lineage changed_files when reusable components are declared
+      - delete auto _merge_lineage_reusable_component
+
+  - In context rendering:
+      - derive pending followups from idea_index records with status == "pending"
+      - derive do_not_repeat from completed/blocked/superseded ideas plus blockers
+      - keep prior experiment lineage/worktree visible through prior_experiments
+      - keep reusable_implementations limited to strategist-curated reusable components
+
+  ## Test Plan
+
+  - Research state contract:
+      - created state has idea_index, no active_brief, no merged_experiments
+      - malformed old string plan updates fail
+      - completed merge fails if any required completed artifact is missing
+      - completed merge accepts real empty plan_update.json
+      - duplicate merge is no-op via experiment_index
+
+  - Flow behavior:
+      - invalid selected idea/component refs fail before selected_plan.json is written
+      - completed supplied selection does not synthesize plan_update.json
+      - agent-driven completed closeout still writes real plan_update.json
+
+  - Reuse/context:
+      - reusable component card omits worktree/files; merge fills from lineage
+      - lineage-only completed experiment does not appear in reusable_implementations
+      - completed ideas appear in do_not_repeat
+      - pending followups render from idea_index
+
+  ## Assumptions
+
+  - User intent overrides the original plan where they conflict.
+  - No backward compatibility for current unstaged schema or old artifacts.
+  - research_brief remains canonical in run spec/context, not program memory.
+  - Tests should enforce only critical contract behavior, not implementation shape beyond public JSON contracts.
