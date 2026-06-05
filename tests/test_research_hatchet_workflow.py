@@ -31,7 +31,7 @@ from agent_control_plane.research_experiment_controller.artifacts import (
 from agent_control_plane.research_experiment_controller.experiment_flow import (
     ExperimentFlowSelection,
     ExperimentFlowRequest,
-    run_experiment_flow,
+    run_experiment_flow as _run_experiment_flow,
 )
 from agent_control_plane.research_experiment_controller.hatchet_workflow import (
     build_hatchet_workflows,
@@ -40,6 +40,82 @@ from agent_control_plane.research_experiment_controller.durable_shell import (
     ResearchRunInput,
     run_research_shell,
 )
+
+
+COMPLETED_OUTCOMES = {
+    "completed_rejected",
+    "completed_inconclusive",
+    "completed_candidate",
+}
+
+
+def run_experiment_flow(
+    request: ExperimentFlowRequest,
+    *,
+    selection: ExperimentFlowSelection | None = None,
+    agent_runtime: Any | None = None,
+) -> dict[str, Any]:
+    result = _run_experiment_flow(
+        request,
+        selection=selection,
+        agent_runtime=agent_runtime,
+    )
+    if result.get("outcome") in COMPLETED_OUTCOMES:
+        _write_completed_merge_artifacts(request, result)
+    return result
+
+
+def _write_completed_merge_artifacts(
+    request: ExperimentFlowRequest,
+    result: dict[str, Any],
+) -> None:
+    experiment_dir = request.experiment_directory
+    if not (experiment_dir / "research_spec.json").exists():
+        write_json(
+            experiment_dir / "research_spec.json",
+            {
+                "hypothesis": "Peer residuals forecast next-month returns.",
+                "target": "next_month_return",
+                "prediction_horizon": "1M",
+                "universe": "hyperliquid_perps",
+                "label": "forward_return_1m",
+                "feature_availability_assumptions": ["features lagged one bar"],
+                "split": {"train": "2020-01:2024-12", "test": "2025-01:2026-01"},
+                "primary_metric": "information_coefficient",
+                "secondary_metrics": ["turnover"],
+                "baselines": ["market_neutral_null"],
+                "null_tests": ["symbol_shuffle"],
+                "transaction_cost_assumptions": "5 bps",
+                "success_gates": {"information_coefficient": 0.03},
+                "failure_gates": {"information_coefficient": 0.0},
+                "inconclusive_gates": {"min_observations": 100},
+            },
+        )
+    if not (experiment_dir / "plan_update.json").exists():
+        write_json(
+            experiment_dir / "plan_update.json",
+            {
+                "followups": [],
+                "learning_updates": [],
+                "blockers": [],
+                "reusable_components": [],
+                "superseded_idea_ids": [],
+            },
+        )
+    if not (experiment_dir / "lineage.json").exists():
+        write_json(
+            experiment_dir / "lineage.json",
+            {
+                "research_run_id": request.research_run_id,
+                "experiment_id": request.experiment_id,
+                "experiment_dir": str(experiment_dir),
+                "worktree_path": None,
+                "worktree_branch": None,
+                "changed_files": [],
+                "implementation_summary": None,
+                "reusable_for_followups": False,
+            },
+        )
 
 
 class FakeHatchet:

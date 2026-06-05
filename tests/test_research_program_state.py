@@ -48,7 +48,7 @@ def test_typed_plan_update_rejects_coercion() -> None:
         PlanUpdate.model_validate(payload)
 
 
-def test_selected_plan_requires_frontier_ids_or_fresh_reason() -> None:
+def test_selected_plan_requires_idea_ids_or_fresh_reason() -> None:
     with pytest.raises(ValidationError):
         SelectedPlan(selected=True, rationale="Missing selection source.")
 
@@ -72,7 +72,7 @@ def test_selected_plan_requires_frontier_ids_or_fresh_reason() -> None:
     with pytest.raises(ValidationError):
         SelectedPlan(
             selected=False,
-            rationale="No-op cannot carry frontier refs.",
+            rationale="No-op cannot carry idea refs.",
             selected_idea_ids=["IDEA-0001"],
         )
 
@@ -97,7 +97,9 @@ def test_research_state_rejects_missing_seed_component(tmp_path: Path) -> None:
         {
             "artifact_kind": "research_state",
             "schema_version": 1,
-            "ideas": {
+            "program_id": "program",
+            "next_idea_number": 2,
+            "idea_index": {
                 "IDEA-0001": {
                     "dedupe_key": "bad-seed",
                     "title": "Bad seed",
@@ -114,7 +116,7 @@ def test_research_state_rejects_missing_seed_component(tmp_path: Path) -> None:
                     "status": "pending",
                 }
             },
-            "experiments": {
+            "experiment_index": {
                 "run-1/EXP-0001": {
                     "experiment_dir": "/tmp/run-1/EXP-0001",
                     "outcome": "completed_candidate",
@@ -155,12 +157,15 @@ def test_merge_terminal_experiment_updates_research_state_once(
     )
 
     persisted = read_json_object(research_state_path(paths))
-    assert list(state.experiments) == ["run-1/EXP-0001"]
-    assert list(state.ideas) == ["IDEA-0001"]
-    assert state.ideas["IDEA-0001"].dedupe_key == "vary-liquidity"
+    assert list(state.experiment_index) == ["run-1/EXP-0001"]
+    assert list(state.idea_index) == ["IDEA-0001"]
+    assert state.idea_index["IDEA-0001"].dedupe_key == "vary-liquidity"
+    assert state.next_idea_number == 2
+    assert list(state.reusable_components) == ["component-current"]
     assert state.reusable_components["component-current"].changed_files == [
         "research/feature.py"
     ]
+    assert state.reusable_components["component-current"].worktree_path == str(worktree)
     assert persisted["metric_observations"] == [
         {
             "metric_path": "ic",
@@ -183,7 +188,9 @@ def test_selected_idea_status_transition_is_canonical(tmp_path: Path) -> None:
         ResearchState(
             artifact_kind="research_state",
             schema_version=1,
-            experiments={
+            program_id="program",
+            next_idea_number=2,
+            experiment_index={
                 "run-0/EXP-0001": {
                     "experiment_dir": str(
                         paths.experiment_directory("run-0", "EXP-0001")
@@ -191,7 +198,7 @@ def test_selected_idea_status_transition_is_canonical(tmp_path: Path) -> None:
                     "outcome": "completed_inconclusive",
                 }
             },
-            ideas={
+            idea_index={
                 "IDEA-0001": IdeaRecord(
                     dedupe_key="existing",
                     title="Existing idea",
@@ -202,7 +209,7 @@ def test_selected_idea_status_transition_is_canonical(tmp_path: Path) -> None:
                     specific_change="Run existing idea.",
                     falsifying_evidence=["Gate fails."],
                     priority=0.5,
-                    priority_reason="Existing frontier.",
+                    priority_reason="Existing idea.",
                     seed_component_ids=[],
                     source_experiments=["run-0/EXP-0001"],
                 )
@@ -222,6 +229,19 @@ def test_selected_idea_status_transition_is_canonical(tmp_path: Path) -> None:
             "selected_idea_ids": ["IDEA-0001"],
             "fresh_selection_reason": None,
             "seed_component_ids": [],
+        },
+    )
+    _write_research_spec(experiment_dir)
+    _write_lineage(experiment_dir, paths.worktree_directory("run-1", "EXP-0001"))
+    _write_confirmatory_result(experiment_dir)
+    write_json(
+        experiment_dir / "plan_update.json",
+        {
+            "followups": [],
+            "learning_updates": [],
+            "blockers": [],
+            "reusable_components": [],
+            "superseded_idea_ids": [],
         },
     )
 
@@ -232,7 +252,77 @@ def test_selected_idea_status_transition_is_canonical(tmp_path: Path) -> None:
         experiment_dir=experiment_dir,
     )
 
-    assert state.ideas["IDEA-0001"].status == "completed"
+    assert state.idea_index["IDEA-0001"].status == "completed"
+
+
+def test_completed_evaluated_experiment_requires_plan_update(tmp_path: Path) -> None:
+    paths = ResearchProgramPaths(tmp_path / "program")
+    paths.create_directories()
+    ensure_research_state(paths)
+    experiment_dir = paths.experiment_directory("run-1", "EXP-0001")
+    _write_minimal_terminal_artifacts(
+        experiment_dir,
+        selected_plan={
+            "selected": True,
+            "rationale": "Fresh selected plan.",
+            "fresh_selection_reason": "No pending idea fit.",
+            "seed_component_ids": [],
+        },
+    )
+    _write_research_spec(experiment_dir)
+    _write_lineage(experiment_dir, paths.worktree_directory("run-1", "EXP-0001"))
+    write_json(
+        experiment_dir / "confirmatory_evaluation_result.json",
+        {
+            "outcome": "completed_candidate",
+            "outcome_reason": "Locked gates passed.",
+            "failed_stage": None,
+            "failure_classification": None,
+            "metrics": {"ic": 0.04},
+            "gate_results": {},
+            "pre_registered_evidence": [],
+        },
+    )
+
+    with pytest.raises(FileNotFoundError, match="plan_update.json"):
+        merge_terminal_experiment(
+            paths=paths,
+            research_run_id="run-1",
+            experiment_id="EXP-0001",
+            experiment_dir=experiment_dir,
+        )
+
+
+def test_reusable_component_requires_lineage_changed_files(
+    tmp_path: Path,
+) -> None:
+    paths = ResearchProgramPaths(tmp_path / "program")
+    paths.create_directories()
+    ensure_research_state(paths)
+    experiment_dir = paths.experiment_directory("run-1", "EXP-0001")
+    worktree = paths.worktree_directory("run-1", "EXP-0001")
+    _write_terminal_artifacts(experiment_dir, worktree)
+    write_json(
+        experiment_dir / "lineage.json",
+        {
+            "research_run_id": "run-1",
+            "experiment_id": "EXP-0001",
+            "experiment_dir": str(experiment_dir),
+            "worktree_path": str(worktree),
+            "worktree_branch": "research/run-1/EXP-0001",
+            "changed_files": [],
+            "implementation_summary": "Built feature.",
+            "reusable_for_followups": True,
+        },
+    )
+
+    with pytest.raises(ValueError, match="changed files"):
+        merge_terminal_experiment(
+            paths=paths,
+            research_run_id="run-1",
+            experiment_id="EXP-0001",
+            experiment_dir=experiment_dir,
+        )
 
 
 def test_selected_idea_cannot_be_superseded_in_same_merge(tmp_path: Path) -> None:
@@ -243,7 +333,9 @@ def test_selected_idea_cannot_be_superseded_in_same_merge(tmp_path: Path) -> Non
         ResearchState(
             artifact_kind="research_state",
             schema_version=1,
-            experiments={
+            program_id="program",
+            next_idea_number=2,
+            experiment_index={
                 "run-0/EXP-0001": {
                     "experiment_dir": str(
                         paths.experiment_directory("run-0", "EXP-0001")
@@ -251,7 +343,7 @@ def test_selected_idea_cannot_be_superseded_in_same_merge(tmp_path: Path) -> Non
                     "outcome": "completed_inconclusive",
                 }
             },
-            ideas={
+            idea_index={
                 "IDEA-0001": IdeaRecord(
                     dedupe_key="existing",
                     title="Existing idea",
@@ -262,7 +354,7 @@ def test_selected_idea_cannot_be_superseded_in_same_merge(tmp_path: Path) -> Non
                     specific_change="Run existing idea.",
                     falsifying_evidence=["Gate fails."],
                     priority=0.5,
-                    priority_reason="Existing frontier.",
+                    priority_reason="Existing idea.",
                     seed_component_ids=[],
                     source_experiments=["run-0/EXP-0001"],
                 )
@@ -284,6 +376,9 @@ def test_selected_idea_cannot_be_superseded_in_same_merge(tmp_path: Path) -> Non
             "seed_component_ids": [],
         },
     )
+    _write_research_spec(experiment_dir)
+    _write_lineage(experiment_dir, paths.worktree_directory("run-1", "EXP-0001"))
+    _write_confirmatory_result(experiment_dir)
     write_json(
         experiment_dir / "plan_update.json",
         {
@@ -304,8 +399,8 @@ def test_selected_idea_cannot_be_superseded_in_same_merge(tmp_path: Path) -> Non
         )
 
     persisted = load_research_state(research_state_path(paths))
-    assert "run-1/EXP-0001" not in persisted.experiments
-    assert persisted.ideas["IDEA-0001"].status == "pending"
+    assert "run-1/EXP-0001" not in persisted.experiment_index
+    assert persisted.idea_index["IDEA-0001"].status == "pending"
 
 
 def _write_terminal_artifacts(experiment_dir: Path, worktree: Path) -> None:
@@ -314,61 +409,13 @@ def _write_terminal_artifacts(experiment_dir: Path, worktree: Path) -> None:
         selected_plan={
             "selected": True,
             "rationale": "Fresh selected plan.",
-            "fresh_selection_reason": "No pending frontier fit.",
+            "fresh_selection_reason": "No pending idea fit.",
             "seed_component_ids": [],
         },
     )
-    write_json(
-        experiment_dir / "research_spec.json",
-        {
-            "hypothesis": "Peer residuals forecast next-month returns.",
-            "target": "next_month_return",
-            "prediction_horizon": "1M",
-            "universe": "hyperliquid_perps",
-            "label": "forward_return_1m",
-            "feature_availability_assumptions": ["features lagged one bar"],
-            "split": {"train": "2020-01:2024-12", "test": "2025-01:2026-01"},
-            "primary_metric": "information_coefficient",
-            "secondary_metrics": ["turnover"],
-            "baselines": ["market_neutral_null"],
-            "null_tests": ["symbol_shuffle"],
-            "transaction_cost_assumptions": "5 bps",
-            "success_gates": {"information_coefficient": 0.03},
-            "failure_gates": {"information_coefficient": 0.0},
-            "inconclusive_gates": {"min_observations": 100},
-        },
-    )
-    write_json(
-        experiment_dir / "lineage.json",
-        {
-            "research_run_id": "run-1",
-            "experiment_id": "EXP-0001",
-            "experiment_dir": str(experiment_dir),
-            "worktree_path": str(worktree),
-            "worktree_branch": "research/run-1/EXP-0001",
-            "changed_files": ["research/feature.py"],
-            "implementation_summary": "Built feature.",
-            "reusable_for_followups": True,
-        },
-    )
-    write_json(
-        experiment_dir / "confirmatory_evaluation_result.json",
-        {
-            "outcome": "completed_candidate",
-            "outcome_reason": "Locked gates passed.",
-            "failed_stage": None,
-            "failure_classification": None,
-            "metrics": {
-                "ic": 0.04,
-                "passed": True,
-                "bad": float("nan"),
-                "huge": float("inf"),
-                "nested": {"ir": 1.2},
-            },
-            "gate_results": {},
-            "pre_registered_evidence": [],
-        },
-    )
+    _write_research_spec(experiment_dir)
+    _write_lineage(experiment_dir, worktree)
+    _write_confirmatory_result(experiment_dir)
     write_json(
         experiment_dir / "plan_update.json",
         {
@@ -376,8 +423,6 @@ def _write_terminal_artifacts(experiment_dir: Path, worktree: Path) -> None:
             "reusable_components": [
                 {
                     "component_key": "component-current",
-                    "worktree_path": str(worktree),
-                    "changed_files": ["agent/claimed.py"],
                     "summary": "Reusable feature.",
                     "reusable_for": ["liquidity followup"],
                     "risk_notes": [],
@@ -404,6 +449,66 @@ def _write_minimal_terminal_artifacts(
         },
     )
     write_json(experiment_dir / "selected_plan.json", selected_plan)
+
+
+def _write_research_spec(experiment_dir: Path) -> None:
+    write_json(
+        experiment_dir / "research_spec.json",
+        {
+            "hypothesis": "Peer residuals forecast next-month returns.",
+            "target": "next_month_return",
+            "prediction_horizon": "1M",
+            "universe": "hyperliquid_perps",
+            "label": "forward_return_1m",
+            "feature_availability_assumptions": ["features lagged one bar"],
+            "split": {"train": "2020-01:2024-12", "test": "2025-01:2026-01"},
+            "primary_metric": "information_coefficient",
+            "secondary_metrics": ["turnover"],
+            "baselines": ["market_neutral_null"],
+            "null_tests": ["symbol_shuffle"],
+            "transaction_cost_assumptions": "5 bps",
+            "success_gates": {"information_coefficient": 0.03},
+            "failure_gates": {"information_coefficient": 0.0},
+            "inconclusive_gates": {"min_observations": 100},
+        },
+    )
+
+
+def _write_lineage(experiment_dir: Path, worktree: Path) -> None:
+    write_json(
+        experiment_dir / "lineage.json",
+        {
+            "research_run_id": "run-1",
+            "experiment_id": "EXP-0001",
+            "experiment_dir": str(experiment_dir),
+            "worktree_path": str(worktree),
+            "worktree_branch": "research/run-1/EXP-0001",
+            "changed_files": ["research/feature.py"],
+            "implementation_summary": "Built feature.",
+            "reusable_for_followups": True,
+        },
+    )
+
+
+def _write_confirmatory_result(experiment_dir: Path) -> None:
+    write_json(
+        experiment_dir / "confirmatory_evaluation_result.json",
+        {
+            "outcome": "completed_candidate",
+            "outcome_reason": "Locked gates passed.",
+            "failed_stage": None,
+            "failure_classification": None,
+            "metrics": {
+                "ic": 0.04,
+                "passed": True,
+                "bad": float("nan"),
+                "huge": float("inf"),
+                "nested": {"ir": 1.2},
+            },
+            "gate_results": {},
+            "pre_registered_evidence": [],
+        },
+    )
 
 
 def _typed_plan_update_payload() -> dict:

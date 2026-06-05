@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -29,7 +30,7 @@ from agent_control_plane.research_experiment_controller.controller import (
 from agent_control_plane.research_experiment_controller.experiment_flow import (
     ExperimentFlowRequest,
     ExperimentFlowSelection,
-    run_experiment_flow,
+    run_experiment_flow as _run_experiment_flow,
 )
 from agent_control_plane.research_experiment_controller.ledger import read_ledger_events
 from agent_control_plane.research_experiment_controller.outcomes import (
@@ -37,6 +38,13 @@ from agent_control_plane.research_experiment_controller.outcomes import (
     classify_invalid,
     classify_run_failed,
 )
+
+
+COMPLETED_OUTCOMES = {
+    "completed_rejected",
+    "completed_inconclusive",
+    "completed_candidate",
+}
 
 
 def write_minimal_research_run_spec(
@@ -122,6 +130,69 @@ def valid_research_spec_payload() -> dict[str, object]:
         "failure_gates": {"information_coefficient": 0.0},
         "inconclusive_gates": {"min_observations": 100},
     }
+
+
+def run_experiment_flow(
+    request: ExperimentFlowRequest,
+    *,
+    selection: ExperimentFlowSelection | None = None,
+    agent_runtime: Any | None = None,
+) -> dict[str, Any]:
+    result = _run_experiment_flow(
+        request,
+        selection=selection,
+        agent_runtime=agent_runtime,
+    )
+    if result.get("outcome") in COMPLETED_OUTCOMES:
+        _write_completed_merge_artifacts(request, result)
+    return result
+
+
+def _write_completed_merge_artifacts(
+    request: ExperimentFlowRequest,
+    result: dict[str, Any],
+) -> None:
+    experiment_dir = request.experiment_directory
+    if not (experiment_dir / "research_spec.json").exists():
+        write_json(experiment_dir / "research_spec.json", valid_research_spec_payload())
+    if not (experiment_dir / "confirmatory_evaluation_result.json").exists():
+        write_json(
+            experiment_dir / "confirmatory_evaluation_result.json",
+            {
+                "outcome": result["outcome"],
+                "outcome_reason": result["outcome_reason"],
+                "failed_stage": result["failed_stage"],
+                "failure_classification": result["failure_classification"],
+                "metrics": {},
+                "gate_results": {},
+                "pre_registered_evidence": [],
+            },
+        )
+    if not (experiment_dir / "lineage.json").exists():
+        write_json(
+            experiment_dir / "lineage.json",
+            {
+                "research_run_id": request.research_run_id,
+                "experiment_id": request.experiment_id,
+                "experiment_dir": str(experiment_dir),
+                "worktree_path": None,
+                "worktree_branch": None,
+                "changed_files": [],
+                "implementation_summary": None,
+                "reusable_for_followups": False,
+            },
+        )
+    if not (experiment_dir / "plan_update.json").exists():
+        write_json(
+            experiment_dir / "plan_update.json",
+            {
+                "followups": [],
+                "learning_updates": [],
+                "blockers": [],
+                "reusable_components": [],
+                "superseded_idea_ids": [],
+            },
+        )
 
 
 def valid_feature_spec_payload(**overrides: object) -> dict[str, object]:
@@ -484,8 +555,10 @@ def test_start_research_run_creates_run_layout(tmp_path: Path) -> None:
     assert read_json_object(run.paths.memory / "research_state.json") == {
         "artifact_kind": "research_state",
         "schema_version": 1,
-        "ideas": {},
-        "experiments": {},
+        "program_id": "peer-residual-v1",
+        "next_idea_number": 1,
+        "idea_index": {},
+        "experiment_index": {},
         "learning_updates": {},
         "known_blockers": {},
         "reusable_components": {},
@@ -714,6 +787,45 @@ def test_memory_merge_failure_prevents_terminal_state_and_ledger_persistence(
             },
         )
         write_json(
+            request.experiment_directory / "selected_plan.json",
+            {
+                "selected": True,
+                "plan_id": "candidate-plan",
+                "rationale": "Admissible bounded experiment.",
+                "fresh_selection_reason": "Fresh selected plan.",
+                "seed_component_ids": [],
+            },
+        )
+        write_json(
+            request.experiment_directory / "research_spec.json",
+            valid_research_spec_payload(),
+        )
+        write_json(
+            request.experiment_directory / "lineage.json",
+            {
+                "research_run_id": request.research_run_id,
+                "experiment_id": request.experiment_id,
+                "experiment_dir": str(request.experiment_directory),
+                "worktree_path": None,
+                "worktree_branch": None,
+                "changed_files": [],
+                "implementation_summary": None,
+                "reusable_for_followups": False,
+            },
+        )
+        write_json(
+            request.experiment_directory / "confirmatory_evaluation_result.json",
+            {
+                "outcome": "completed_candidate",
+                "outcome_reason": "Locked gates passed.",
+                "failed_stage": None,
+                "failure_classification": None,
+                "metrics": {},
+                "gate_results": {},
+                "pre_registered_evidence": [],
+            },
+        )
+        write_json(
             request.experiment_directory / "plan_update.json",
             {"followups": ["old loose followup"]},
         )
@@ -733,7 +845,7 @@ def test_memory_merge_failure_prevents_terminal_state_and_ledger_persistence(
     assert state["active_experiment_id"] == "EXP-0001"
     assert state["experiments"] == {}
     assert not any(event["event_type"] == "experiment_completed" for event in events)
-    assert research_state["experiments"] == {}
+    assert research_state["experiment_index"] == {}
 
 
 def test_run_research_loop_continues_after_no_op_until_max_experiments(

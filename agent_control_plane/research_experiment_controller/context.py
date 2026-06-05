@@ -196,7 +196,7 @@ def _state_prior_experiments(
         for source in component.source_experiments
     }
     records = []
-    for source_experiment, experiment in sorted(state.experiments.items()):
+    for source_experiment, experiment in sorted(state.experiment_index.items()):
         run_id, experiment_id = _split_source_experiment(source_experiment)
         worktree = (
             {"path": experiment.worktree_path, "source": "lineage"}
@@ -226,7 +226,7 @@ def _state_prior_experiments(
                 "changed_files": experiment.changed_files,
                 "followups": [
                     idea.title
-                    for idea in state.ideas.values()
+                    for idea in state.idea_index.values()
                     if source_experiment in idea.source_experiments
                 ],
                 "metrics": _metrics_for_source(state, source_experiment),
@@ -246,7 +246,7 @@ def _state_pending_ideas(state: ResearchState) -> list[dict[str, Any]]:
     records = []
     pending_items = [
         (idea_id, idea)
-        for idea_id, idea in state.ideas.items()
+        for idea_id, idea in state.idea_index.items()
         if idea.status == "pending"
     ]
     for idea_id, idea in sorted(
@@ -300,8 +300,8 @@ def _state_reusable_implementations(state: ResearchState) -> list[dict[str, Any]
 
 def _state_do_not_repeat(state: ResearchState) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
-    for idea_id, idea in sorted(state.ideas.items()):
-        if idea.status not in {"blocked", "superseded"}:
+    for idea_id, idea in sorted(state.idea_index.items()):
+        if idea.status not in {"completed", "blocked", "superseded"}:
             continue
         records.append(
             {

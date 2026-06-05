@@ -128,8 +128,10 @@ class MetricObservation(ResearchStateRecord):
 class ResearchState(ResearchStateRecord):
     artifact_kind: Literal["research_state"]
     schema_version: Literal[1]
-    ideas: dict[str, IdeaRecord]
-    experiments: dict[str, ExperimentRecord]
+    program_id: str = Field(min_length=1)
+    next_idea_number: int = Field(ge=1)
+    idea_index: dict[str, IdeaRecord]
+    experiment_index: dict[str, ExperimentRecord]
     learning_updates: dict[str, LearningRecord]
     known_blockers: dict[str, BlockerRecord]
     reusable_components: dict[str, ReusableComponentRecord]
@@ -137,10 +139,18 @@ class ResearchState(ResearchStateRecord):
 
     @model_validator(mode="after")
     def _validate_keys(self) -> "ResearchState":
-        for idea_id in self.ideas:
-            if IDEA_ID_PATTERN.match(idea_id) is None:
+        current_max_idea_number = 0
+        for idea_id in self.idea_index:
+            match = IDEA_ID_PATTERN.match(idea_id)
+            if match is None:
                 raise ValueError(f"Invalid idea id: {idea_id}")
-        for source_experiment in self.experiments:
+            current_max_idea_number = max(
+                current_max_idea_number,
+                int(match.group(1)),
+            )
+        if self.next_idea_number <= current_max_idea_number:
+            raise ValueError("next_idea_number must exceed existing idea ids")
+        for source_experiment in self.experiment_index:
             if "/" not in source_experiment:
                 raise ValueError(f"Invalid source experiment id: {source_experiment}")
         for label, records in (
@@ -151,9 +161,9 @@ class ResearchState(ResearchStateRecord):
             for key in records:
                 if not key.strip():
                     raise ValueError(f"{label} keys must not be blank")
-        for idea_id, idea in self.ideas.items():
+        for idea_id, idea in self.idea_index.items():
             for source_experiment in idea.source_experiments:
-                if source_experiment not in self.experiments:
+                if source_experiment not in self.experiment_index:
                     raise ValueError(
                         f"Idea {idea_id} source experiment does not exist: "
                         f"{source_experiment}"
@@ -163,9 +173,9 @@ class ResearchState(ResearchStateRecord):
                     raise ValueError(
                         f"Idea {idea_id} seed component does not exist: {component_id}"
                     )
-        for source_experiment, experiment in self.experiments.items():
+        for source_experiment, experiment in self.experiment_index.items():
             for idea_id in experiment.selected_idea_ids:
-                if idea_id not in self.ideas:
+                if idea_id not in self.idea_index:
                     raise ValueError(
                         f"Experiment {source_experiment} selected idea does not exist: "
                         f"{idea_id}"
@@ -178,7 +188,7 @@ class ResearchState(ResearchStateRecord):
                     )
         for blocker_key, blocker in self.known_blockers.items():
             for idea_id in blocker.affected_idea_ids:
-                if idea_id not in self.ideas:
+                if idea_id not in self.idea_index:
                     raise ValueError(
                         f"Blocker {blocker_key} affected idea does not exist: {idea_id}"
                     )
@@ -189,13 +199,13 @@ class ResearchState(ResearchStateRecord):
         ):
             for key, record in records.items():
                 for source_experiment in record.source_experiments:
-                    if source_experiment not in self.experiments:
+                    if source_experiment not in self.experiment_index:
                         raise ValueError(
                             f"{label} {key} source experiment does not exist: "
                             f"{source_experiment}"
                         )
         for observation in self.metric_observations:
-            if observation.source_experiment not in self.experiments:
+            if observation.source_experiment not in self.experiment_index:
                 raise ValueError(
                     "Metric observation source experiment does not exist: "
                     f"{observation.source_experiment}"
@@ -207,14 +217,21 @@ def research_state_path(paths: ResearchProgramPaths) -> Path:
     return paths.memory / "research_state.json"
 
 
-def ensure_research_state(paths: ResearchProgramPaths) -> ResearchState:
+def ensure_research_state(
+    paths: ResearchProgramPaths,
+    *,
+    program_id: str | None = None,
+) -> ResearchState:
+    resolved_program_id = program_id if program_id is not None else paths.root.name
     path = research_state_path(paths)
     if not path.exists():
         state = ResearchState(
             artifact_kind="research_state",
             schema_version=1,
-            ideas={},
-            experiments={},
+            program_id=resolved_program_id,
+            next_idea_number=1,
+            idea_index={},
+            experiment_index={},
             learning_updates={},
             known_blockers={},
             reusable_components={},
@@ -222,7 +239,13 @@ def ensure_research_state(paths: ResearchProgramPaths) -> ResearchState:
         )
         write_research_state(path, state)
         return state
-    return load_research_state(path)
+    state = load_research_state(path)
+    if state.program_id != resolved_program_id:
+        raise ValueError(
+            f"Research state program_id mismatch: {state.program_id} != "
+            f"{resolved_program_id}"
+        )
+    return state
 
 
 def load_research_state(path: str | Path) -> ResearchState:
@@ -245,47 +268,63 @@ def merge_terminal_experiment(
     source_experiment = f"{research_run_id}/{experiment_id}"
     state_path = research_state_path(paths)
     state = load_research_state(state_path)
-    if source_experiment in state.experiments:
+    if source_experiment in state.experiment_index:
         return state
 
     summary = Summary.model_validate(read_json_object(experiment_path / "summary.json"))
+    completed = summary.outcome.value in COMPLETED_OUTCOMES
 
     selected_plan_path = experiment_path / "selected_plan.json"
-    selected_plan = None
-    if selected_plan_path.exists():
+    if completed:
         selected_plan = SelectedPlan.model_validate(
             read_json_object(selected_plan_path)
         )
+    elif selected_plan_path.exists():
+        selected_plan = SelectedPlan.model_validate(read_json_object(selected_plan_path))
+    else:
+        selected_plan = None
 
     research_spec_path = experiment_path / "research_spec.json"
-    research_spec = None
-    if research_spec_path.exists():
-        research_spec = ResearchSpec.model_validate(
-            read_json_object(research_spec_path)
-        )
+    if completed:
+        research_spec = ResearchSpec.model_validate(read_json_object(research_spec_path))
+    elif research_spec_path.exists():
+        research_spec = ResearchSpec.model_validate(read_json_object(research_spec_path))
+    else:
+        research_spec = None
 
     plan_update_path = experiment_path / "plan_update.json"
-    plan_update = None
-    if plan_update_path.exists():
+    if completed:
         plan_update = PlanUpdate.model_validate(read_json_object(plan_update_path))
+    elif plan_update_path.exists():
+        plan_update = PlanUpdate.model_validate(read_json_object(plan_update_path))
+    else:
+        plan_update = None
 
     lineage_path = experiment_path / "lineage.json"
-    lineage = None
-    if lineage_path.exists():
+    if completed:
         lineage = Lineage.model_validate(read_json_object(lineage_path))
+    elif lineage_path.exists():
+        lineage = Lineage.model_validate(read_json_object(lineage_path))
+    else:
+        lineage = None
 
     confirmatory_path = experiment_path / "confirmatory_evaluation_result.json"
-    confirmatory = None
-    if confirmatory_path.exists():
+    if completed:
         confirmatory = ConfirmatoryEvaluationResult.model_validate(
             read_json_object(confirmatory_path)
         )
+    elif confirmatory_path.exists():
+        confirmatory = ConfirmatoryEvaluationResult.model_validate(
+            read_json_object(confirmatory_path)
+        )
+    else:
+        confirmatory = None
 
     selected_idea_ids = (
         list(selected_plan.selected_idea_ids) if selected_plan is not None else []
     )
     if selected_plan is not None:
-        _validate_selected_plan_references(state, selected_plan)
+        validate_selected_plan_references(state, selected_plan)
 
     if plan_update is not None:
         _validate_superseded_ideas(
@@ -299,6 +338,7 @@ def merge_terminal_experiment(
             source_experiment=source_experiment,
             lineage=lineage,
         )
+    if plan_update is not None:
         _validate_followup_seed_components(state, plan_update)
 
     experiment_record = ExperimentRecord(
@@ -333,7 +373,7 @@ def merge_terminal_experiment(
         ),
         lineage_path=str(lineage_path) if lineage is not None else None,
     )
-    state.experiments[source_experiment] = experiment_record
+    state.experiment_index[source_experiment] = experiment_record
 
     _apply_selected_idea_outcome(
         state,
@@ -361,21 +401,18 @@ def merge_terminal_experiment(
     return state
 
 
-def next_idea_id(ideas: dict[str, IdeaRecord]) -> str:
-    current_max = 0
-    for idea_id in ideas:
-        match = IDEA_ID_PATTERN.match(idea_id)
-        if match is not None:
-            current_max = max(current_max, int(match.group(1)))
-    return f"IDEA-{current_max + 1:04d}"
+def next_idea_id(state: ResearchState) -> str:
+    idea_id = f"IDEA-{state.next_idea_number:04d}"
+    state.next_idea_number += 1
+    return idea_id
 
 
-def _validate_selected_plan_references(
+def validate_selected_plan_references(
     state: ResearchState,
     selected_plan: SelectedPlan,
 ) -> None:
     for idea_id in selected_plan.selected_idea_ids:
-        idea = state.ideas.get(idea_id)
+        idea = state.idea_index.get(idea_id)
         if idea is None:
             raise ValueError(f"Selected idea does not exist: {idea_id}")
         if idea.status != "pending":
@@ -395,7 +432,7 @@ def _validate_superseded_ideas(
     for idea_id in superseded_idea_ids:
         if idea_id in selected_idea_id_set:
             raise ValueError(f"Selected idea cannot be superseded: {idea_id}")
-        idea = state.ideas.get(idea_id)
+        idea = state.idea_index.get(idea_id)
         if idea is None:
             raise ValueError(f"Superseded idea does not exist: {idea_id}")
         if idea.status != "pending":
@@ -411,15 +448,19 @@ def _merge_reusable_components(
 ) -> None:
     if not cards:
         return
-    if lineage is None or lineage.worktree_path is None:
-        raise ValueError("Reusable components require lineage worktree_path.")
-    lineage_worktree = Path(lineage.worktree_path).expanduser().resolve()
+    if lineage is None or lineage.worktree_path is None or not lineage.changed_files:
+        raise ValueError("Reusable components require lineage worktree and changed files.")
     for card in cards:
-        card_worktree = Path(card.worktree_path).expanduser().resolve()
-        if card_worktree != lineage_worktree:
-            raise ValueError("Reusable component worktree_path must match lineage.")
         existing = state.reusable_components.get(card.component_key)
         if existing is not None:
+            _validate_reusable_component_match(
+                existing,
+                worktree_path=lineage.worktree_path,
+                changed_files=lineage.changed_files,
+                summary=card.summary,
+                reusable_for=card.reusable_for,
+                risk_notes=card.risk_notes,
+            )
             _append_unique(existing.source_experiments, source_experiment)
             continue
         state.reusable_components[card.component_key] = ReusableComponentRecord(
@@ -430,6 +471,25 @@ def _merge_reusable_components(
             risk_notes=list(card.risk_notes),
             source_experiments=[source_experiment],
         )
+
+
+def _validate_reusable_component_match(
+    existing: ReusableComponentRecord,
+    *,
+    worktree_path: str,
+    changed_files: list[str],
+    summary: str,
+    reusable_for: list[str],
+    risk_notes: list[str],
+) -> None:
+    if (
+        existing.worktree_path != worktree_path
+        or existing.changed_files != changed_files
+        or existing.summary != summary
+        or existing.reusable_for != reusable_for
+        or existing.risk_notes != risk_notes
+    ):
+        raise ValueError("Reusable component key conflicts with existing component.")
 
 
 def _validate_followup_seed_components(
@@ -453,11 +513,11 @@ def _apply_selected_idea_outcome(
 ) -> None:
     if summary.outcome.value in COMPLETED_OUTCOMES:
         for idea_id in selected_idea_ids:
-            state.ideas[idea_id].status = "completed"
+            state.idea_index[idea_id].status = "completed"
         return
     if summary.outcome.value in BLOCKING_OUTCOMES:
         for idea_id in selected_idea_ids:
-            state.ideas[idea_id].status = "blocked"
+            state.idea_index[idea_id].status = "blocked"
         return
     if summary.outcome.value == "run_failed":
         blocker_key = (
@@ -482,16 +542,16 @@ def _merge_plan_update(
     source_experiment: str,
 ) -> None:
     for idea_id in plan_update.superseded_idea_ids:
-        state.ideas[idea_id].status = "superseded"
+        state.idea_index[idea_id].status = "superseded"
 
     for followup in plan_update.followups:
         existing_id = _idea_id_for_dedupe_key(state, followup.dedupe_key)
         if existing_id is not None:
             _append_unique(
-                state.ideas[existing_id].source_experiments, source_experiment
+                state.idea_index[existing_id].source_experiments, source_experiment
             )
             continue
-        state.ideas[next_idea_id(state.ideas)] = IdeaRecord(
+        state.idea_index[next_idea_id(state)] = IdeaRecord(
             dedupe_key=followup.dedupe_key,
             title=followup.title,
             kind=followup.kind,
@@ -538,7 +598,7 @@ def _validate_blocker_idea_references(
     blocker: BlockerCard,
 ) -> None:
     for idea_id in blocker.affected_idea_ids:
-        if idea_id not in state.ideas:
+        if idea_id not in state.idea_index:
             raise ValueError(f"Blocker affected idea does not exist: {idea_id}")
 
 
@@ -569,7 +629,7 @@ def _idea_id_for_dedupe_key(
     state: ResearchState,
     dedupe_key: str,
 ) -> str | None:
-    for idea_id, idea in state.ideas.items():
+    for idea_id, idea in state.idea_index.items():
         if idea.dedupe_key == dedupe_key:
             return idea_id
     return None

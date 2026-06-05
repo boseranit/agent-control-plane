@@ -117,8 +117,10 @@ def write_research_state(program_root: Path, payload: dict) -> None:
         {
             "artifact_kind": "research_state",
             "schema_version": 1,
-            "ideas": {},
-            "experiments": {},
+            "program_id": program_root.name,
+            "next_idea_number": 1,
+            "idea_index": {},
+            "experiment_index": {},
             "learning_updates": {},
             "known_blockers": {},
             "reusable_components": {},
@@ -253,7 +255,8 @@ def test_context_outputs_include_program_continuation_summary(
     write_research_state(
         program_root,
         {
-            "ideas": {
+            "next_idea_number": 3,
+            "idea_index": {
                 "IDEA-0001": {
                     "dedupe_key": "add-turnover-gate",
                     "title": "add turnover gate",
@@ -268,9 +271,24 @@ def test_context_outputs_include_program_continuation_summary(
                     "seed_component_ids": ["peer-residual-feature"],
                     "source_experiments": ["prior-run/EXP-0003"],
                     "status": "pending",
+                },
+                "IDEA-0002": {
+                    "dedupe_key": "completed-turnover-test",
+                    "title": "completed turnover test",
+                    "kind": "direct_followup",
+                    "evidence_basis": ["prior-run/EXP-0003"],
+                    "mechanism": "Already tested turnover.",
+                    "axis_to_vary": "turnover gate",
+                    "specific_change": "Retest old turnover gate.",
+                    "falsifying_evidence": ["No change."],
+                    "priority": 0.1,
+                    "priority_reason": "Already completed.",
+                    "seed_component_ids": [],
+                    "source_experiments": ["prior-run/EXP-0003"],
+                    "status": "completed",
                 }
             },
-            "experiments": {
+            "experiment_index": {
                 "prior-run/EXP-0003": {
                     "experiment_dir": str(prior_dir),
                     "outcome": "completed_candidate",
@@ -356,7 +374,9 @@ def test_context_outputs_include_program_continuation_summary(
     assert continuation["reusable_implementations"][0]["changed_files"] == [
         "research/peer_residual.py"
     ]
-    assert continuation["do_not_repeat"][0]["reason"] == "illiquid universe"
+    assert {
+        record["reason"] for record in continuation["do_not_repeat"]
+    } == {"completed: completed turnover test", "illiquid universe"}
     assert continuation["metric_history"] == [
         {
             "source_experiment": "prior-run/EXP-0003",
@@ -409,7 +429,8 @@ def test_continuation_summary_does_not_treat_seed_worktree_as_own_worktree(
     write_research_state(
         program_root,
         {
-            "ideas": {
+            "next_idea_number": 2,
+            "idea_index": {
                 "IDEA-0001": {
                     "dedupe_key": "vary-horizon",
                     "title": "vary horizon",
@@ -426,7 +447,7 @@ def test_continuation_summary_does_not_treat_seed_worktree_as_own_worktree(
                     "status": "pending",
                 }
             },
-            "experiments": {
+            "experiment_index": {
                 "seeded-run/EXP-0007": {
                     "experiment_dir": str(prior_dir),
                     "outcome": "completed_candidate",

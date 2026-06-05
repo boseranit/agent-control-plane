@@ -414,8 +414,6 @@ def test_remaining_prd_artifacts_validate_minimum_payloads() -> None:
         reusable_components=[
             {
                 "component_key": "peer-residual-feature",
-                "worktree_path": "/tmp/worktrees/peer-residual-v1/EXP-0001",
-                "changed_files": ["research/experiments/peer_residual.py"],
                 "summary": "Reusable peer residual builder.",
                 "reusable_for": ["liquidity-conditioned residual"],
                 "risk_notes": ["Check data timing."],

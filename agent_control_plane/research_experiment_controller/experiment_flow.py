@@ -77,6 +77,7 @@ from agent_control_plane.research_experiment_controller.prerequisites import (
 from agent_control_plane.research_experiment_controller.research_state import (
     load_research_state,
     research_state_path,
+    validate_selected_plan_references,
 )
 from agent_control_plane.research_experiment_controller.research_run_mirror import (
     ResearchRunMirrorRequest,
@@ -263,6 +264,14 @@ def _run_selected_experiment_pipeline(
 ) -> dict[str, Any]:
     selection = pipeline.selection
     experiment_dir = Path(request.experiment_directory)
+    if (
+        selection.selected_plan.selected_idea_ids
+        or selection.selected_plan.seed_component_ids
+    ):
+        validate_selected_plan_references(
+            load_research_state(research_state_path(request.paths)),
+            selection.selected_plan,
+        )
     _write_artifact_once(
         experiment_dir / "selected_plan.json",
         request.experiment_id,
@@ -420,7 +429,6 @@ def _run_selected_experiment_pipeline(
             agent_runtime=agent_runtime,
             official_summary=summary_model,
         )
-
     return _complete_with_summary(request, summary_model)
 
 

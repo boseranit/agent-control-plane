@@ -310,8 +310,6 @@ class ReusableComponentCard(ResearchArtifact):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     component_key: str = Field(min_length=1)
-    worktree_path: str = Field(min_length=1)
-    changed_files: list[str]
     summary: str = Field(min_length=1)
     reusable_for: list[str] = Field(min_length=1)
     risk_notes: list[str]
