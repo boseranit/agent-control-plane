@@ -19,6 +19,11 @@ from agent_control_plane.research_experiment_controller.research_run_spec import
 from agent_control_plane.research_experiment_controller.paths import (
     ResearchProgramPaths,
 )
+from agent_control_plane.research_experiment_controller.research_state import (
+    ResearchState,
+    load_research_state,
+    research_state_path,
+)
 
 
 BLOCKER_OUTCOMES = {"blocked", "prerequisites_failed"}
@@ -84,9 +89,9 @@ def write_context_outputs(
     )
     continuation_summary = _build_continuation_summary(
         spec=spec,
+        paths=paths,
         program_root=program_root,
         current_run_dir=run_dir,
-        active_experiment_ids=active_experiment_ids,
     )
 
     summary: dict[str, Any] = {
@@ -151,16 +156,17 @@ def write_context_outputs(
 def _build_continuation_summary(
     *,
     spec: Any,
+    paths: ResearchProgramPaths,
     program_root: Path,
     current_run_dir: Path,
-    active_experiment_ids: set[str],
 ) -> dict[str, Any]:
-    experiments = _program_terminal_experiments(
-        program_root=program_root,
-        current_run_dir=current_run_dir,
-        active_experiment_ids=active_experiment_ids,
+    research_state = load_research_state(research_state_path(paths))
+    experiments = _state_prior_experiments(
+        research_state,
         max_prior_experiments=spec.research_program.max_prior_experiments,
     )
+    pending_ideas = _state_pending_ideas(research_state)
+    metric_history = _state_metric_history(research_state)
     return {
         "artifact_kind": "continuation_summary",
         "controller_generated": True,
@@ -170,130 +176,203 @@ def _build_continuation_summary(
         "human_context": _human_context(program_root),
         "memory_context": _memory_context(program_root),
         "prior_experiments": experiments,
-        "pending_followups": _pending_followups(experiments),
-        "future_experiment_ideas": _future_experiment_ideas(experiments),
-        "reusable_implementations": _reusable_implementations(experiments),
-        "do_not_repeat": _do_not_repeat(experiments),
-        "metric_history": _continuation_metric_history(experiments),
-        "best_metric_runs": _best_metric_runs(experiments),
+        "pending_followups": pending_ideas,
+        "future_experiment_ideas": pending_ideas,
+        "reusable_implementations": _state_reusable_implementations(research_state),
+        "do_not_repeat": _state_do_not_repeat(research_state),
+        "metric_history": metric_history,
+        "best_metric_runs": _state_best_metric_runs(metric_history),
     }
 
 
-def _program_terminal_experiments(
+def _state_prior_experiments(
+    state: ResearchState,
     *,
-    program_root: Path,
-    current_run_dir: Path,
-    active_experiment_ids: set[str],
     max_prior_experiments: int,
 ) -> list[dict[str, Any]]:
-    records: list[dict[str, Any]] = []
-    current_run_dir = current_run_dir.resolve()
-    for run_dir in sorted((program_root / "runs").iterdir()):
-        run_id = run_dir.name
-        for experiment_dir in sorted((run_dir / "experiments").iterdir()):
-            experiment_id = experiment_dir.name
-            if (
-                run_dir.resolve() == current_run_dir
-                and experiment_id in active_experiment_ids
-                and not (experiment_dir / "summary.json").exists()
-            ):
-                continue
-            record = _continuation_record(
-                run_id=run_id,
-                experiment_id=experiment_id,
-                experiment_dir=experiment_dir,
-            )
-            if record is not None:
-                records.append(record)
-
-    records = sorted(records, key=lambda item: item["source_experiment"])
+    reusable_sources = {
+        source
+        for component in state.reusable_components.values()
+        for source in component.source_experiments
+    }
+    records = []
+    for source_experiment, experiment in sorted(state.experiment_index.items()):
+        run_id, experiment_id = _split_source_experiment(source_experiment)
+        worktree = (
+            {"path": experiment.worktree_path, "source": "lineage"}
+            if experiment.worktree_path is not None
+            else None
+        )
+        reusable = source_experiment in reusable_sources and worktree is not None
+        records.append(
+            {
+                "source_experiment": source_experiment,
+                "run_id": run_id,
+                "experiment_id": experiment_id,
+                "experiment_dir": experiment.experiment_dir,
+                "outcome": experiment.outcome,
+                "outcome_reason": experiment.outcome_reason,
+                "failed_stage": experiment.failed_stage,
+                "failure_classification": experiment.failure_classification,
+                "hypothesis": experiment.hypothesis,
+                "primary_metric": experiment.primary_metric,
+                "prediction_horizon": experiment.prediction_horizon,
+                "label": experiment.label,
+                "selected_plan_rationale": experiment.selected_plan_rationale,
+                "selected_idea_ids": experiment.selected_idea_ids,
+                "fresh_selection_reason": experiment.fresh_selection_reason,
+                "seed_component_ids": experiment.seed_component_ids,
+                "implementation_summary": experiment.implementation_summary,
+                "changed_files": experiment.changed_files,
+                "followups": [
+                    idea.title
+                    for idea in state.idea_index.values()
+                    if source_experiment in idea.source_experiments
+                ],
+                "metrics": _metrics_for_source(state, source_experiment),
+                "gate_results": {},
+                "worktree": worktree,
+                "worktree_branch": experiment.worktree_branch,
+                "lineage_path": experiment.lineage_path,
+                "reusable": reusable,
+            }
+        )
     if len(records) > max_prior_experiments:
         records = records[-max_prior_experiments:]
     return records
 
 
-def _continuation_record(
-    *,
-    run_id: str,
-    experiment_id: str,
-    experiment_dir: Path,
-) -> dict[str, Any] | None:
-    summary_path = experiment_dir / "summary.json"
-    if not summary_path.exists():
-        return None
-    summary = read_json_object(summary_path)
-
-    def artifact(name: str) -> dict[str, Any]:
-        path = experiment_dir / name
-        return read_json_object(path) if path.exists() else {}
-
-    research_spec = artifact("research_spec.json")
-    selected_plan = artifact("selected_plan.json")
-    implementation = artifact("implementation.json")
-    confirmatory = artifact("confirmatory_evaluation_result.json")
-    exploratory = artifact("exploratory_diagnostics_result.json")
-    plan_update = artifact("plan_update.json")
-    lineage_path = experiment_dir / "lineage.json"
-    lineage = read_json_object(lineage_path) if lineage_path.exists() else None
-
-    worktree_path = lineage["worktree_path"] if lineage is not None else None
-    worktree = (
-        {"path": worktree_path, "source": "lineage"}
-        if worktree_path is not None
-        else None
-    )
-    changed_files = lineage["changed_files"] if lineage is not None else []
-    seed_experiment = selected_plan.get("implementation_seed_experiment")
-    seed_worktree = selected_plan.get("implementation_seed_worktree")
-    implementation_seed = (
-        {"source_experiment": seed_experiment, "worktree_path": seed_worktree}
-        if seed_experiment is not None or seed_worktree is not None
-        else None
-    )
-    reusable = bool(
-        worktree_path
-        and (
-            plan_update.get("reusable_worktree")
-            or (lineage is not None and lineage["reusable_for_followups"])
-            or (
-                changed_files
-                and summary.get("outcome") in COMPLETED_OUTCOMES
-            )
+def _state_pending_ideas(state: ResearchState) -> list[dict[str, Any]]:
+    records = []
+    pending_items = [
+        (idea_id, idea)
+        for idea_id, idea in state.idea_index.items()
+        if idea.status == "pending"
+    ]
+    for idea_id, idea in sorted(
+        pending_items,
+        key=lambda item: (-item[1].priority, item[0]),
+    ):
+        seed_worktree_paths = [
+            state.reusable_components[component_id].worktree_path
+            for component_id in idea.seed_component_ids
+        ]
+        records.append(
+            {
+                "idea_id": idea_id,
+                "dedupe_key": idea.dedupe_key,
+                "title": idea.title,
+                "idea": idea.title,
+                "kind": idea.kind,
+                "evidence_basis": idea.evidence_basis,
+                "mechanism": idea.mechanism,
+                "axis_to_vary": idea.axis_to_vary,
+                "specific_change": idea.specific_change,
+                "falsifying_evidence": idea.falsifying_evidence,
+                "priority": idea.priority,
+                "priority_reason": idea.priority_reason,
+                "source_experiments": idea.source_experiments,
+                "seed_component_ids": idea.seed_component_ids,
+                "suggested_seed_worktree": (
+                    seed_worktree_paths[0] if seed_worktree_paths else None
+                ),
+                "suggested_seed_worktrees": seed_worktree_paths,
+            }
         )
-    )
-    source_experiment = f"{run_id}/{experiment_id}"
-    return {
-        "source_experiment": source_experiment,
-        "run_id": run_id,
-        "experiment_id": experiment_id,
-        "experiment_dir": str(experiment_dir),
-        "outcome": summary.get("outcome"),
-        "outcome_reason": summary.get("outcome_reason"),
-        "failed_stage": summary.get("failed_stage"),
-        "failure_classification": summary.get("failure_classification"),
-        "hypothesis": research_spec.get("hypothesis"),
-        "primary_metric": research_spec.get("primary_metric"),
-        "prediction_horizon": research_spec.get("prediction_horizon"),
-        "label": research_spec.get("label"),
-        "selected_plan_rationale": selected_plan.get("rationale"),
-        "implementation_summary": implementation.get("summary"),
-        "changed_files": changed_files,
-        "followups": plan_update.get("followups", []),
-        "revisit_conditions": plan_update.get("revisit_conditions", []),
-        "blocked_paths": plan_update.get("blocked_paths", []),
-        "future_experiment_ideas": exploratory.get("future_experiment_ideas", []),
-        "metrics": confirmatory.get("metrics", {}),
-        "gate_results": confirmatory.get("gate_results", {}),
-        "worktree": worktree,
-        "worktree_branch": lineage["worktree_branch"] if lineage is not None else None,
-        "implementation_seed": implementation_seed,
-        "lineage_path": str(lineage_path) if lineage is not None else None,
-        "reusable": reusable,
-        "implementation_reuse_notes": plan_update.get("implementation_reuse_notes", []),
-        "recommended_next_experiment_kind": plan_update.get(
-            "recommended_next_experiment_kind"
+    return records
+
+
+def _state_reusable_implementations(state: ResearchState) -> list[dict[str, Any]]:
+    return [
+        {
+            "component_id": component_id,
+            "source_experiment": component.source_experiments[0],
+            "source_experiments": component.source_experiments,
+            "worktree_path": component.worktree_path,
+            "changed_files": component.changed_files,
+            "implementation_summary": component.summary,
+            "reusable_for": component.reusable_for,
+            "risk_notes": component.risk_notes,
+        }
+        for component_id, component in sorted(state.reusable_components.items())
+    ]
+
+
+def _state_do_not_repeat(state: ResearchState) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for idea_id, idea in sorted(state.idea_index.items()):
+        if idea.status not in {"completed", "blocked", "superseded"}:
+            continue
+        records.append(
+            {
+                "idea_id": idea_id,
+                "source_experiments": idea.source_experiments,
+                "status": idea.status,
+                "reason": f"{idea.status}: {idea.title}",
+            }
+        )
+    for blocker_key, blocker in sorted(state.known_blockers.items()):
+        records.append(
+            {
+                "blocker_key": blocker_key,
+                "blocker_type": blocker.blocker_type,
+                "source_experiments": blocker.source_experiments,
+                "affected_idea_ids": blocker.affected_idea_ids,
+                "reason": blocker.description,
+                "resolution_condition": blocker.resolution_condition,
+            }
+        )
+    return records
+
+
+def _state_metric_history(state: ResearchState) -> list[dict[str, Any]]:
+    return sorted(
+        [
+            {
+                "source_experiment": observation.source_experiment,
+                "metric_path": observation.metric_path,
+                "value": observation.value,
+            }
+            for observation in state.metric_observations
+        ],
+        key=lambda item: (
+            item["source_experiment"],
+            item["metric_path"],
         ),
-    }
+    )
+
+
+def _state_best_metric_runs(
+    metric_history: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    best_by_metric: dict[str, dict[str, Any]] = {}
+    for observation in metric_history:
+        metric_path = observation["metric_path"]
+        current = best_by_metric.get(metric_path)
+        if current is None or observation["value"] > current["value"]:
+            best_by_metric[metric_path] = {
+                "source_experiment": observation["source_experiment"],
+                "metric": f"metrics.{metric_path}",
+                "value": observation["value"],
+            }
+    return [best_by_metric[metric_path] for metric_path in sorted(best_by_metric)]
+
+
+def _metrics_for_source(
+    state: ResearchState,
+    source_experiment: str,
+) -> dict[str, Any]:
+    metrics: dict[str, Any] = {}
+    for observation in state.metric_observations:
+        if observation.source_experiment != source_experiment:
+            continue
+        metrics[observation.metric_path] = observation.value
+    return metrics
+
+
+def _split_source_experiment(source_experiment: str) -> tuple[str, str]:
+    run_id, experiment_id = source_experiment.split("/", 1)
+    return run_id, experiment_id
 
 
 def _human_context(program_root: Path) -> dict[str, Any]:
@@ -318,7 +397,7 @@ def _human_context(program_root: Path) -> dict[str, Any]:
 def _memory_context(program_root: Path) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for path in sorted((program_root / "memory").glob("*.json")):
-        if path.name == "continuation_summary.json":
+        if path.name in {"continuation_summary.json", "research_state.json"}:
             continue
         records.append(
             {
@@ -327,119 +406,6 @@ def _memory_context(program_root: Path) -> list[dict[str, Any]]:
             }
         )
     return records
-
-
-def _pending_followups(experiments: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    records = []
-    for experiment in experiments:
-        for followup in experiment["followups"]:
-            records.append(
-                {
-                    "source_experiment": experiment["source_experiment"],
-                    "idea": followup,
-                    "suggested_seed_worktree": (
-                        experiment["worktree"]["path"]
-                        if experiment["reusable"] and experiment["worktree"]
-                        else None
-                    ),
-                }
-            )
-    return records
-
-
-def _future_experiment_ideas(
-    experiments: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    records = []
-    for experiment in experiments:
-        for idea in experiment["future_experiment_ideas"]:
-            records.append(
-                {
-                    "source_experiment": experiment["source_experiment"],
-                    "idea": idea,
-                    "suggested_seed_worktree": (
-                        experiment["worktree"]["path"]
-                        if experiment["reusable"] and experiment["worktree"]
-                        else None
-                    ),
-                }
-            )
-    return records
-
-
-def _reusable_implementations(
-    experiments: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    return [
-        {
-            "source_experiment": experiment["source_experiment"],
-            "worktree_path": experiment["worktree"]["path"],
-            "changed_files": experiment["changed_files"],
-            "implementation_summary": experiment["implementation_summary"],
-        }
-        for experiment in experiments
-        if experiment["reusable"] and experiment["worktree"]
-    ]
-
-
-def _do_not_repeat(experiments: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    records = []
-    for experiment in experiments:
-        for blocked_path in experiment["blocked_paths"]:
-            records.append(
-                {
-                    "source_experiment": experiment["source_experiment"],
-                    "reason": blocked_path,
-                }
-            )
-        if experiment["outcome"] in FAILURE_OUTCOMES | BLOCKER_OUTCOMES:
-            reason = (
-                experiment["failure_classification"] or experiment["outcome_reason"]
-            )
-            if reason:
-                records.append(
-                    {
-                        "source_experiment": experiment["source_experiment"],
-                        "reason": reason,
-                    }
-                )
-    return records
-
-
-def _continuation_metric_history(
-    experiments: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    records: list[dict[str, Any]] = []
-    for experiment in experiments:
-        for metric_path, value in _numeric_leaves(experiment["metrics"]):
-            records.append(
-                {
-                    "source_experiment": experiment["source_experiment"],
-                    "metric_path": metric_path,
-                    "value": value,
-                }
-            )
-    return sorted(
-        records,
-        key=lambda item: (
-            item["source_experiment"],
-            item["metric_path"],
-        ),
-    )
-
-
-def _best_metric_runs(experiments: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    best_by_metric: dict[str, dict[str, Any]] = {}
-    for experiment in experiments:
-        for metric_path, value in _numeric_leaves(experiment["metrics"]):
-            current = best_by_metric.get(metric_path)
-            if current is None or value > current["value"]:
-                best_by_metric[metric_path] = {
-                    "source_experiment": experiment["source_experiment"],
-                    "metric": f"metrics.{metric_path}",
-                    "value": value,
-                }
-    return [best_by_metric[metric_path] for metric_path in sorted(best_by_metric)]
 
 
 def _build_prior_synthesis(

@@ -111,6 +111,25 @@ def write_run_context(run):
     )
 
 
+def write_research_state(program_root: Path, payload: dict) -> None:
+    write_json(
+        program_root / "memory" / "research_state.json",
+        {
+            "artifact_kind": "research_state",
+            "schema_version": 1,
+            "program_id": program_root.name,
+            "next_idea_number": 1,
+            "idea_index": {},
+            "experiment_index": {},
+            "learning_updates": {},
+            "known_blockers": {},
+            "reusable_components": {},
+            "metric_observations": [],
+        }
+        | payload,
+    )
+
+
 def test_context_outputs_include_spec_budget_and_git_facts(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     init_repo(repo)
@@ -208,16 +227,6 @@ def test_context_outputs_include_program_continuation_summary(
         },
     )
     write_json(
-        prior_dir / "plan_update.json",
-        {
-            "followups": ["add turnover gate"],
-            "revisit_conditions": [],
-            "blocked_paths": ["illiquid universe"],
-            "reusable_worktree": True,
-            "implementation_reuse_notes": ["reuse feature builder"],
-        },
-    )
-    write_json(
         prior_dir / "implementation.json",
         {
             "status": "completed",
@@ -242,6 +251,93 @@ def test_context_outputs_include_program_continuation_summary(
             "reusable_for_followups": True,
         },
     )
+    prior_worktree = program_root / "worktrees" / "prior-run" / "EXP-0003"
+    write_research_state(
+        program_root,
+        {
+            "next_idea_number": 3,
+            "idea_index": {
+                "IDEA-0001": {
+                    "dedupe_key": "add-turnover-gate",
+                    "title": "add turnover gate",
+                    "kind": "direct_followup",
+                    "evidence_basis": ["prior-run/EXP-0003"],
+                    "mechanism": "Turnover gate may reduce costs.",
+                    "axis_to_vary": "turnover gate",
+                    "specific_change": "Add turnover gate to success criteria.",
+                    "falsifying_evidence": ["IC/cost gate fails after turnover gate."],
+                    "priority": 0.9,
+                    "priority_reason": "Directly follows passed candidate.",
+                    "seed_component_ids": ["peer-residual-feature"],
+                    "source_experiments": ["prior-run/EXP-0003"],
+                    "status": "pending",
+                },
+                "IDEA-0002": {
+                    "dedupe_key": "completed-turnover-test",
+                    "title": "completed turnover test",
+                    "kind": "direct_followup",
+                    "evidence_basis": ["prior-run/EXP-0003"],
+                    "mechanism": "Already tested turnover.",
+                    "axis_to_vary": "turnover gate",
+                    "specific_change": "Retest old turnover gate.",
+                    "falsifying_evidence": ["No change."],
+                    "priority": 0.1,
+                    "priority_reason": "Already completed.",
+                    "seed_component_ids": [],
+                    "source_experiments": ["prior-run/EXP-0003"],
+                    "status": "completed",
+                }
+            },
+            "experiment_index": {
+                "prior-run/EXP-0003": {
+                    "experiment_dir": str(prior_dir),
+                    "outcome": "completed_candidate",
+                    "outcome_reason": "Locked gates passed.",
+                    "failed_stage": None,
+                    "failure_classification": None,
+                    "hypothesis": "Peer residuals forecast returns.",
+                    "primary_metric": "ic",
+                    "prediction_horizon": "1h",
+                    "label": "forward_return_1h",
+                    "selected_plan_rationale": None,
+                    "selected_idea_ids": [],
+                    "fresh_selection_reason": None,
+                    "seed_component_ids": [],
+                    "worktree_path": str(prior_worktree),
+                    "worktree_branch": "research/prior-run/EXP-0003",
+                    "changed_files": ["research/peer_residual.py"],
+                    "implementation_summary": "Built peer residual feature.",
+                    "lineage_path": str(prior_dir / "lineage.json"),
+                }
+            },
+            "known_blockers": {
+                "illiquid-universe": {
+                    "blocker_type": "data_quality",
+                    "description": "illiquid universe",
+                    "resolution_condition": "Add liquidity filter.",
+                    "affected_idea_ids": [],
+                    "source_experiments": ["prior-run/EXP-0003"],
+                }
+            },
+            "reusable_components": {
+                "peer-residual-feature": {
+                    "worktree_path": str(prior_worktree),
+                    "changed_files": ["research/peer_residual.py"],
+                    "summary": "Built peer residual feature.",
+                    "reusable_for": ["turnover gate followup"],
+                    "risk_notes": [],
+                    "source_experiments": ["prior-run/EXP-0003"],
+                }
+            },
+            "metric_observations": [
+                {
+                    "source_experiment": "prior-run/EXP-0003",
+                    "metric_path": "ic",
+                    "value": 0.04,
+                }
+            ],
+        },
+    )
 
     output = write_run_context(run)
 
@@ -259,31 +355,28 @@ def test_context_outputs_include_program_continuation_summary(
             {"path": "notes/data-contract.md", "text": "Use point-in-time bars.\n"}
         ],
     }
+    assert all(
+        record["path"] != "memory/research_state.json"
+        for record in continuation["memory_context"]
+    )
     prior_experiment = continuation["prior_experiments"][0]
     assert prior_experiment["worktree"] == {
-        "path": str(program_root / "worktrees" / "prior-run" / "EXP-0003"),
+        "path": str(prior_worktree),
         "source": "lineage",
     }
-    assert prior_experiment["implementation_seed"] is None
-    assert continuation["pending_followups"] == [
-        {
-            "source_experiment": "prior-run/EXP-0003",
-            "idea": "add turnover gate",
-            "suggested_seed_worktree": str(
-                program_root / "worktrees" / "prior-run" / "EXP-0003"
-            ),
-        }
-    ]
-    assert continuation["future_experiment_ideas"][0]["idea"] == "try 2h horizon"
+    assert continuation["pending_followups"][0]["idea_id"] == "IDEA-0001"
+    assert continuation["pending_followups"][0]["title"] == "add turnover gate"
+    assert continuation["pending_followups"][0]["priority"] == 0.9
+    assert continuation["pending_followups"][0]["suggested_seed_worktree"] == str(
+        prior_worktree
+    )
+    assert continuation["future_experiment_ideas"][0]["title"] == "add turnover gate"
     assert continuation["reusable_implementations"][0]["changed_files"] == [
         "research/peer_residual.py"
     ]
-    assert continuation["do_not_repeat"] == [
-        {
-            "source_experiment": "prior-run/EXP-0003",
-            "reason": "illiquid universe",
-        }
-    ]
+    assert {
+        record["reason"] for record in continuation["do_not_repeat"]
+    } == {"completed: completed turnover test", "illiquid universe"}
     assert continuation["metric_history"] == [
         {
             "source_experiment": "prior-run/EXP-0003",
@@ -319,7 +412,6 @@ def test_continuation_summary_does_not_treat_seed_worktree_as_own_worktree(
     )
     prior_run = program_root / "runs" / "seeded-run"
     prior_dir = prior_run / "experiments" / "EXP-0007"
-    seed_worktree = program_root / "worktrees" / "older-run" / "EXP-0002"
     write_json(prior_run / "state.json", {"experiments": {}})
     write_json(
         prior_dir / "summary.json",
@@ -331,24 +423,52 @@ def test_continuation_summary_does_not_treat_seed_worktree_as_own_worktree(
         },
     )
     write_json(
-        prior_dir / "selected_plan.json",
-        {
-            "rationale": "Adapt older implementation.",
-            "implementation_seed_experiment": "older-run/EXP-0002",
-            "implementation_seed_worktree": str(seed_worktree),
-        },
-    )
-    write_json(
         prior_dir / "implementation_diff_summary.json",
         {"changed_files": ["research/variation.py"]},
     )
-    write_json(
-        prior_dir / "plan_update.json",
+    write_research_state(
+        program_root,
         {
-            "followups": ["vary horizon"],
-            "revisit_conditions": [],
-            "blocked_paths": [],
-            "reusable_worktree": True,
+            "next_idea_number": 2,
+            "idea_index": {
+                "IDEA-0001": {
+                    "dedupe_key": "vary-horizon",
+                    "title": "vary horizon",
+                    "kind": "controlled_variation",
+                    "evidence_basis": ["seeded-run/EXP-0007"],
+                    "mechanism": "Horizon may change residual decay.",
+                    "axis_to_vary": "prediction horizon",
+                    "specific_change": "Evaluate a different horizon.",
+                    "falsifying_evidence": ["No metric improvement."],
+                    "priority": 0.6,
+                    "priority_reason": "Cheap controlled variation.",
+                    "seed_component_ids": [],
+                    "source_experiments": ["seeded-run/EXP-0007"],
+                    "status": "pending",
+                }
+            },
+            "experiment_index": {
+                "seeded-run/EXP-0007": {
+                    "experiment_dir": str(prior_dir),
+                    "outcome": "completed_candidate",
+                    "outcome_reason": "Built variation.",
+                    "failed_stage": None,
+                    "failure_classification": None,
+                    "hypothesis": None,
+                    "primary_metric": None,
+                    "prediction_horizon": None,
+                    "label": None,
+                    "selected_plan_rationale": "Adapt older implementation.",
+                    "selected_idea_ids": [],
+                    "fresh_selection_reason": None,
+                    "seed_component_ids": [],
+                    "worktree_path": None,
+                    "worktree_branch": None,
+                    "changed_files": [],
+                    "implementation_summary": None,
+                    "lineage_path": None,
+                }
+            },
         },
     )
 
@@ -357,18 +477,14 @@ def test_continuation_summary_does_not_treat_seed_worktree_as_own_worktree(
     experiment = output.continuation_summary["prior_experiments"][0]
     assert experiment["worktree"] is None
     assert experiment["changed_files"] == []
-    assert experiment["implementation_seed"] == {
-        "source_experiment": "older-run/EXP-0002",
-        "worktree_path": str(seed_worktree),
-    }
     assert experiment["reusable"] is False
-    assert output.continuation_summary["pending_followups"] == [
-        {
-            "source_experiment": "seeded-run/EXP-0007",
-            "idea": "vary horizon",
-            "suggested_seed_worktree": None,
-        }
-    ]
+    assert (
+        output.continuation_summary["pending_followups"][0]["title"] == "vary horizon"
+    )
+    assert (
+        output.continuation_summary["pending_followups"][0]["suggested_seed_worktree"]
+        is None
+    )
     assert output.continuation_summary["reusable_implementations"] == []
 
 
@@ -425,10 +541,7 @@ def test_continuation_summary_does_not_fallback_from_missing_lineage(
 
     output = write_run_context(run)
 
-    experiment = output.continuation_summary["prior_experiments"][0]
-    assert experiment["worktree"] is None
-    assert experiment["changed_files"] == []
-    assert experiment["lineage_path"] is None
+    assert output.continuation_summary["prior_experiments"] == []
 
 
 def test_context_outputs_are_byte_identical_across_repeated_writes(
