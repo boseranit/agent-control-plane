@@ -256,7 +256,7 @@ Commands should receive:
 ```text
 HLM_DATA_ROOT=/mnt/redbackup/data
 RESEARCH_DATA_ROOT=/mnt/redbackup/data
-RESEARCH_EXPERIMENT_DATA_ROOT=/mnt/redbackup/experiment-data/<research-run-id>/<experiment-id>
+RESEARCH_EXPERIMENT_DATA_ROOT=/mnt/redbackup/experiment-data/<experiment-name>/<research-run-id>-<experiment-id>
 RESEARCH_RUN_DIR=<current experiment controller directory>
 RESEARCH_REPO_ROOT=<main checkout or worktree>
 ```
@@ -397,7 +397,9 @@ create a full multi-iteration autonomous project manager.
 
 The production design may declare prerequisite commands that must run before the
 implementer. Runtime backfills that materialize required artifacts are the
-canonical example.
+canonical example only when they do not depend on experiment worktree edits.
+Backfills for artifact code/config created or modified by the experiment belong
+in verification commands after implementation.
 
 Requirements:
 
@@ -414,8 +416,9 @@ Requirements:
 
 The selector should not be the only authority on whether an operational backfill
 is allowed. If a backfill is required to make research possible, the production
-design should declare it as a prerequisite or revise the approach so the
-research remains admissible.
+design should declare it in the command phase that can see the required code:
+prerequisites for baseline materialization, verification for experiment
+worktree artifact changes.
 
 ### 7. Cross-Sectional Samples Backfill Case
 
@@ -491,6 +494,10 @@ Prerequisite commands run from the main repository checkout.
 
 Selected experiment commands may run from the experiment worktree, but all data
 access must use the configured data root, not worktree-local `data/...`.
+If selected experiment commands backfill modified runtime artifacts, they write
+intermediate data under `$RESEARCH_EXPERIMENT_DATA_ROOT/runtime-data`, write
+declared evaluation outputs under `$RESEARCH_EXPERIMENT_DATA_ROOT`, and
+evaluation reads those outputs instead of substituting stale canonical data.
 
 Requirements:
 
@@ -626,7 +633,7 @@ The researcher should be able to inspect:
 
 - `/home/boser/agent-control-plane-runs/runs/<research-run-id>/experiments/<experiment-id>/`
 - `/home/boser/agent-control-plane-runs/HyperliquidMomentum-worktrees/<research-run-id>/<experiment-id>/`
-- `/mnt/redbackup/experiment-data/<research-run-id>/<experiment-id>/`
+- `/mnt/redbackup/experiment-data/<experiment-name>/<research-run-id>-<experiment-id>/`
 
 These two surfaces should be enough to reconstruct the experiment without tmux
 logs or hidden state.
@@ -740,7 +747,8 @@ They are product choices, not mechanical implementation details.
 
 4. Plot and table convention.
    Recommended default: keep copying all run-directory files to MLflow while
-   encouraging experiment code to write outputs under `$RESEARCH_RUN_DIR` or
+   requiring declared evaluation outputs under `$RESEARCH_EXPERIMENT_DATA_ROOT`
+   and encouraging plots and tables under `$RESEARCH_RUN_DIR` or
    `$RESEARCH_EXPERIMENT_DATA_ROOT`.
 
    Decision needed: should the orchestrator require a standard

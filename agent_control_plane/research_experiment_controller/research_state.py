@@ -225,18 +225,7 @@ def ensure_research_state(
     resolved_program_id = program_id if program_id is not None else paths.root.name
     path = research_state_path(paths)
     if not path.exists():
-        state = ResearchState(
-            artifact_kind="research_state",
-            schema_version=1,
-            program_id=resolved_program_id,
-            next_idea_number=1,
-            idea_index={},
-            experiment_index={},
-            learning_updates={},
-            known_blockers={},
-            reusable_components={},
-            metric_observations=[],
-        )
+        state = empty_research_state(resolved_program_id)
         write_research_state(path, state)
         return state
     state = load_research_state(path)
@@ -257,6 +246,49 @@ def write_research_state(path: str | Path, state: ResearchState) -> None:
     write_json(path, state.model_dump(mode="json"))
 
 
+def empty_research_state(program_id: str) -> ResearchState:
+    return ResearchState(
+        artifact_kind="research_state",
+        schema_version=1,
+        program_id=program_id,
+        next_idea_number=1,
+        idea_index={},
+        experiment_index={},
+        learning_updates={},
+        known_blockers={},
+        reusable_components={},
+        metric_observations=[],
+    )
+
+
+def import_run_dirs_into_research_state(
+    *,
+    paths: ResearchProgramPaths,
+    prior_run_dirs: list[str | Path] | tuple[str | Path, ...],
+) -> ResearchState:
+    state_path = research_state_path(paths)
+    state = load_research_state(state_path)
+    merge_run_dirs_into_state(state, prior_run_dirs)
+    write_research_state(state_path, state)
+    return state
+
+
+def merge_run_dirs_into_state(
+    state: ResearchState,
+    prior_run_dirs: list[str | Path] | tuple[str | Path, ...],
+) -> ResearchState:
+    for run_dir in prior_run_dirs:
+        resolved_run_dir = Path(run_dir).expanduser().resolve()
+        run_id, experiment_dirs = _run_manifest_from_run_dir(resolved_run_dir)
+        for experiment_id, experiment_dir in experiment_dirs:
+            merge_terminal_experiment_record(
+                state,
+                source_experiment=f"{run_id}/{experiment_id}",
+                experiment_dir=experiment_dir,
+            )
+    return state
+
+
 def merge_terminal_experiment(
     *,
     paths: ResearchProgramPaths,
@@ -268,6 +300,22 @@ def merge_terminal_experiment(
     source_experiment = f"{research_run_id}/{experiment_id}"
     state_path = research_state_path(paths)
     state = load_research_state(state_path)
+    merge_terminal_experiment_record(
+        state,
+        source_experiment=source_experiment,
+        experiment_dir=experiment_path,
+    )
+    write_research_state(state_path, state)
+    return state
+
+
+def merge_terminal_experiment_record(
+    state: ResearchState,
+    *,
+    source_experiment: str,
+    experiment_dir: str | Path,
+) -> ResearchState:
+    experiment_path = Path(experiment_dir)
     if source_experiment in state.experiment_index:
         return state
 
@@ -397,8 +445,66 @@ def merge_terminal_experiment(
             for metric_path, value in _numeric_metric_leaves(confirmatory.metrics)
         )
 
-    write_research_state(state_path, state)
     return state
+
+
+def _run_manifest_from_run_dir(run_dir: Path) -> tuple[str, list[tuple[str, Path]]]:
+    if not run_dir.is_dir():
+        raise FileNotFoundError(f"Prior run directory does not exist: {run_dir}")
+    state_path = run_dir / "state.json"
+    state = read_json_object(state_path)
+    run_id = _required_state_string(
+        state,
+        "research_run_id",
+        owner=str(state_path),
+    )
+    try:
+        state_experiments = state["experiments"]
+    except KeyError as exc:
+        raise ValueError(
+            f"Prior run state experiments are required: {state_path}"
+        ) from exc
+    if not isinstance(state_experiments, dict):
+        raise ValueError(f"Prior run state experiments must be an object: {state_path}")
+
+    experiment_dirs: list[tuple[str, Path]] = []
+    for experiment_id, experiment_state in state_experiments.items():
+        if not isinstance(experiment_id, str) or not experiment_id.strip():
+            raise ValueError(
+                f"Prior run state experiment id must be non-empty: {state_path}"
+            )
+        if not isinstance(experiment_state, dict):
+            raise ValueError(
+                "Prior run state experiment record must be an object: "
+                f"{state_path}#{experiment_id}"
+            )
+        directory = _required_state_string(
+            experiment_state,
+            "experiment_directory",
+            owner=f"{state_path}#{experiment_id}",
+        )
+        experiment_dir = Path(directory).expanduser()
+        if not experiment_dir.is_dir():
+            raise FileNotFoundError(
+                f"Prior run experiment directory does not exist: {experiment_dir}"
+            )
+        experiment_dirs.append((experiment_id, experiment_dir.resolve()))
+    return run_id, sorted(experiment_dirs)
+
+
+def _required_state_string(
+    data: dict[str, Any],
+    field: str,
+    *,
+    owner: str,
+) -> str:
+    try:
+        value = data[field]
+    except KeyError as exc:
+        raise ValueError(f"Prior run state {field} is required: {owner}") from exc
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"Prior run state {field} must be non-empty: {owner}")
+    return value
 
 
 def next_idea_id(state: ResearchState) -> str:

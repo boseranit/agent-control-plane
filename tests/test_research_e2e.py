@@ -13,6 +13,11 @@ from agent_control_plane.research_experiment_controller.controller import (
     run_research_loop,
     start_research_run,
 )
+from research_helpers import (
+    experiment_signal_panel_path,
+    signal_panel_writer_command,
+    write_evaluation_result_files,
+)
 
 
 def test_fake_runtime_drives_completed_candidate_research_run(
@@ -71,6 +76,12 @@ def test_fake_runtime_drives_completed_candidate_research_run(
     }
     assert (experiment_dir / "evaluation" / "manifest.json").exists()
     assert not (experiment_dir / "evaluation" / "eval_inputs").exists()
+    assert experiment_signal_panel_path(
+        tmp_path / "experiment-data",
+        experiment_name=None,
+        research_run_id="e2e-run",
+        experiment_id="EXP-0001",
+    ).exists()
 
     summary = read_json_object(experiment_dir / "summary.json")
     data_audit = read_json_object(experiment_dir / "data_audit.json")
@@ -371,6 +382,7 @@ class FakeResearchThread:
                     ),
                     repair_during_verification=self.runtime.repair_outside_allowed_paths,
                     allowed_write_paths=self.runtime.allowed_write_paths,
+                    write_signal_panel=self.runtime.write_signal_panel,
                 )
             )
         if config.role == "research-critic":
@@ -416,28 +428,21 @@ class FakeResearchThread:
                 if self.runtime.confirmatory_outcome == "run_failed"
                 else None
             )
-            return FakeTurnResult(
-                {
-                    "confirmatory_evaluation_result": {
-                        "outcome": self.runtime.confirmatory_outcome,
-                        "outcome_reason": "Locked gates passed.",
-                        "failed_stage": failed_stage,
-                        "failure_classification": failure_classification,
-                        "metrics": {"ic": 0.05},
-                        "gate_results": {"ic": "passed"},
-                        "pre_registered_evidence": ["IC above gate"],
-                    },
-                    "exploratory_diagnostics_result": {
-                        "findings": ["turnover stable"],
-                        "metrics": {"turnover": 0.2},
-                        "plots": [],
-                        "future_experiment_ideas": ["lock turnover gate"],
-                    },
-                    "analysis_ledger": {
-                        "entries": [{"phase": "evaluation", "status": "completed"}]
-                    },
-                }
+            write_evaluation_result_files(
+                Path(config.cwd),
+                outcome=self.runtime.confirmatory_outcome,
+                failed_stage=failed_stage,
+                failure_classification=failure_classification,
+                ic=0.05,
+                evidence="IC above gate",
+                exploratory_result={
+                    "findings": ["turnover stable"],
+                    "metrics": {"turnover": 0.2},
+                    "plots": [],
+                    "future_experiment_ideas": ["lock turnover gate"],
+                },
             )
+            return FakeTurnResult({"ignored": True})
         raise AssertionError(f"unexpected role: {config.role}")
 
 
@@ -452,6 +457,7 @@ class FakeResearchRuntime:
         repair_outside_allowed_paths: bool = False,
         repair_keeps_verification_failing: bool = False,
         allowed_write_paths: list[str] | None = None,
+        write_signal_panel: bool = True,
     ) -> None:
         self.configs: list[Any] = []
         self.threads: dict[str, FakeResearchThread] = {}
@@ -463,6 +469,7 @@ class FakeResearchRuntime:
         self.repair_outside_allowed_paths = repair_outside_allowed_paths
         self.repair_keeps_verification_failing = repair_keeps_verification_failing
         self.allowed_write_paths = allowed_write_paths or ["research"]
+        self.write_signal_panel = write_signal_panel
 
     def open_thread(self, config: Any) -> FakeResearchThread:
         self.configs.append(config)
@@ -487,6 +494,7 @@ def _strategist_response(
     material_revision_categories: list[str],
     repair_during_verification: bool,
     allowed_write_paths: list[str],
+    write_signal_panel: bool,
 ) -> dict[str, Any]:
     if "proposal.json" in input:
         return {
@@ -506,13 +514,19 @@ def _strategist_response(
                 {"name": "data-ok", "argv": [sys.executable, "-c", "pass"]}
             ],
             "verification_commands": [
-                _verification_command(repair_during_verification)
+                _verification_command(
+                    repair_during_verification,
+                    write_signal_panel=write_signal_panel,
+                )
             ],
             "confirmatory_commands": [
                 {"name": "eval", "argv": [sys.executable, "-c", "pass"]}
             ],
             "exploratory_commands": [],
-            "expected_outputs": ["evaluation/eval_outputs/metrics.json"],
+            "expected_outputs": [
+                "$RESEARCH_EXPERIMENT_DATA_ROOT/signal_panel.parquet",
+                "evaluation/eval_outputs/metrics.json",
+            ],
             "allowed_write_paths": allowed_write_paths,
             "timeout_seconds": 30,
             "resource_budgets": {},
@@ -561,18 +575,33 @@ def _strategist_response(
     raise AssertionError(f"unexpected strategist input: {input}")
 
 
-def _verification_command(repair_during_verification: bool) -> dict[str, object]:
+def _verification_command(
+    repair_during_verification: bool,
+    *,
+    write_signal_panel: bool,
+) -> dict[str, object]:
+    panel_writer = signal_panel_writer_command()
     if not repair_during_verification:
-        return {"name": "unit", "argv": [sys.executable, "-c", "pass"]}
+        return {
+            "name": "unit",
+            "argv": [
+                sys.executable,
+                "-c",
+                panel_writer if write_signal_panel else "pass",
+            ],
+        }
+    command = (
+        "from pathlib import Path; "
+        "ok = Path('research/pass.txt').exists(); "
+        f"{panel_writer if write_signal_panel else ''}"
+        "raise SystemExit(0 if ok else 1)"
+    )
     return {
         "name": "unit",
         "argv": [
             sys.executable,
             "-c",
-            (
-                "from pathlib import Path; "
-                "raise SystemExit(0 if Path('research/pass.txt').exists() else 1)"
-            ),
+            command,
         ],
     }
 

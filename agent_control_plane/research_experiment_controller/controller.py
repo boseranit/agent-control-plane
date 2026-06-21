@@ -33,6 +33,7 @@ from agent_control_plane.research_experiment_controller.paths import (
 )
 from agent_control_plane.research_experiment_controller.research_state import (
     ensure_research_state,
+    import_run_dirs_into_research_state,
     merge_terminal_experiment,
 )
 from agent_control_plane.research_experiment_controller.state import (
@@ -88,58 +89,68 @@ def start_research_run(
     paths = spec.research_program.paths
     run_directory = paths.run_directory(spec.research_run_id)
     paths.create_directories()
-    ensure_research_state(paths)
     try:
         run_directory.mkdir(parents=True)
     except FileExistsError as exc:
         raise ResearchRunError(
             f"Research Run already exists: {spec.research_run_id}"
         ) from exc
+    try:
+        ensure_research_state(paths)
+        if spec.continuation.prior_run_dirs:
+            import_run_dirs_into_research_state(
+                paths=paths,
+                prior_run_dirs=spec.continuation.prior_run_dirs,
+            )
 
-    spec_snapshot_path = run_directory / "research_run_spec.yaml"
-    state_path = run_directory / "state.json"
-    ledger_path = run_directory / "ledger.jsonl"
-    experiments_directory = run_directory / "experiments"
-    experiments_directory.mkdir()
+        spec_snapshot_path = run_directory / "research_run_spec.yaml"
+        state_path = run_directory / "state.json"
+        ledger_path = run_directory / "ledger.jsonl"
+        experiments_directory = run_directory / "experiments"
+        experiments_directory.mkdir()
 
-    spec_snapshot_path.write_text(
-        yaml.safe_dump(
-            resolved_spec_dict(spec, include_research_program_root=False),
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
-    state = create_initial_state(
-        research_run_id=spec.research_run_id,
-        max_experiments=spec.max_experiments,
-    )
-    write_json(state_path, state)
+        spec_snapshot_path.write_text(
+            yaml.safe_dump(
+                resolved_spec_dict(spec, include_research_program_root=False),
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        state = create_initial_state(
+            research_run_id=spec.research_run_id,
+            max_experiments=spec.max_experiments,
+        )
+        write_json(state_path, state)
 
-    append_ledger_event(
-        ledger_path,
-        event_type="research_run_started",
-        research_run_id=spec.research_run_id,
-    )
-    append_ledger_event(
-        ledger_path,
-        event_type="phase_changed",
-        research_run_id=spec.research_run_id,
-        current_phase=state["current_phase"],
-    )
-    append_ledger_event(
-        ledger_path,
-        event_type="artifact_written",
-        research_run_id=spec.research_run_id,
-        artifact_name="research_run_spec",
-        artifact_path=str(spec_snapshot_path),
-    )
-    append_ledger_event(
-        ledger_path,
-        event_type="artifact_written",
-        research_run_id=spec.research_run_id,
-        artifact_name="state",
-        artifact_path=str(state_path),
-    )
+        append_ledger_event(
+            ledger_path,
+            event_type="research_run_started",
+            research_run_id=spec.research_run_id,
+        )
+        append_ledger_event(
+            ledger_path,
+            event_type="phase_changed",
+            research_run_id=spec.research_run_id,
+            current_phase=state["current_phase"],
+        )
+        append_ledger_event(
+            ledger_path,
+            event_type="artifact_written",
+            research_run_id=spec.research_run_id,
+            artifact_name="research_run_spec",
+            artifact_path=str(spec_snapshot_path),
+        )
+        append_ledger_event(
+            ledger_path,
+            event_type="artifact_written",
+            research_run_id=spec.research_run_id,
+            artifact_name="state",
+            artifact_path=str(state_path),
+        )
+    except Exception:
+        if run_directory.exists():
+            shutil.rmtree(run_directory)
+        raise
 
     return ResearchRun(
         research_run_id=spec.research_run_id,
@@ -253,16 +264,19 @@ def run_current_phase_once(
             f"Research phase is not ready for an experiment: {state.get('current_phase')}"
         )
 
-    experiment_id = next_experiment_id(state)
-    experiment_dir = run.paths.experiment_directory(
-        run.research_run_id,
-        experiment_id,
+    request = ExperimentFlowRequest(
+        experiment_id=next_experiment_id(state),
+        spec=spec,
+        state=state,
     )
+    experiment_dir = request.experiment_directory
     if experiment_dir.exists():
-        raise ResearchRunError(f"Research Experiment already exists: {experiment_id}")
+        raise ResearchRunError(
+            f"Research Experiment already exists: {request.experiment_id}"
+        )
     experiment_dir.mkdir(parents=True)
 
-    state["active_experiment_id"] = experiment_id
+    state["active_experiment_id"] = request.experiment_id
     state["current_phase"] = "running_experiment"
     write_json(run.state_path, state)
     append_ledger_event(
@@ -270,23 +284,17 @@ def run_current_phase_once(
         event_type="phase_changed",
         research_run_id=run.research_run_id,
         current_phase="running_experiment",
-        experiment_id=experiment_id,
+        experiment_id=request.experiment_id,
     )
 
     runner = experiment_runner or _default_experiment_runner(agent_runtime)
-    request = ExperimentFlowRequest(
-        experiment_id=experiment_id,
-        spec=spec,
-        state=state,
-    )
     try:
         result = runner(request)
     except UsageLimitWait as exc:
         return _propagate_usage_limit_wait(
             run,
             state,
-            experiment_id=experiment_id,
-            experiment_dir=experiment_dir,
+            request=request,
             sleep_seconds=exc.event.sleep_seconds,
         )
     except Exception as exc:
@@ -298,7 +306,7 @@ def run_current_phase_once(
         return _record_terminal_result(
             run,
             state,
-            experiment_id=experiment_id,
+            experiment_id=request.experiment_id,
             experiment_dir=experiment_dir,
         )
 
@@ -306,8 +314,7 @@ def run_current_phase_once(
         return _propagate_usage_limit_wait(
             run,
             state,
-            experiment_id=experiment_id,
-            experiment_dir=experiment_dir,
+            request=request,
             sleep_seconds=float(result["sleep_seconds"]),
         )
 
@@ -320,14 +327,14 @@ def run_current_phase_once(
         return _record_terminal_result(
             run,
             state,
-            experiment_id=experiment_id,
+            experiment_id=request.experiment_id,
             experiment_dir=experiment_dir,
         )
 
     return _record_terminal_result(
         run,
         state,
-        experiment_id=experiment_id,
+        experiment_id=request.experiment_id,
         experiment_dir=experiment_dir,
     )
 
@@ -336,26 +343,29 @@ def _propagate_usage_limit_wait(
     run: ResearchRun,
     state: dict[str, Any],
     *,
-    experiment_id: str,
-    experiment_dir: Path,
+    request: ExperimentFlowRequest,
     sleep_seconds: float,
 ) -> dict[str, Any]:
     state["active_experiment_id"] = None
     state["current_phase"] = "ready_for_experiment"
     write_json(run.state_path, state)
-    if experiment_dir.exists():
-        shutil.rmtree(experiment_dir)
+    for cleanup_dir in (
+        request.experiment_directory,
+        request.experiment_data_directory,
+    ):
+        if cleanup_dir.exists():
+            shutil.rmtree(cleanup_dir)
     append_ledger_event(
         run.ledger_path,
         event_type="usage_limit_wait",
         research_run_id=run.research_run_id,
-        experiment_id=experiment_id,
+        experiment_id=request.experiment_id,
         sleep_seconds=max(sleep_seconds, 0.0),
     )
     return {
         "status": "usage_limit_wait",
         "research_run_id": run.research_run_id,
-        "experiment_id": experiment_id,
+        "experiment_id": request.experiment_id,
         "current_phase": state["current_phase"],
         "controller_state_version": state.get("controller_state_version"),
         "sleep_seconds": max(sleep_seconds, 0.0),

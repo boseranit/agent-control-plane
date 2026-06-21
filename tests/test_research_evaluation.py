@@ -86,7 +86,7 @@ def test_create_evaluator_workspace_writes_manifest_without_eval_inputs(
     assert not (experiment_dir / "evaluation_boundary_evidence.json").exists()
 
 
-def test_evaluation_boundary_audit_rejects_path_mode(
+def test_evaluation_boundary_audit_accepts_boundary_evidence(
     tmp_path: Path,
 ) -> None:
     repo = tmp_path / "repo"
@@ -106,8 +106,7 @@ def test_evaluation_boundary_audit_rejects_path_mode(
         confirmatory_commands=[],
     )
 
-    with pytest.raises(TypeError, match="controller-held"):
-        run_evaluation_boundary_audit(workspace.manifest_path)
+    run_evaluation_boundary_audit(workspace.boundary_evidence)
 
 
 def test_evaluation_boundary_audit_detects_locked_artifact_hash_change(
@@ -133,7 +132,7 @@ def test_evaluation_boundary_audit_detects_locked_artifact_hash_change(
     selected_plan.write_text('{"selected": false}\n', encoding="utf-8")
 
     with pytest.raises(EvaluationBoundaryError, match="Locked artifact"):
-        run_evaluation_boundary_audit(workspace)
+        run_evaluation_boundary_audit(workspace.boundary_evidence)
 
 
 def test_evaluation_boundary_audit_detects_worktree_mutation(
@@ -159,7 +158,7 @@ def test_evaluation_boundary_audit_detects_worktree_mutation(
     (repo / "README.md").write_text("changed\n", encoding="utf-8")
 
     with pytest.raises(EvaluationBoundaryError, match="Worktree state changed"):
-        run_evaluation_boundary_audit(workspace)
+        run_evaluation_boundary_audit(workspace.boundary_evidence)
 
 
 def test_evaluation_boundary_audit_detects_ignored_worktree_file(
@@ -188,4 +187,4 @@ def test_evaluation_boundary_audit_detects_ignored_worktree_file(
     (repo / "evaluation.cache").write_text("ignored\n", encoding="utf-8")
 
     with pytest.raises(EvaluationBoundaryError, match="evaluation.cache"):
-        run_evaluation_boundary_audit(workspace)
+        run_evaluation_boundary_audit(workspace.boundary_evidence)

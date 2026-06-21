@@ -56,7 +56,10 @@ Default Hyperliquid research storage:
 - experiment worktrees: `<program-root>/worktrees/<run-id>/<experiment-id>`
 - continuation memory: `<program-root>/memory`
 - canonical read-only inputs: `/mnt/redbackup/data`
-- generated experiment data: `/mnt/redbackup/experiment-data/<run-id>/<experiment-id>`
+- generated experiment data:
+  `/mnt/redbackup/experiment-data/<experiment-name>/<research-run-id>-<experiment-id>`
+- default experiment name: the Research Run id when MLflow has no configured
+  experiment name
 
 The controller must reject `experiment_data_root` when it equals or sits under
 `data_root`.
@@ -342,6 +345,9 @@ Context includes:
 - selected budget and default command timeout
 - canonical input data root
 - experiment data root
+- artifact backfill policy: canonical data is read-only; optional experiment
+  backfills write experiment-local runtime data
+- experiment-local evaluation outputs declared by the Experiment Design
 - target repository root
 - git head, status text, changed files
 - ledger history
@@ -352,7 +358,7 @@ Context includes:
 - completed outcomes
 - completed prerequisites
 - metric history from approved metric sources
-- program context from existing `program.md` and `notes/*.md`
+- explicit repo loop context paths from the Research Run Spec
 - continuation summary from prior program runs, plan updates, exploratory ideas,
   metrics, lineage, and reusable worktrees
 
@@ -510,6 +516,8 @@ If a selected plan has no valid experiment design, end as `invalid`.
 
 If a selected plan has neither verification commands nor confirmatory commands,
 end as `blocked` with failure classification `no_deterministic_commands`.
+Exploratory commands do not satisfy this requirement and do not trigger evaluator
+execution without confirmatory commands.
 
 If worktree creation is disabled but the design requires editable source changes
 or verification in a worktree, end as `invalid`.
@@ -564,6 +572,16 @@ terminal summary.
 Default run stop policy:
 If an experiment outcome is `prerequisites_failed` and the spec has
 `stop_on_prerequisites_failed=true`, complete the whole Research Run.
+
+Runtime artifact backfills are not a mandatory audit step. Use prerequisite
+commands only for baseline materialization that does not depend on experiment
+worktree edits. If an experiment creates or modifies artifact code/config and
+needs materialized data from it, declare that backfill as a verification command
+so it runs from the experiment worktree after implementation.
+Selected experiments that need generated runtime artifacts should make their
+verification path materialize the declared experiment-local evaluation outputs.
+Intermediate generated runtime data belongs under
+`$RESEARCH_EXPERIMENT_DATA_ROOT/runtime-data`.
 
 ## Worktree and Implementation
 
@@ -633,6 +651,7 @@ Manifest contents:
 - worktree path or target repository path
 - canonical input data root
 - experiment data root
+- experiment-local runtime artifacts, when present, before canonical data
 - git SHA
 - canonical artifact paths
 - locked artifact hashes
@@ -650,10 +669,11 @@ Evaluator flow:
 
 1. Open or resume evaluator thread for the evaluator workspace.
 2. Run evaluator with workspace-write permission, cwd at evaluator workspace.
-3. Parse response into confirmatory result, exploratory diagnostics, and
-   analysis ledger.
-4. Write those artifacts.
-5. Run boundary audit.
+3. Evaluator writes `confirmatory_evaluation_result.json`,
+   `exploratory_diagnostics_result.json`, and `analysis_ledger.json` in the
+   evaluator workspace.
+4. Run boundary audit.
+5. Controller validates and promotes those artifacts.
 
 Boundary audit:
 
@@ -661,12 +681,13 @@ Boundary audit:
 - worktree git state must be unchanged
 - ignored files are included in mutation detection
 
-Run the boundary audit even if evaluator response is malformed or evaluator code
-crashes after mutating inputs. If audit fails, terminal outcome is `run_failed`
-with failed stage `evaluation_boundary_audit`.
+Run the boundary audit even if evaluator result files are malformed or evaluator
+code crashes after mutating inputs. If audit fails, terminal outcome is
+`run_failed` with failed stage `evaluation_boundary_audit`.
 
 Confirmatory evaluation determines the official outcome. Exploratory diagnostics
-can create future experiment ideas but cannot upgrade the current experiment.
+are attached diagnostics; they can create future experiment ideas but cannot
+upgrade the current experiment.
 
 ## Empirical Closeout
 

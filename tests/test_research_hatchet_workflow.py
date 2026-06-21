@@ -40,6 +40,7 @@ from agent_control_plane.research_experiment_controller.durable_shell import (
     ResearchRunInput,
     run_research_shell,
 )
+from research_helpers import write_evaluation_result_files, write_signal_panel
 
 
 COMPLETED_OUTCOMES = {
@@ -403,6 +404,7 @@ def test_evaluation_agent_usage_limit_wait_sleeps_and_retries_without_run_failed
     )
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        write_signal_panel(request)
         return run_experiment_flow(
             request,
             selection=selection,
@@ -455,6 +457,7 @@ def test_plain_evaluation_usage_limit_error_sleeps_durably_not_run_failed(
     )
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        write_signal_panel(request)
         return run_experiment_flow(
             request,
             selection=selection,
@@ -507,6 +510,7 @@ def test_usage_limit_retry_preserves_dirty_in_progress_worktree(
     )
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        write_signal_panel(request)
         return run_experiment_flow(
             request,
             selection=selection,
@@ -748,28 +752,22 @@ class UsageLimitThenEvaluationThread:
         self.runtime = runtime
 
     def run(self, input: str, config: object) -> object:
-        del input, config
+        del input
         self.runtime.run_calls += 1
         if self.runtime.run_calls == 1:
             raise usage_limit_wait(9.0)
+        write_evaluation_result_files(
+            Path(getattr(config, "cwd")),
+            outcome_reason="Retry produced evidence.",
+            evidence="confirmatory retry",
+            ic=0.03,
+            exploratory_result={},
+            analysis_ledger={"entries": []},
+        )
         return type(
             "TurnResult",
             (),
-            {
-                "final_response": {
-                    "confirmatory_evaluation_result": {
-                        "outcome": "completed_candidate",
-                        "outcome_reason": "Retry produced evidence.",
-                        "failed_stage": None,
-                        "failure_classification": None,
-                        "metrics": {"ic": 0.03},
-                        "gate_results": {"ic": "passed"},
-                        "pre_registered_evidence": ["confirmatory retry"],
-                    },
-                    "exploratory_diagnostics_result": {},
-                    "analysis_ledger": {"entries": []},
-                }
-            },
+            {"final_response": {"ignored": True}},
         )()
 
 
@@ -789,28 +787,22 @@ class PlainUsageLimitThenEvaluationThread:
         self.runtime = runtime
 
     def run(self, input: str, config: object) -> object:
-        del input, config
+        del input
         self.runtime.run_calls += 1
         if self.runtime.run_calls == 1:
             raise RuntimeError("Usage limit reached. retry-after: 13")
+        write_evaluation_result_files(
+            Path(getattr(config, "cwd")),
+            outcome_reason="Retry after parsed usage limit.",
+            evidence="parsed usage retry",
+            ic=0.05,
+            exploratory_result={},
+            analysis_ledger={"entries": []},
+        )
         return type(
             "TurnResult",
             (),
-            {
-                "final_response": {
-                    "confirmatory_evaluation_result": {
-                        "outcome": "completed_candidate",
-                        "outcome_reason": "Retry after parsed usage limit.",
-                        "failed_stage": None,
-                        "failure_classification": None,
-                        "metrics": {"ic": 0.05},
-                        "gate_results": {"ic": "passed"},
-                        "pre_registered_evidence": ["parsed usage retry"],
-                    },
-                    "exploratory_diagnostics_result": {},
-                    "analysis_ledger": {"entries": []},
-                }
-            },
+            {"final_response": {"ignored": True}},
         )()
 
 
@@ -840,24 +832,18 @@ class DirtyWorktreeUsageLimitThenEvaluationThread:
             worktree_path = _manifest_worktree_path(config)
             (worktree_path / "dirty.txt").write_text("dirty\n", encoding="utf-8")
             raise usage_limit_wait(11.0)
+        write_evaluation_result_files(
+            Path(getattr(config, "cwd")),
+            outcome_reason="Retry used a clean worktree.",
+            evidence="clean retry",
+            ic=0.04,
+            exploratory_result={},
+            analysis_ledger={"entries": []},
+        )
         return type(
             "TurnResult",
             (),
-            {
-                "final_response": {
-                    "confirmatory_evaluation_result": {
-                        "outcome": "completed_candidate",
-                        "outcome_reason": "Retry used a clean worktree.",
-                        "failed_stage": None,
-                        "failure_classification": None,
-                        "metrics": {"ic": 0.04},
-                        "gate_results": {"ic": "passed"},
-                        "pre_registered_evidence": ["clean retry"],
-                    },
-                    "exploratory_diagnostics_result": {},
-                    "analysis_ledger": {"entries": []},
-                }
-            },
+            {"final_response": {"ignored": True}},
         )()
 
 

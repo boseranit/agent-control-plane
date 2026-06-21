@@ -19,9 +19,11 @@ from agent_control_plane.research_experiment_controller.paths import (
 from agent_control_plane.research_experiment_controller.research_state import (
     IdeaRecord,
     ResearchState,
+    empty_research_state,
     ensure_research_state,
     load_research_state,
     merge_terminal_experiment,
+    merge_run_dirs_into_state,
     research_state_path,
     write_research_state,
 )
@@ -131,6 +133,80 @@ def test_research_state_rejects_missing_seed_component(tmp_path: Path) -> None:
 
     with pytest.raises(ValidationError):
         load_research_state(path)
+
+
+def test_prior_run_import_requires_state_json(tmp_path: Path) -> None:
+    prior_run = tmp_path / "runs" / "prior-run"
+    prior_run.mkdir(parents=True)
+    state = empty_research_state("program")
+
+    with pytest.raises(FileNotFoundError, match="state.json"):
+        merge_run_dirs_into_state(state, [prior_run])
+
+
+def test_prior_run_import_requires_research_run_id(tmp_path: Path) -> None:
+    prior_run = tmp_path / "runs" / "prior-run"
+    prior_dir = prior_run / "experiments" / "EXP-0001"
+    _write_terminal_artifacts(prior_dir, tmp_path / "worktrees" / "EXP-0001")
+    write_json(
+        prior_run / "state.json",
+        {"experiments": {"EXP-0001": {"experiment_directory": str(prior_dir)}}},
+    )
+    state = empty_research_state("program")
+
+    with pytest.raises(ValueError, match="research_run_id"):
+        merge_run_dirs_into_state(state, [prior_run])
+
+
+def test_prior_run_import_does_not_scan_experiments_directory(
+    tmp_path: Path,
+) -> None:
+    prior_run = tmp_path / "runs" / "prior-run"
+    scanned_dir = prior_run / "experiments" / "EXP-0001"
+    _write_terminal_artifacts(scanned_dir, tmp_path / "worktrees" / "EXP-0001")
+    write_json(
+        prior_run / "state.json",
+        {"research_run_id": "prior-run", "experiments": {}},
+    )
+    state = empty_research_state("program")
+
+    merge_run_dirs_into_state(state, [prior_run])
+
+    assert state.experiment_index == {}
+
+
+def test_prior_run_import_requires_recorded_experiment_directory(
+    tmp_path: Path,
+) -> None:
+    prior_run = tmp_path / "runs" / "prior-run"
+    write_json(
+        prior_run / "state.json",
+        {"research_run_id": "prior-run", "experiments": {"EXP-0001": {}}},
+    )
+    state = empty_research_state("program")
+
+    with pytest.raises(ValueError, match="experiment_directory"):
+        merge_run_dirs_into_state(state, [prior_run])
+
+
+def test_prior_run_import_requires_existing_experiment_directory(
+    tmp_path: Path,
+) -> None:
+    prior_run = tmp_path / "runs" / "prior-run"
+    missing_dir = prior_run / "experiments" / "EXP-0001"
+    write_json(
+        prior_run / "state.json",
+        {
+            "research_run_id": "prior-run",
+            "experiments": {
+                "EXP-0001": {"experiment_directory": str(missing_dir)},
+            },
+        },
+    )
+    state = empty_research_state("program")
+
+    with pytest.raises(FileNotFoundError, match="EXP-0001"):
+        merge_run_dirs_into_state(state, [prior_run])
 
 
 def test_merge_terminal_experiment_updates_research_state_once(

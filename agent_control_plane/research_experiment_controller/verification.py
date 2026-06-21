@@ -146,7 +146,13 @@ def _log_path(
 ) -> Path:
     data = command_declaration_record(command)
     name = _safe_name(str(data.get("name") or f"verification-{index}"))
-    return run_dir / "verification" / f"attempt_{attempt}" / f"{name}_{stream}.log"
+    return (
+        run_dir
+        / "logs"
+        / "verification"
+        / f"attempt-{attempt}"
+        / f"{name}.{stream}.log"
+    )
 
 
 def _safe_name(name: str) -> str:

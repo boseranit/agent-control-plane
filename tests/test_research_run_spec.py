@@ -149,6 +149,10 @@ def test_loads_prd_minimal_research_run_spec(tmp_path: Path) -> None:
     assert spec.codex.model == "gpt-5.3-codex"
     assert spec.codex.effort == "xhigh"
     assert spec.implementation.max_repairs == 3
+    assert spec.continuation.prior_run_dirs == ()
+    assert spec.continuation.prior_worktree_roots == ()
+    assert spec.continuation.repo_loop_context_paths == ()
+    assert spec.continuation.max_prior_experiments == 12
     assert spec.stop_on_prerequisites_failed is True
 
 
@@ -181,6 +185,9 @@ def test_applies_defaults_and_accepts_stop_on_prerequisites_failed_false(
     assert spec.codex.model is None
     assert spec.codex.effort is None
     assert spec.implementation.max_repairs == 3
+    assert spec.continuation.prior_run_dirs == ()
+    assert spec.continuation.prior_worktree_roots == ()
+    assert spec.continuation.repo_loop_context_paths == ()
     assert spec.stop_on_prerequisites_failed is False
 
 
@@ -192,16 +199,22 @@ def test_research_program_root_round_trips_in_start_spec(
     program_root = tmp_path / "programs" / "peer-residuals"
     data = minimal_spec_data(repo)
     data["research_program_root"] = str(program_root)
-    data["max_prior_experiments"] = 7
+    data["continuation"] = {"max_prior_experiments": 7}
 
     spec = load_research_run_spec(write_spec_data(tmp_path, data, "program-root"))
 
     assert spec.research_program.root == program_root.resolve()
-    assert spec.research_program.max_prior_experiments == 7
+    assert spec.continuation.max_prior_experiments == 7
 
     resolved = resolved_spec_dict(spec)
     assert resolved["research_program_root"] == str(program_root.resolve())
-    assert resolved["max_prior_experiments"] == 7
+    assert "max_prior_experiments" not in resolved
+    assert resolved["continuation"] == {
+        "prior_run_dirs": [],
+        "prior_worktree_roots": [],
+        "repo_loop_context_paths": [],
+        "max_prior_experiments": 7,
+    }
     assert resolved["worktree"] == {"create": True}
     assert (
         resolved_spec_dict(
@@ -238,16 +251,84 @@ def test_snapshot_load_injects_controller_owned_program_root(
     )
 
 
-def test_snapshot_rejects_persisted_research_program_root(tmp_path: Path) -> None:
+def test_loads_explicit_continuation_paths(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
-    snapshot_path = write_minimal_spec(tmp_path, repo)
+    prior_run = tmp_path / "programs" / "peer-residuals" / "runs" / "prior-run"
+    prior_worktree_root = tmp_path / "programs" / "peer-residuals" / "worktrees"
+    context_path = tmp_path / "context.md"
+    context_path.write_text("# Prior loop context\n", encoding="utf-8")
+    data = minimal_spec_data(repo)
+    data["continuation"] = {
+        "prior_run_dirs": [str(prior_run)],
+        "prior_worktree_roots": [str(prior_worktree_root)],
+        "repo_loop_context_paths": [str(context_path)],
+        "max_prior_experiments": 3,
+    }
 
-    with pytest.raises(ResearchRunSpecError, match="must not contain"):
-        load_research_run_spec_snapshot(
-            snapshot_path,
-            research_program_root=tmp_path / "programs" / "peer-residuals",
-        )
+    spec = load_research_run_spec(write_spec_data(tmp_path, data, "continuation"))
+
+    assert spec.continuation.prior_run_dirs == (prior_run.resolve(),)
+    assert spec.continuation.prior_worktree_roots == (prior_worktree_root.resolve(),)
+    assert spec.continuation.repo_loop_context_paths == (context_path.resolve(),)
+    assert spec.continuation.max_prior_experiments == 3
+    assert resolved_spec_dict(spec)["continuation"] == {
+        "prior_run_dirs": [str(prior_run.resolve())],
+        "prior_worktree_roots": [str(prior_worktree_root.resolve())],
+        "repo_loop_context_paths": [str(context_path.resolve())],
+        "max_prior_experiments": 3,
+    }
+
+
+def test_rejects_missing_repo_loop_context_path(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    missing_context = tmp_path / "missing-context.md"
+    data = minimal_spec_data(repo)
+    data["continuation"] = {
+        "repo_loop_context_paths": [str(missing_context)],
+    }
+
+    with pytest.raises(
+        ResearchRunSpecError,
+        match=r"continuation.repo_loop_context_paths\[0\].*existing readable file",
+    ):
+        load_research_run_spec(write_spec_data(tmp_path, data, "missing-context"))
+
+
+def test_rejects_directory_repo_loop_context_path(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    context_dir = tmp_path / "context-dir"
+    context_dir.mkdir()
+    data = minimal_spec_data(repo)
+    data["continuation"] = {
+        "repo_loop_context_paths": [str(context_dir)],
+    }
+
+    with pytest.raises(
+        ResearchRunSpecError,
+        match=r"continuation.repo_loop_context_paths\[0\].*existing readable file",
+    ):
+        load_research_run_spec(write_spec_data(tmp_path, data, "directory-context"))
+
+
+def test_snapshot_load_ignores_embedded_research_program_root(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    requested_root = tmp_path / "programs" / "requested-root"
+    data = minimal_spec_data(repo)
+    data["research_program_root"] = str(tmp_path / "moved-from" / "old-root")
+    snapshot_path = write_spec_data(tmp_path, data, "embedded-root-snapshot")
+
+    spec = load_research_run_spec_snapshot(
+        snapshot_path,
+        research_program_root=requested_root,
+    )
+
+    assert spec.research_program.root == requested_root.resolve()
 
 
 @pytest.mark.parametrize(
@@ -316,6 +397,17 @@ def test_snapshot_rejects_persisted_research_program_root(tmp_path: Path) -> Non
         ("worktree_not_mapping", {"worktree": []}, "worktree.*mapping"),
         ("mlflow_not_mapping", {"mlflow": []}, "mlflow.*mapping"),
         ("codex_not_mapping", {"codex": []}, "codex.*mapping"),
+        ("continuation_not_mapping", {"continuation": []}, "continuation.*mapping"),
+        (
+            "continuation_prior_run_dirs_not_list",
+            {"continuation": {"prior_run_dirs": "runs/prior"}},
+            "continuation.prior_run_dirs.*list",
+        ),
+        (
+            "continuation_prior_run_dirs_blank",
+            {"continuation": {"prior_run_dirs": [""]}},
+            r"continuation.prior_run_dirs\[0\].*non-empty",
+        ),
         (
             "implementation_not_mapping",
             {"implementation": []},
@@ -337,9 +429,14 @@ def test_snapshot_rejects_persisted_research_program_root(tmp_path: Path) -> Non
             "worktree.root.*not supported",
         ),
         (
-            "max_prior_experiments_not_positive",
+            "top_level_max_prior_experiments_not_supported",
             {"max_prior_experiments": 0},
-            "max_prior_experiments.*positive",
+            "max_prior_experiments.*not supported",
+        ),
+        (
+            "continuation_max_prior_experiments_not_positive",
+            {"continuation": {"max_prior_experiments": 0}},
+            "continuation.max_prior_experiments.*positive",
         ),
         (
             "mlflow_enabled_not_bool",
@@ -390,6 +487,12 @@ def test_resolved_spec_dict_is_deterministic_snapshot_data(tmp_path: Path) -> No
     assert resolved["research_program_root"] == str(
         (tmp_path / "programs" / "peer-residuals").resolve()
     )
+    assert resolved["continuation"] == {
+        "prior_run_dirs": [],
+        "prior_worktree_roots": [],
+        "repo_loop_context_paths": [],
+        "max_prior_experiments": 12,
+    }
     assert resolved["worktree"] == {"create": True}
     assert resolved["mlflow"] == {
         "enabled": False,

@@ -32,7 +32,7 @@ Controller builds context_pack.md deterministically from params, loop spec, prio
 
 
 Strategist receives the context pack and writes context_summary.json, then proposal.json. The proposal should state the hypothesis, economic or statistical rationale, intended signal/feature family, expected mechanism, known risks, and what evidence would falsify the idea. It should use prior loop memory to avoid repeating known blocked paths, while recording every decision in artifacts. 3. Research Specification And Experiment Design
-Strategist writes research spec.json and experiment_design.json. research_spec.json is the pre-registration artifact. It defines the hypothesis, target, prediction horizon, universe, label, feature availability assumptions, train/validation/test split, primary metric, secondary metrics, baselines, null tests, transaction-cost assumptions, success gates, failure gates, and inconclusive gates. experiment_design.json defines prerequisite commands, implementation verification commands, confirmatory evaluation commands, optional exploratory diagnostic commands, expected outputs, allowed write paths, timeouts, resource budgets, and failure routing.
+Strategist writes research spec.json and experiment_design.json. research_spec.json is the pre-registration artifact. It defines the hypothesis, target, prediction horizon, universe, label, feature availability assumptions, train/validation/test split, primary metric, secondary metrics, baselines, null tests, transaction-cost assumptions, success gates, failure gates, and inconclusive gates. experiment_design.json defines prerequisite commands, implementation verification commands, confirmatory evaluation commands, optional exploratory diagnostic commands attached to confirmatory evaluation, expected outputs, allowed write paths, timeouts, resource budgets, and failure routing.
 4. Independent Design Critique
 Controller starts a fresh Critic thread with the proposal, research spec, experiment design, context summary, failed-run context, and relevant artifact notes. Critic writes critique.json. It should check leakage risk, point-in-time validity, baseline strength, statistical validity, multiple-testing risk, scope control, feasibility, and whether the success gates are meaningful.
 5. Design Revision And Selection
@@ -48,7 +48,7 @@ After verification passes, Controller creates implementation_diff_summary.json. 
 10. Locked Confirmatory Evaluation
 Evaluator receives all prior artifacts, command logs, implementation diff, and verification results. It runs or requests only the locked confirmatory evaluation commands defined in the selected plan. It computes metrics, compares baselines and nulls, checks success gates, and writes
 confirmatory evaluation_result.json. This artifact determines the official empirical status: success, failure, inconclusive, invalid, or blocked. 11. Exploratory Diagnostics
-Evaluator may run additional diagnostics, robustness checks, ablations, null tests, regime checks, or sensitivity analyses within the same cycle. These are recorded in exploratory_diagnostics_result.json and analysis_ledger.json. Exploratory findings may justify future experiments, but may not upgrade the official result of the current cycle.
+Evaluator may run additional diagnostics, robustness checks, ablations, null tests, regime checks, or sensitivity analyses within the same cycle only when attached to locked confirmatory evaluation. These are recorded in exploratory_diagnostics_result.json and analysis_ledger.json. Exploratory findings may justify future experiments, but may not upgrade the official result of the current cycle.
 12. Evaluator Failure Routing
 If evaluation commands fail due to source/runtime defects, send the failure package back to the Implementer thread, then resume the same Evaluator thread after repair. If results are poor but commands are valid, record empirical failure. If the result is directionally interesting but unstable, underpowered, or dependent on fragile assumptions, record inconclusive. If data is missing or the design cannot answer the research question, hand back to Strategist as blocked, invalid, or requiring a revised future experiment.
 13. Independent Empirical Critique
@@ -148,11 +148,9 @@ def research_cycle(input: EmptyModel, ctx: DurableContext) -> dict:
     if diff_audit.high_risk:
         critique = run_critic(diff_audit)  # Fresh Critic for diff
     
-    # 10. Locked Confirmatory Evaluation
+    # 10-11. Locked Confirmatory Evaluation With Attached Diagnostics
     confirmatory_result = run_evaluator(selected_plan, implementation_result, diff_audit)
-    
-    # 11. Exploratory Diagnostics
-    exploratory_results = run_evaluator(confirmatory_result, exploratory=True)
+    exploratory_results = confirmatory_result.exploratory_diagnostics
     
     # 13. Independent Empirical Critique
     empirical_critique = run_critic(confirmatory_result, exploratory_results)

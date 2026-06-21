@@ -27,6 +27,7 @@ from agent_control_plane.research_experiment_controller.research_run_mirror impo
 )
 from agent_control_plane.research_experiment_controller.research_run_spec import (
     CodexConfig,
+    ContinuationConfig,
     ImplementationConfig,
     MLflowConfig,
     ResearchBudget,
@@ -442,5 +443,6 @@ def _spec(tmp_path: Path, repo: Path, *, mlflow_enabled: bool) -> ResearchRunSpe
         ),
         codex=CodexConfig(),
         implementation=ImplementationConfig(),
+        continuation=ContinuationConfig(),
         stop_on_prerequisites_failed=True,
     )

@@ -30,12 +30,10 @@ class WorktreeConfig:
 @dataclass(frozen=True, init=False)
 class ResearchProgramConfig:
     paths: ResearchProgramPaths
-    max_prior_experiments: int
 
     def __init__(
         self,
         root: str | Path | ResearchProgramPaths,
-        max_prior_experiments: int = 12,
     ) -> None:
         paths = (
             root
@@ -43,7 +41,6 @@ class ResearchProgramConfig:
             else ResearchProgramPaths(root)
         )
         object.__setattr__(self, "paths", paths)
-        object.__setattr__(self, "max_prior_experiments", max_prior_experiments)
 
     @property
     def root(self) -> Path:
@@ -69,6 +66,14 @@ class ImplementationConfig:
 
 
 @dataclass(frozen=True)
+class ContinuationConfig:
+    prior_run_dirs: tuple[Path, ...] = ()
+    prior_worktree_roots: tuple[Path, ...] = ()
+    repo_loop_context_paths: tuple[Path, ...] = ()
+    max_prior_experiments: int = 12
+
+
+@dataclass(frozen=True)
 class ResearchRunSpec:
     source_path: Path
     version: int
@@ -86,6 +91,7 @@ class ResearchRunSpec:
     mlflow: MLflowConfig
     codex: CodexConfig
     implementation: ImplementationConfig
+    continuation: ContinuationConfig
     stop_on_prerequisites_failed: bool
 
 
@@ -125,6 +131,11 @@ def _load_research_run_spec(
     version = _positive_int(data, "version", 1)
     if version != 1:
         raise ResearchRunSpecError("Research Run Spec field 'version' must be 1.")
+    _reject_unsupported_field(
+        data,
+        "max_prior_experiments",
+        replacement="continuation.max_prior_experiments",
+    )
 
     data_root = Path(_required_string(data, "data_root")).expanduser()
     experiment_data_root = Path(
@@ -137,6 +148,9 @@ def _load_research_run_spec(
     research_program = _load_research_program(
         data,
         research_program_root=research_program_root,
+    )
+    continuation = _load_continuation(
+        data.get("continuation"),
     )
 
     return ResearchRunSpec(
@@ -158,6 +172,7 @@ def _load_research_run_spec(
         mlflow=_load_mlflow(data.get("mlflow")),
         codex=_load_codex(data.get("codex")),
         implementation=_load_implementation(data.get("implementation")),
+        continuation=continuation,
         stop_on_prerequisites_failed=_optional_bool(
             data, "stop_on_prerequisites_failed", True
         ),
@@ -188,7 +203,18 @@ def resolved_spec_dict(
         },
         "data_root": str(spec.data_root),
         "experiment_data_root": str(spec.experiment_data_root),
-        "max_prior_experiments": spec.research_program.max_prior_experiments,
+        "continuation": {
+            "prior_run_dirs": [
+                str(path) for path in spec.continuation.prior_run_dirs
+            ],
+            "prior_worktree_roots": [
+                str(path) for path in spec.continuation.prior_worktree_roots
+            ],
+            "repo_loop_context_paths": [
+                str(path) for path in spec.continuation.repo_loop_context_paths
+            ],
+            "max_prior_experiments": spec.continuation.max_prior_experiments,
+        },
         "worktree": {"create": spec.worktree.create},
         "mlflow": {
             "enabled": spec.mlflow.enabled,
@@ -238,15 +264,9 @@ def _load_research_program(
     if research_program_root is None:
         root = Path(_required_string(data, "research_program_root"))
     else:
-        if "research_program_root" in data:
-            raise ResearchRunSpecError(
-                "Snapshotted Research Run Spec must not contain "
-                "research_program_root."
-            )
         root = Path(research_program_root)
     return ResearchProgramConfig(
         root=root.expanduser().resolve(),
-        max_prior_experiments=_positive_int(data, "max_prior_experiments", 12),
     )
 
 
@@ -288,6 +308,29 @@ def _load_implementation(value: Any) -> ImplementationConfig:
     return ImplementationConfig(max_repairs=_positive_int(data, "max_repairs", 3))
 
 
+def _load_continuation(value: Any) -> ContinuationConfig:
+    data = _optional_mapping(value, "continuation")
+    return ContinuationConfig(
+        prior_run_dirs=_path_tuple(
+            data, "prior_run_dirs", "continuation.prior_run_dirs"
+        ),
+        prior_worktree_roots=_path_tuple(
+            data, "prior_worktree_roots", "continuation.prior_worktree_roots"
+        ),
+        repo_loop_context_paths=_existing_readable_file_path_tuple(
+            data,
+            "repo_loop_context_paths",
+            "continuation.repo_loop_context_paths",
+        ),
+        max_prior_experiments=_positive_int(
+            data,
+            "max_prior_experiments",
+            12,
+            "continuation.max_prior_experiments",
+        ),
+    )
+
+
 def _require_experiment_data_root_outside_data_root(
     *,
     data_root: Path,
@@ -312,6 +355,64 @@ def _optional_mapping(value: Any, field: str) -> dict[str, Any]:
             f"Research Run Spec field '{field}' must be a mapping."
         )
     return value
+
+
+def _reject_unsupported_field(
+    data: dict[str, Any],
+    field: str,
+    *,
+    replacement: str,
+) -> None:
+    if field in data:
+        raise ResearchRunSpecError(
+            f"Research Run Spec field '{field}' is not supported; "
+            f"use '{replacement}'."
+        )
+
+
+def _path_tuple(
+    data: dict[str, Any],
+    field: str,
+    display_field: str,
+) -> tuple[Path, ...]:
+    value = data.get(field, [])
+    if not isinstance(value, list):
+        raise ResearchRunSpecError(
+            f"Research Run Spec field '{display_field}' must be a list."
+        )
+    paths: list[Path] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not item.strip():
+            raise ResearchRunSpecError(
+                f"Research Run Spec field '{display_field}[{index}]' "
+                "must be a non-empty string."
+            )
+        paths.append(Path(item).expanduser().resolve())
+    return tuple(paths)
+
+
+def _existing_readable_file_path_tuple(
+    data: dict[str, Any],
+    field: str,
+    display_field: str,
+) -> tuple[Path, ...]:
+    paths = _path_tuple(data, field, display_field)
+    for index, path in enumerate(paths):
+        display_item = f"{display_field}[{index}]"
+        if not path.is_file():
+            raise ResearchRunSpecError(
+                f"Research Run Spec field '{display_item}' must be an "
+                f"existing readable file: {path}"
+            )
+        try:
+            with path.open("rb"):
+                pass
+        except OSError as exc:
+            raise ResearchRunSpecError(
+                f"Research Run Spec field '{display_item}' must be an "
+                f"existing readable file: {path}"
+            ) from exc
+    return paths
 
 
 def _required_string(data: dict[str, Any], field: str) -> str:
@@ -345,11 +446,17 @@ def _optional_string(
     return value
 
 
-def _positive_int(data: dict[str, Any], field: str, default: int) -> int:
+def _positive_int(
+    data: dict[str, Any],
+    field: str,
+    default: int,
+    display_field: str | None = None,
+) -> int:
     value = data.get(field, default)
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ResearchRunSpecError(
-            f"Research Run Spec field '{field}' must be a positive integer."
+            f"Research Run Spec field '{display_field or field}' must be a "
+            "positive integer."
         )
     return value
 

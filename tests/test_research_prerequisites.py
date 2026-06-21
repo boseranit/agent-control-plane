@@ -80,8 +80,8 @@ def test_failed_data_audit_command_records_prerequisite_failure_and_metrics(
     )
 
     metrics = read_json_object(run_dir / "command_metrics.json")
-    stdout = run_dir / "commands" / "data_audit_1_stdout.log"
-    stderr = run_dir / "commands" / "data_audit_1_stderr.log"
+    stdout = run_dir / "logs" / "data_audit-1-schema-check.stdout.log"
+    stderr = run_dir / "logs" / "data_audit-1-schema-check.stderr.log"
 
     assert result["status"] == "experiment_completed"
     assert result["outcome"] == "prerequisites_failed"
@@ -91,6 +91,8 @@ def test_failed_data_audit_command_records_prerequisite_failure_and_metrics(
     assert result["data_audit"]["command_results"][0]["status"] == "failed"
     assert metrics["failed_count"] == 1
     assert metrics["commands"][0]["name"] == "schema-check"
+    assert metrics["commands"][0]["stdout_path"] == str(stdout.resolve())
+    assert metrics["commands"][0]["stderr_path"] == str(stderr.resolve())
     assert stdout.read_text(encoding="utf-8").splitlines() == [
         str(data_root),
         str(experiment_data_root),
@@ -132,3 +134,44 @@ def test_failed_data_audit_command_can_declare_failure_classification(
     assert result["failed_stage"] == "data_audit"
     assert result["failure_classification"] == "schema_mismatch"
     assert result["data_audit"]["failure_classification"] == "schema_mismatch"
+
+
+def test_prerequisite_logs_do_not_collide_for_duplicate_command_names(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    data_root = tmp_path / "data"
+    experiment_data_root = tmp_path / "experiment-data" / "run" / "EXP-0001"
+    run_dir = tmp_path / "run"
+    repo.mkdir()
+    data_root.mkdir()
+
+    result = run_data_audit_phase(
+        PrerequisiteAuditRequest(
+            data_root=data_root,
+            experiment_data_root=experiment_data_root,
+            prerequisite_commands=[
+                {
+                    "name": "same-name",
+                    "argv": [sys.executable, "-c", "print('prereq')"],
+                }
+            ],
+            data_audit_commands=[
+                {
+                    "name": "same-name",
+                    "argv": [sys.executable, "-c", "print('audit')"],
+                }
+            ],
+            cwd=repo,
+            run_dir=run_dir,
+            timeout_seconds=60,
+        )
+    )
+
+    assert result["status"] == "data_audit_passed"
+    assert (
+        run_dir / "logs" / "prerequisite-1-same-name.stdout.log"
+    ).read_text(encoding="utf-8") == "prereq\n"
+    assert (
+        run_dir / "logs" / "data_audit-1-same-name.stdout.log"
+    ).read_text(encoding="utf-8") == "audit\n"
