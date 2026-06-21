@@ -265,14 +265,6 @@ def _load_research_program(
         root = Path(_required_string(data, "research_program_root"))
     else:
         root = Path(research_program_root)
-        if "research_program_root" in data:
-            persisted_root = Path(_required_string(data, "research_program_root"))
-            if persisted_root.expanduser().resolve() != root.expanduser().resolve():
-                raise ResearchRunSpecError(
-                    "Snapshotted Research Run Spec research_program_root does not "
-                    "match the requested Research Program root."
-                )
-            root = persisted_root
     return ResearchProgramConfig(
         root=root.expanduser().resolve(),
     )

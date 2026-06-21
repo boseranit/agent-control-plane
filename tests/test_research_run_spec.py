@@ -313,36 +313,22 @@ def test_rejects_directory_repo_loop_context_path(tmp_path: Path) -> None:
         load_research_run_spec(write_spec_data(tmp_path, data, "directory-context"))
 
 
-def test_snapshot_accepts_matching_persisted_research_program_root(
+def test_snapshot_load_ignores_embedded_research_program_root(
     tmp_path: Path,
 ) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
-    program_root = tmp_path / "programs" / "peer-residuals"
+    requested_root = tmp_path / "programs" / "requested-root"
     data = minimal_spec_data(repo)
-    data["research_program_root"] = str(program_root)
-    snapshot_path = write_spec_data(tmp_path, data, "matching-root-snapshot")
+    data["research_program_root"] = str(tmp_path / "moved-from" / "old-root")
+    snapshot_path = write_spec_data(tmp_path, data, "embedded-root-snapshot")
 
     spec = load_research_run_spec_snapshot(
         snapshot_path,
-        research_program_root=program_root,
+        research_program_root=requested_root,
     )
 
-    assert spec.research_program.root == program_root.resolve()
-
-
-def test_snapshot_rejects_mismatched_persisted_research_program_root(
-    tmp_path: Path,
-) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    snapshot_path = write_minimal_spec(tmp_path, repo)
-
-    with pytest.raises(ResearchRunSpecError, match="does not match"):
-        load_research_run_spec_snapshot(
-            snapshot_path,
-            research_program_root=tmp_path / "programs" / "different-root",
-        )
+    assert spec.research_program.root == requested_root.resolve()
 
 
 @pytest.mark.parametrize(
