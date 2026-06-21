@@ -95,57 +95,62 @@ def start_research_run(
         raise ResearchRunError(
             f"Research Run already exists: {spec.research_run_id}"
         ) from exc
-    ensure_research_state(paths)
-    if spec.continuation.prior_run_dirs:
-        import_run_dirs_into_research_state(
-            paths=paths,
-            prior_run_dirs=spec.continuation.prior_run_dirs,
+    try:
+        ensure_research_state(paths)
+        if spec.continuation.prior_run_dirs:
+            import_run_dirs_into_research_state(
+                paths=paths,
+                prior_run_dirs=spec.continuation.prior_run_dirs,
+            )
+
+        spec_snapshot_path = run_directory / "research_run_spec.yaml"
+        state_path = run_directory / "state.json"
+        ledger_path = run_directory / "ledger.jsonl"
+        experiments_directory = run_directory / "experiments"
+        experiments_directory.mkdir()
+
+        spec_snapshot_path.write_text(
+            yaml.safe_dump(
+                resolved_spec_dict(spec, include_research_program_root=False),
+                sort_keys=False,
+            ),
+            encoding="utf-8",
         )
+        state = create_initial_state(
+            research_run_id=spec.research_run_id,
+            max_experiments=spec.max_experiments,
+        )
+        write_json(state_path, state)
 
-    spec_snapshot_path = run_directory / "research_run_spec.yaml"
-    state_path = run_directory / "state.json"
-    ledger_path = run_directory / "ledger.jsonl"
-    experiments_directory = run_directory / "experiments"
-    experiments_directory.mkdir()
-
-    spec_snapshot_path.write_text(
-        yaml.safe_dump(
-            resolved_spec_dict(spec),
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
-    state = create_initial_state(
-        research_run_id=spec.research_run_id,
-        max_experiments=spec.max_experiments,
-    )
-    write_json(state_path, state)
-
-    append_ledger_event(
-        ledger_path,
-        event_type="research_run_started",
-        research_run_id=spec.research_run_id,
-    )
-    append_ledger_event(
-        ledger_path,
-        event_type="phase_changed",
-        research_run_id=spec.research_run_id,
-        current_phase=state["current_phase"],
-    )
-    append_ledger_event(
-        ledger_path,
-        event_type="artifact_written",
-        research_run_id=spec.research_run_id,
-        artifact_name="research_run_spec",
-        artifact_path=str(spec_snapshot_path),
-    )
-    append_ledger_event(
-        ledger_path,
-        event_type="artifact_written",
-        research_run_id=spec.research_run_id,
-        artifact_name="state",
-        artifact_path=str(state_path),
-    )
+        append_ledger_event(
+            ledger_path,
+            event_type="research_run_started",
+            research_run_id=spec.research_run_id,
+        )
+        append_ledger_event(
+            ledger_path,
+            event_type="phase_changed",
+            research_run_id=spec.research_run_id,
+            current_phase=state["current_phase"],
+        )
+        append_ledger_event(
+            ledger_path,
+            event_type="artifact_written",
+            research_run_id=spec.research_run_id,
+            artifact_name="research_run_spec",
+            artifact_path=str(spec_snapshot_path),
+        )
+        append_ledger_event(
+            ledger_path,
+            event_type="artifact_written",
+            research_run_id=spec.research_run_id,
+            artifact_name="state",
+            artifact_path=str(state_path),
+        )
+    except Exception:
+        if run_directory.exists():
+            shutil.rmtree(run_directory)
+        raise
 
     return ResearchRun(
         research_run_id=spec.research_run_id,

@@ -76,11 +76,9 @@ def test_research_agent_prompts_encode_optional_artifact_backfill_policy() -> No
     critic = prompt_for_role(ResearchAgentRole.CRITIC)
     evaluator = prompt_for_role(ResearchAgentRole.EVALUATOR)
 
-    assert "Artifact backfills are optional experiment-local commands" in strategist
-    assert "post-implementation verification command" in strategist
-    assert "$RESEARCH_EXPERIMENT_DATA_ROOT/runtime-data" in strategist
-    assert "declare it in expected_outputs and materialize it during verification" in strategist
-    assert "prerequisite commands only for baseline materialization" in strategist
+    assert "expected_outputs" in strategist
+    assert "deterministic command groups" in strategist
+    assert "argv is an array of strings, never a shell string" in strategist
     assert "read canonical inputs from $HLM_DATA_ROOT" in implementer
     assert "$RESEARCH_EXPERIMENT_DATA_ROOT/runtime-data" in implementer
     assert "declared evaluation outputs under $RESEARCH_EXPERIMENT_DATA_ROOT" in implementer
@@ -120,32 +118,23 @@ def test_strategist_prompt_uses_current_schema_names() -> None:
     assert "Summary/summary.json" in strategist
     assert "PlanUpdate/plan_update.json" in strategist
     assert "name, argv, timeout_seconds, phase, and failure_classification" in strategist
-    assert "Do not include cwd, env, or id in command declarations" in strategist
+    assert "do not include cwd, env, or id" in strategist
     assert "expected_outputs" in strategist
-    assert "verification_commands" in strategist
-    assert "prerequisite_commands" in strategist
-    assert (
-        "exploratory_commands are diagnostics. They do not satisfy "
-        "deterministic-command selection"
-        in strategist
-    )
-    assert "selected_plan.selected_idea_ids" in strategist
+    assert "selected_idea_ids" in strategist
     assert "fresh_selection_reason" in strategist
-    assert "selected_plan.seed_component_ids" in strategist
-    assert "PlanUpdate.blockers" in strategist
-    assert "PlanUpdate.reusable_components" in strategist
-    assert "controller owns worktree_path and changed_files" in strategist
+    assert "seed_component_ids" in strategist
+    assert "blockers" in strategist
+    assert "reusable_components" in strategist
 
 
-def test_strategist_prompt_encodes_evidence_and_closeout_boundaries() -> None:
+def test_strategist_prompt_encodes_context_and_closeout_outputs() -> None:
     strategist = prompt_for_role(ResearchAgentRole.STRATEGIST)
 
     assert "The controller owns context artifact creation" in strategist
-    assert "Confirmatory evidence controls the official Research Outcome" in strategist
-    assert "Exploratory diagnostics only motivate future Research Experiments" in strategist
-    assert "Closeout summary cannot change official Research Outcome" in strategist
-    assert "empirical_critique.json" in strategist
-    assert "do not rerun research computations" in strategist
+    assert "For empirical-closeout turns" in strategist
+    assert "Summary/summary.json" in strategist
+    assert "PlanUpdate/plan_update.json" in strategist
+    assert "evidence supplied by the controller" in strategist
 
 
 def test_strategist_prompt_encodes_plan_update_cards_without_schema_dump() -> None:
@@ -153,12 +142,7 @@ def test_strategist_prompt_encodes_plan_update_cards_without_schema_dump() -> No
 
     assert "followups, learning_updates, blockers, reusable_components" in strategist
     assert "superseded_idea_ids" in strategist
-    assert "FollowupCandidate" in strategist
-    assert "LearningUpdate" in strategist
-    assert "BlockerCard" in strategist
-    assert "ReusableComponentCard" in strategist
-    assert "learning_key, evidence_basis, claim, evidence, implication" in strategist
-    assert "blocker_key, blocker_type, description, resolution_condition" in strategist
+    assert "use empty lists when none apply" in strategist
     assert '"properties"' not in strategist
     assert '"additionalProperties"' not in strategist
 

@@ -257,6 +257,7 @@ def test_loads_explicit_continuation_paths(tmp_path: Path) -> None:
     prior_run = tmp_path / "programs" / "peer-residuals" / "runs" / "prior-run"
     prior_worktree_root = tmp_path / "programs" / "peer-residuals" / "worktrees"
     context_path = tmp_path / "context.md"
+    context_path.write_text("# Prior loop context\n", encoding="utf-8")
     data = minimal_spec_data(repo)
     data["continuation"] = {
         "prior_run_dirs": [str(prior_run)],
@@ -277,6 +278,39 @@ def test_loads_explicit_continuation_paths(tmp_path: Path) -> None:
         "repo_loop_context_paths": [str(context_path.resolve())],
         "max_prior_experiments": 3,
     }
+
+
+def test_rejects_missing_repo_loop_context_path(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    missing_context = tmp_path / "missing-context.md"
+    data = minimal_spec_data(repo)
+    data["continuation"] = {
+        "repo_loop_context_paths": [str(missing_context)],
+    }
+
+    with pytest.raises(
+        ResearchRunSpecError,
+        match=r"continuation.repo_loop_context_paths\[0\].*existing readable file",
+    ):
+        load_research_run_spec(write_spec_data(tmp_path, data, "missing-context"))
+
+
+def test_rejects_directory_repo_loop_context_path(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    context_dir = tmp_path / "context-dir"
+    context_dir.mkdir()
+    data = minimal_spec_data(repo)
+    data["continuation"] = {
+        "repo_loop_context_paths": [str(context_dir)],
+    }
+
+    with pytest.raises(
+        ResearchRunSpecError,
+        match=r"continuation.repo_loop_context_paths\[0\].*existing readable file",
+    ):
+        load_research_run_spec(write_spec_data(tmp_path, data, "directory-context"))
 
 
 def test_snapshot_accepts_matching_persisted_research_program_root(

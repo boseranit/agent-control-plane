@@ -1106,7 +1106,7 @@ def _run_evaluation_if_needed(
             failure_classification="evaluation_runtime_defect",
         )
     try:
-        run_evaluation_boundary_audit(workspace)
+        run_evaluation_boundary_audit(workspace.boundary_evidence)
     except EvaluationBoundaryError as exc:
         return classify_run_failed(
             str(exc),

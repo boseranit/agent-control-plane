@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from agent_control_plane.control_plane.command_runner import (
+    CommandResult,
     CommandSpec,
     run_command,
     write_command_metrics,
@@ -95,7 +96,7 @@ def run_data_audit_phase(request: PrerequisiteAuditRequest) -> dict[str, Any]:
 
 def _failed_result(
     failure_classification: str,
-    command_results: Sequence[Any],
+    command_results: Sequence[CommandResult],
 ) -> dict[str, Any]:
     summary = classify_data_audit_failure(failure_classification)
     data_audit = DataAudit(
@@ -104,10 +105,7 @@ def _failed_result(
         outcome_reason=summary.outcome_reason,
         failed_stage=summary.failed_stage,
         failure_classification=summary.failure_classification,
-        command_results=[
-            result.to_record() if hasattr(result, "to_record") else result
-            for result in command_results
-        ],
+        command_results=[result.to_record() for result in command_results],
     )
     return {
         "status": "experiment_completed",

@@ -96,26 +96,13 @@ def create_evaluator_workspace(
 
 
 def run_evaluation_boundary_audit(
-    evidence: EvaluationBoundaryEvidence | EvaluatorWorkspace,
+    evidence: EvaluationBoundaryEvidence,
 ) -> None:
-    boundary_evidence = _boundary_evidence(evidence)
     try:
-        verify_hash_manifest(boundary_evidence.locked_artifact_hashes)
+        verify_hash_manifest(evidence.locked_artifact_hashes)
         assert_git_snapshot_unchanged(
-            boundary_evidence.pre_evaluation_worktree,
-            git_snapshot(boundary_evidence.worktree_path),
+            evidence.pre_evaluation_worktree,
+            git_snapshot(evidence.worktree_path),
         )
     except ValueError as exc:
         raise EvaluationBoundaryError(str(exc)) from exc
-
-
-def _boundary_evidence(
-    evidence: EvaluationBoundaryEvidence | EvaluatorWorkspace,
-) -> EvaluationBoundaryEvidence:
-    if isinstance(evidence, EvaluationBoundaryEvidence):
-        return evidence
-    if isinstance(evidence, EvaluatorWorkspace):
-        return evidence.boundary_evidence
-    raise TypeError(
-        "Evaluation Boundary Audit requires controller-held evidence, not a path."
-    )

@@ -336,6 +336,51 @@ def _write_importable_prior_experiment(prior_run: Path) -> Path:
     return prior_dir
 
 
+def test_research_run_spec_snapshot_omits_research_program_root(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    spec_path = write_minimal_research_run_spec(tmp_path, repo)
+
+    run = start_research_run(spec_path)
+
+    original_spec = yaml.safe_load(spec_path.read_text(encoding="utf-8"))
+    snapshot = yaml.safe_load(run.spec_snapshot_path.read_text(encoding="utf-8"))
+    assert "research_program_root" in original_spec
+    assert "research_program_root" not in snapshot
+
+
+def test_failed_continuation_import_removes_new_run_directory(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    research_run_id = "continuation-cleanup-v1"
+    spec_path = write_minimal_research_run_spec(
+        tmp_path,
+        repo,
+        research_run_id=research_run_id,
+    )
+    target_run_directory = (
+        tmp_path / "programs" / research_run_id / "runs" / research_run_id
+    )
+    missing_prior_run = tmp_path / "missing-prior-run"
+    with spec_path.open("a", encoding="utf-8") as file:
+        file.write(
+            f"""
+continuation:
+  prior_run_dirs:
+    - {missing_prior_run}
+"""
+        )
+
+    with pytest.raises(Exception):
+        start_research_run(spec_path)
+
+    assert not target_run_directory.exists()
+
+
 def valid_feature_spec_payload(**overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
         "feature_id": "peer_residual_21d",
@@ -790,7 +835,7 @@ worktree:
     assert (program_root / "worktrees").is_dir()
     assert (program_root / "memory").is_dir()
     snapshot = yaml.safe_load(run.spec_snapshot_path.read_text(encoding="utf-8"))
-    assert snapshot["research_program_root"] == str(program_root.resolve())
+    assert "research_program_root" not in snapshot
     assert snapshot["worktree"] == {"create": True}
 
 
@@ -805,9 +850,7 @@ def test_start_research_run_writes_resolved_spec_snapshot(tmp_path: Path) -> Non
     assert snapshot["version"] == 1
     assert snapshot["research_run_id"] == "peer-residual-v1"
     assert snapshot["target_repository"] == str(repo.resolve())
-    assert snapshot["research_program_root"] == str(
-        (tmp_path / "programs" / "peer-residual-v1").resolve()
-    )
+    assert "research_program_root" not in snapshot
     assert snapshot["max_experiments"] == 1
     assert snapshot["worktree"] == {"create": True}
     assert snapshot["mlflow"] == {
@@ -2469,6 +2512,8 @@ def test_usage_limit_pause_removes_external_signal_panel_before_retry(
     run = start_research_run(spec_path)
     attempts: list[str] = []
     paused_signal_panels: list[Path] = []
+    paused_experiment_directories: list[Path] = []
+    paused_experiment_data_directories: list[Path] = []
     selection = ExperimentFlowSelection(
         selected_plan=SelectedPlan(
             selected=True,
@@ -2486,6 +2531,10 @@ def test_usage_limit_pause_removes_external_signal_panel_before_retry(
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
         attempts.append(request.experiment_id)
         if len(attempts) == 1:
+            paused_experiment_directories.append(request.experiment_directory)
+            paused_experiment_data_directories.append(
+                request.experiment_data_directory
+            )
             paused_signal_panels.append(write_signal_panel(request))
             if usage_limit_mode == "exception":
                 raise usage_limit_wait(0.0)
@@ -2498,6 +2547,8 @@ def test_usage_limit_pause_removes_external_signal_panel_before_retry(
         experiment_runner=experiment_runner,
     )
     assert paused["status"] == "usage_limit_wait"
+    assert not paused_experiment_directories[0].exists()
+    assert not paused_experiment_data_directories[0].exists()
     assert not paused_signal_panels[0].exists()
 
     result = run_research_loop(

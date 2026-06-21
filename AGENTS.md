@@ -14,6 +14,7 @@ Use the terminology in `CONTEXT.md`.
   persistence, phase order, outcome routing, boundary checks, and mirrors. It does not make research judgments.
 - Keep SDK-specific code behind adapters. Controller code should depend on the neutral runtime and mirror interfaces, not provider SDK types.
 - Prefer small, direct changes that match the existing modules and tests.
+- Run pytest through Pixi: use `pixi run -e dev pytest ...`, not `pytest`, `python -m pytest`, or `python3 -m pytest`.
 - When changing loop behavior, update the relevant role prompt in `agent_control_plane/research_experiment_controller/prompts/`, the artifact schema in `agent_control_plane/research_experiment_controller/artifacts.py`, and focused tests. Use structured command specs (`argv`, `cwd`, `timeout`), not shell strings, for experiment commands.
 
 # Research Loop Contract

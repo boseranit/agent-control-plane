@@ -325,7 +325,7 @@ def _load_continuation(value: Any) -> ContinuationConfig:
         prior_worktree_roots=_path_tuple(
             data, "prior_worktree_roots", "continuation.prior_worktree_roots"
         ),
-        repo_loop_context_paths=_path_tuple(
+        repo_loop_context_paths=_existing_readable_file_path_tuple(
             data,
             "repo_loop_context_paths",
             "continuation.repo_loop_context_paths",
@@ -397,6 +397,30 @@ def _path_tuple(
             )
         paths.append(Path(item).expanduser().resolve())
     return tuple(paths)
+
+
+def _existing_readable_file_path_tuple(
+    data: dict[str, Any],
+    field: str,
+    display_field: str,
+) -> tuple[Path, ...]:
+    paths = _path_tuple(data, field, display_field)
+    for index, path in enumerate(paths):
+        display_item = f"{display_field}[{index}]"
+        if not path.is_file():
+            raise ResearchRunSpecError(
+                f"Research Run Spec field '{display_item}' must be an "
+                f"existing readable file: {path}"
+            )
+        try:
+            with path.open("rb"):
+                pass
+        except OSError as exc:
+            raise ResearchRunSpecError(
+                f"Research Run Spec field '{display_item}' must be an "
+                f"existing readable file: {path}"
+            ) from exc
+    return paths
 
 
 def _required_string(data: dict[str, Any], field: str) -> str:
