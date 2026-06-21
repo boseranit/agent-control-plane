@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -64,8 +65,8 @@ def run_data_audit_phase(request: PrerequisiteAuditRequest) -> dict[str, Any]:
                     ),
                 ),
                 cwd=request.cwd,
-                stdout_path=run_dir / "commands" / f"{phase}_{index}_stdout.log",
-                stderr_path=run_dir / "commands" / f"{phase}_{index}_stderr.log",
+                stdout_path=_log_path(run_dir, phase, index, data, "stdout"),
+                stderr_path=_log_path(run_dir, phase, index, data, "stderr"),
                 env=env,
             )
             command_results.append(result)
@@ -113,3 +114,19 @@ def _failed_result(
         "data_audit": data_audit.model_dump(mode="json"),
         **summary.model_dump(mode="json"),
     }
+
+
+def _log_path(
+    run_dir: Path,
+    phase: str,
+    index: int,
+    command: dict[str, Any],
+    stream: str,
+) -> Path:
+    command_id = _safe_command_id(str(command.get("name") or f"{phase}-{index}"))
+    return run_dir / "logs" / f"{phase}-{index}-{command_id}.{stream}.log"
+
+
+def _safe_command_id(name: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("._")
+    return safe or "command"

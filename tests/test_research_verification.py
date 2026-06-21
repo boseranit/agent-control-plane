@@ -27,7 +27,12 @@ def test_verification_commands_pass_without_repair(tmp_path: Path) -> None:
     assert result["attempts"] == 1
     assert metrics["command_count"] == 1
     assert metrics["failed_count"] == 0
-    assert (run_dir / "verification" / "attempt_0" / "unit_stdout.log").exists()
+    assert (
+        run_dir / "logs" / "verification" / "attempt-0" / "unit.stdout.log"
+    ).exists()
+    assert (
+        run_dir / "logs" / "verification" / "attempt-0" / "unit.stderr.log"
+    ).exists()
 
 
 def test_verification_commands_receive_research_environment(
@@ -74,6 +79,55 @@ def test_verification_commands_receive_research_environment(
     assert experiment_data_root.is_dir()
 
 
+def test_verification_command_can_materialize_experiment_local_artifact(
+    tmp_path: Path,
+) -> None:
+    worktree = tmp_path / "worktree"
+    run_dir = tmp_path / "run"
+    data_root = tmp_path / "data"
+    experiment_data_root = tmp_path / "experiment-data" / "run" / "EXP-0001"
+    canonical_input = data_root / "signals" / "source.txt"
+    forbidden_canonical_output = data_root / "runtime-data" / "artifact.txt"
+    worktree.mkdir()
+    canonical_input.parent.mkdir(parents=True)
+    canonical_input.write_text("canonical\n", encoding="utf-8")
+
+    result = run_verification_commands(
+        verification_commands=[
+            {
+                "name": "artifact-backfill",
+                "argv": [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import os, pathlib; "
+                        "data = pathlib.Path(os.environ['HLM_DATA_ROOT']); "
+                        "out = pathlib.Path(os.environ['RESEARCH_EXPERIMENT_DATA_ROOT']) / 'runtime-data'; "
+                        "out.mkdir(parents=True, exist_ok=True); "
+                        "payload = (data / 'signals/source.txt').read_text(encoding='utf-8'); "
+                        "(out / 'artifact.txt').write_text(payload + 'experiment\\n', encoding='utf-8')"
+                    ),
+                ],
+            }
+        ],
+        cwd=worktree,
+        run_dir=run_dir,
+        data_root=data_root,
+        experiment_data_root=experiment_data_root,
+        repo_root=worktree,
+        timeout_seconds=60,
+        max_repairs=0,
+    )
+
+    artifact = experiment_data_root / "runtime-data" / "artifact.txt"
+    metrics = read_json_object(run_dir / "command_metrics.json")
+    assert result["status"] == "passed"
+    assert artifact.read_text(encoding="utf-8") == "canonical\nexperiment\n"
+    assert canonical_input.read_text(encoding="utf-8") == "canonical\n"
+    assert not forbidden_canonical_output.exists()
+    assert metrics["commands"][0]["cwd"] == str(worktree.resolve())
+
+
 def test_verification_failure_repairs_and_retries_until_pass(
     tmp_path: Path,
 ) -> None:
@@ -113,7 +167,12 @@ def test_verification_failure_repairs_and_retries_until_pass(
     assert calls == [1]
     assert metrics["command_count"] == 2
     assert metrics["failed_count"] == 1
-    assert (run_dir / "verification" / "attempt_1" / "unit_stdout.log").exists()
+    assert (
+        run_dir / "logs" / "verification" / "attempt-1" / "unit.stdout.log"
+    ).exists()
+    assert (
+        run_dir / "logs" / "verification" / "attempt-1" / "unit.stderr.log"
+    ).exists()
 
 
 def test_verification_failure_exhausts_max_repairs(tmp_path: Path) -> None:

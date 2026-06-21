@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,10 @@ from pydantic import ValidationError
 from agent_control_plane.control_plane.json_artifacts import (
     read_json_object,
     write_json,
+)
+from agent_control_plane.control_plane.usage_limit import (
+    UsageLimitEvent,
+    UsageLimitWait,
 )
 from agent_control_plane.research_experiment_controller.artifacts import (
     ExperimentDesign,
@@ -38,6 +43,7 @@ from agent_control_plane.research_experiment_controller.outcomes import (
     classify_invalid,
     classify_run_failed,
 )
+from research_helpers import write_evaluation_result_files, write_signal_panel
 
 
 COMPLETED_OUTCOMES = {
@@ -57,6 +63,7 @@ def write_minimal_research_run_spec(
     stop_on_prerequisites_failed: bool = True,
     worktree_create: bool = True,
     max_repairs: int = 3,
+    mlflow_experiment_name: str | None = None,
 ) -> Path:
     init_repo_if_needed(repo)
     path = tmp_path / f"{research_run_id}.yaml"
@@ -65,6 +72,13 @@ def write_minimal_research_run_spec(
     research_program_root = tmp_path / "programs" / research_run_id
     if data_root is None:
         data_root_value.mkdir()
+    mlflow_block = ""
+    if mlflow_experiment_name is not None:
+        mlflow_block = f"""
+mlflow:
+  enabled: false
+  experiment_name: {mlflow_experiment_name}
+"""
     path.write_text(
         f"""
 research_run_id: {research_run_id}
@@ -83,6 +97,7 @@ experiment_data_root: {experiment_data_root}
 research_program_root: {research_program_root}
 worktree:
   create: {str(worktree_create).lower()}
+{mlflow_block}
 implementation:
   max_repairs: {max_repairs}
 stop_on_prerequisites_failed: {str(stop_on_prerequisites_failed).lower()}
@@ -148,6 +163,19 @@ def run_experiment_flow(
     return result
 
 
+def usage_limit_wait(seconds: float) -> UsageLimitWait:
+    detected_at = datetime.fromisoformat("2026-06-01T10:00:00+10:00")
+    return UsageLimitWait(
+        UsageLimitEvent(
+            role="research-controller-test",
+            detected_at=detected_at,
+            suggested_retry_at=detected_at + timedelta(seconds=seconds),
+            sleep_seconds=seconds,
+            message="Usage limit reached.",
+        )
+    )
+
+
 def _write_completed_merge_artifacts(
     request: ExperimentFlowRequest,
     result: dict[str, Any],
@@ -193,6 +221,118 @@ def _write_completed_merge_artifacts(
                 "superseded_idea_ids": [],
             },
         )
+
+
+def _empty_research_state_payload(program_id: str) -> dict[str, object]:
+    return {
+        "artifact_kind": "research_state",
+        "schema_version": 1,
+        "program_id": program_id,
+        "next_idea_number": 1,
+        "idea_index": {},
+        "experiment_index": {},
+        "learning_updates": {},
+        "known_blockers": {},
+        "reusable_components": {},
+        "metric_observations": [],
+    }
+
+
+def _write_importable_prior_experiment(prior_run: Path) -> Path:
+    prior_dir = prior_run / "experiments" / "EXP-0001"
+    prior_dir.mkdir(parents=True)
+    worktree_root = (
+        prior_run.parent.parent / "worktrees"
+        if prior_run.parent.name == "runs"
+        else prior_run.parent / "worktrees"
+    )
+    worktree = worktree_root / "prior-run" / "EXP-0001"
+    write_json(
+        prior_run / "state.json",
+        {
+            "research_run_id": "prior-run",
+            "experiments": {
+                "EXP-0001": {"experiment_directory": str(prior_dir)}
+            },
+        },
+    )
+    write_json(
+        prior_dir / "summary.json",
+        {
+            "outcome": "completed_candidate",
+            "outcome_reason": "Locked gates passed.",
+            "failed_stage": None,
+            "failure_classification": None,
+            "summary": "Candidate.",
+        },
+    )
+    write_json(
+        prior_dir / "selected_plan.json",
+        {
+            "selected": True,
+            "plan_id": "prior-plan",
+            "rationale": "Prior selected plan.",
+            "fresh_selection_reason": "Prior fresh idea.",
+        },
+    )
+    write_json(prior_dir / "research_spec.json", valid_research_spec_payload())
+    write_json(
+        prior_dir / "lineage.json",
+        {
+            "research_run_id": "prior-run",
+            "experiment_id": "EXP-0001",
+            "experiment_dir": str(prior_dir),
+            "worktree_path": str(worktree),
+            "worktree_branch": "research/prior-run/EXP-0001",
+            "changed_files": ["research/feature.py"],
+            "implementation_summary": "Built prior feature.",
+            "reusable_for_followups": True,
+        },
+    )
+    write_json(
+        prior_dir / "confirmatory_evaluation_result.json",
+        {
+            "outcome": "completed_candidate",
+            "outcome_reason": "Locked gates passed.",
+            "failed_stage": None,
+            "failure_classification": None,
+            "metrics": {"information_coefficient": 0.04},
+            "gate_results": {"information_coefficient": "passed"},
+            "pre_registered_evidence": ["IC passed."],
+        },
+    )
+    write_json(
+        prior_dir / "plan_update.json",
+        {
+            "followups": [
+                {
+                    "dedupe_key": "prior-followup",
+                    "title": "prior followup",
+                    "kind": "direct_followup",
+                    "evidence_basis": ["prior-run/EXP-0001"],
+                    "mechanism": "Prior candidate opened a followup.",
+                    "axis_to_vary": "turnover gate",
+                    "specific_change": "Add turnover gate.",
+                    "falsifying_evidence": ["Gate fails."],
+                    "priority": 0.8,
+                    "priority_reason": "Best prior followup.",
+                    "seed_component_ids": ["prior-component"],
+                }
+            ],
+            "learning_updates": [],
+            "blockers": [],
+            "reusable_components": [
+                {
+                    "component_key": "prior-component",
+                    "summary": "Built prior feature.",
+                    "reusable_for": ["prior followup"],
+                    "risk_notes": [],
+                }
+            ],
+            "superseded_idea_ids": [],
+        },
+    )
+    return prior_dir
 
 
 def valid_feature_spec_payload(**overrides: object) -> dict[str, object]:
@@ -278,33 +418,12 @@ class EvaluationFakeThread:
         self.run_inputs: list[str] = []
 
     def run(self, input: str, config) -> object:
-        del config
         self.run_inputs.append(input)
+        write_evaluation_result_files(Path(config.cwd))
         return type(
             "TurnResult",
             (),
-            {
-                "final_response": {
-                    "confirmatory_evaluation_result": {
-                        "outcome": "completed_candidate",
-                        "outcome_reason": "Locked gates passed.",
-                        "failed_stage": None,
-                        "failure_classification": None,
-                        "metrics": {"ic": 0.04},
-                        "gate_results": {"ic": "passed"},
-                        "pre_registered_evidence": ["confirmatory command eval"],
-                    },
-                    "exploratory_diagnostics_result": {
-                        "findings": ["turnover stable"],
-                        "metrics": {"turnover": 0.2},
-                        "plots": ["eval_outputs/turnover.png"],
-                        "future_experiment_ideas": ["lock turnover gate"],
-                    },
-                    "analysis_ledger": {
-                        "entries": [{"phase": "evaluation", "status": "completed"}]
-                    },
-                }
-            },
+            {"final_response": {"ignored": True}},
         )()
 
 
@@ -321,6 +440,41 @@ class EvaluationFakeRuntime:
             thread = EvaluationFakeThread(thread_id)
             self.threads[thread_id] = thread
         return thread
+
+
+class ResponseOnlyEvaluationThread:
+    id = "research-evaluator-response-only"
+
+    def run(self, input: str, config) -> object:
+        del input, config
+        return type(
+            "TurnResult",
+            (),
+            {
+                "final_response": {
+                    "confirmatory_evaluation_result": {
+                        "outcome": "completed_candidate",
+                        "outcome_reason": "Ignored response.",
+                        "failed_stage": None,
+                        "failure_classification": None,
+                        "metrics": {},
+                        "gate_results": {},
+                        "pre_registered_evidence": [],
+                    },
+                    "exploratory_diagnostics_result": {},
+                    "analysis_ledger": {"entries": []},
+                }
+            },
+        )()
+
+
+class ResponseOnlyEvaluationRuntime:
+    def __init__(self) -> None:
+        self.configs = []
+
+    def open_thread(self, config) -> ResponseOnlyEvaluationThread:
+        self.configs.append(config)
+        return ResponseOnlyEvaluationThread()
 
 
 class MaterialCriticThread:
@@ -512,10 +666,16 @@ class MutatingMalformedEvaluationThread:
             '{"selected": false, "rationale": "mutated"}\n',
             encoding="utf-8",
         )
+        (Path(config.cwd) / "confirmatory_evaluation_result.json").write_text(
+            '{"outcome": "completed_candidate"}\n',
+            encoding="utf-8",
+        )
+        write_json(Path(config.cwd) / "exploratory_diagnostics_result.json", {})
+        write_json(Path(config.cwd) / "analysis_ledger.json", {"entries": []})
         return type(
             "TurnResult",
             (),
-            {"final_response": "{not-json"},
+            {"final_response": {"ignored": True}},
         )()
 
 
@@ -566,6 +726,32 @@ def test_start_research_run_creates_run_layout(tmp_path: Path) -> None:
     }
 
 
+def test_start_research_run_imports_prior_run_dirs_into_research_state(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    prior_run = tmp_path / "prior-run"
+    _write_importable_prior_experiment(prior_run)
+    spec_path = write_minimal_research_run_spec(tmp_path, repo)
+    spec_path.write_text(
+        spec_path.read_text(encoding="utf-8")
+        + f"""
+continuation:
+  prior_run_dirs:
+    - {prior_run}
+""",
+        encoding="utf-8",
+    )
+
+    run = start_research_run(spec_path)
+
+    research_state = read_json_object(run.paths.memory / "research_state.json")
+    assert list(research_state["experiment_index"]) == ["prior-run/EXP-0001"]
+    assert list(research_state["idea_index"]) == ["IDEA-0001"]
+    assert list(research_state["reusable_components"]) == ["prior-component"]
+
+
 def test_start_research_run_uses_research_program_root(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -603,7 +789,7 @@ worktree:
     assert (program_root / "worktrees").is_dir()
     assert (program_root / "memory").is_dir()
     snapshot = yaml.safe_load(run.spec_snapshot_path.read_text(encoding="utf-8"))
-    assert "research_program_root" not in snapshot
+    assert snapshot["research_program_root"] == str(program_root.resolve())
     assert snapshot["worktree"] == {"create": True}
 
 
@@ -618,7 +804,9 @@ def test_start_research_run_writes_resolved_spec_snapshot(tmp_path: Path) -> Non
     assert snapshot["version"] == 1
     assert snapshot["research_run_id"] == "peer-residual-v1"
     assert snapshot["target_repository"] == str(repo.resolve())
-    assert "research_program_root" not in snapshot
+    assert snapshot["research_program_root"] == str(
+        (tmp_path / "programs" / "peer-residual-v1").resolve()
+    )
     assert snapshot["max_experiments"] == 1
     assert snapshot["worktree"] == {"create": True}
     assert snapshot["mlflow"] == {
@@ -680,6 +868,116 @@ def test_start_research_run_rejects_existing_run_directory(tmp_path: Path) -> No
 
     with pytest.raises(ResearchRunError, match="already exists"):
         start_research_run(spec_path)
+
+
+def test_duplicate_start_with_continuation_does_not_import_prior_runs(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    spec_path = write_minimal_research_run_spec(tmp_path, repo)
+    run = start_research_run(spec_path)
+    research_state_path = run.paths.memory / "research_state.json"
+    original_research_state = read_json_object(research_state_path)
+
+    prior_run_dir = tmp_path / "prior-run"
+    _write_importable_prior_experiment(prior_run_dir)
+    spec_path.write_text(
+        spec_path.read_text(encoding="utf-8")
+        + f"""
+continuation:
+  prior_run_dirs:
+    - {prior_run_dir}
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ResearchRunError, match="already exists"):
+        start_research_run(spec_path)
+
+    assert read_json_object(research_state_path) == original_research_state
+
+
+@pytest.mark.parametrize(
+    ("selected_plan_kwargs", "expected_reason"),
+    [
+        (
+            {"selected_idea_ids": ["IDEA-0001"]},
+            "Selected idea does not exist: IDEA-0001",
+        ),
+        (
+            {
+                "fresh_selection_reason": "Fresh selected plan.",
+                "seed_component_ids": ["prior-component"],
+            },
+            "Seed component does not exist: prior-component",
+        ),
+    ],
+)
+def test_selection_references_use_persisted_memory_not_prior_run_dirs(
+    tmp_path: Path,
+    selected_plan_kwargs: dict[str, object],
+    expected_reason: str,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    prior_run = tmp_path / "prior-run"
+    _write_importable_prior_experiment(prior_run)
+    spec_path = write_minimal_research_run_spec(tmp_path, repo)
+    spec_path.write_text(
+        spec_path.read_text(encoding="utf-8")
+        + f"""
+continuation:
+  prior_run_dirs:
+    - {prior_run}
+""",
+        encoding="utf-8",
+    )
+    run = start_research_run(spec_path)
+    research_state_path = run.paths.memory / "research_state.json"
+    imported_state = read_json_object(research_state_path)
+    assert "IDEA-0001" in imported_state["idea_index"]
+    assert "prior-component" in imported_state["reusable_components"]
+    write_json(
+        research_state_path,
+        _empty_research_state_payload(run.research_program_root.name),
+    )
+
+    def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        return run_experiment_flow(
+            request,
+            selection=ExperimentFlowSelection(
+                selected_plan=SelectedPlan(
+                    selected=True,
+                    plan_id="followup-plan",
+                    rationale="Use prior followup.",
+                    **selected_plan_kwargs,
+                ),
+                experiment_design=ExperimentDesign(
+                    verification_commands=[
+                        {"name": "unit", "argv": [sys.executable, "-c", "pass"]}
+                    ],
+                ),
+                terminal_summary=Summary(
+                    outcome=ResearchOutcome.completed_rejected,
+                    outcome_reason="Locked gate failed.",
+                    failed_stage=None,
+                    failure_classification=None,
+                    summary="Experiment rejected.",
+                ),
+            ),
+        )
+
+    run_research_loop(
+        run.research_run_id,
+        research_program_root=run.run_directory.parents[1],
+        experiment_runner=experiment_runner,
+    )
+
+    summary = read_json_object(run.experiments_directory / "EXP-0001" / "summary.json")
+    assert summary["outcome"] == "run_failed"
+    assert summary["failure_classification"] == "runner_exception"
+    assert expected_reason in summary["outcome_reason"]
 
 
 def test_load_research_run_uses_snapshot_and_state_after_source_spec_deleted(
@@ -969,6 +1267,51 @@ def test_selected_plan_without_deterministic_commands_is_blocked(
     assert summary["failure_classification"] == "no_deterministic_commands"
 
 
+def test_exploratory_only_design_is_blocked_without_evaluation(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    spec_path = write_minimal_research_run_spec(tmp_path, repo)
+    run = start_research_run(spec_path)
+    runtime = EvaluationFakeRuntime()
+    exploratory_design = ExperimentDesign(
+        exploratory_commands=[
+            {"name": "diag", "argv": [sys.executable, "diag.py"]}
+        ],
+    )
+
+    def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        return run_experiment_flow(
+            request,
+            selection=ExperimentFlowSelection(
+                selected_plan=SelectedPlan(
+                    selected=True,
+                    plan_id="exploratory-only-plan",
+                    rationale="Diagnostics are interesting but not confirmatory.",
+                    fresh_selection_reason="Fresh selected plan.",
+                ),
+                experiment_design=exploratory_design,
+            ),
+            agent_runtime=runtime,
+        )
+
+    run_research_loop(
+        run.research_run_id,
+        research_program_root=run.run_directory.parents[1],
+        experiment_runner=experiment_runner,
+    )
+
+    experiment_dir = run.experiments_directory / "EXP-0001"
+    summary = read_json_object(experiment_dir / "summary.json")
+
+    assert summary["outcome"] == "blocked"
+    assert summary["failed_stage"] == "selection"
+    assert summary["failure_classification"] == "no_deterministic_commands"
+    assert runtime.configs == []
+    assert not (experiment_dir / "evaluation" / "manifest.json").exists()
+
+
 def test_selected_plan_cannot_return_no_op_terminal_summary(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -1116,8 +1459,8 @@ def test_failed_data_audit_command_writes_summary_and_command_artifacts(
     assert summary["outcome"] == "prerequisites_failed"
     assert summary["failed_stage"] == "data_audit"
     assert metrics["failed_count"] == 1
-    assert (experiment_dir / "commands" / "data_audit_1_stdout.log").exists()
-    assert (experiment_dir / "commands" / "data_audit_1_stderr.log").exists()
+    assert (experiment_dir / "logs" / "data_audit-1-schema-check.stdout.log").exists()
+    assert (experiment_dir / "logs" / "data_audit-1-schema-check.stderr.log").exists()
 
 
 def test_prerequisites_failed_stops_research_run_by_default(tmp_path: Path) -> None:
@@ -1262,6 +1605,7 @@ def test_worktree_create_false_allows_read_only_selected_design(
     run = start_research_run(spec_path)
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        write_signal_panel(request)
         return run_experiment_flow(
             request,
             selection=ExperimentFlowSelection(
@@ -1296,6 +1640,77 @@ def test_worktree_create_false_allows_read_only_selected_design(
     assert summary["outcome"] == "completed_inconclusive"
     assert not (
         run.run_directory.parents[1] / "worktrees" / run.research_run_id
+    ).exists()
+
+
+def test_experiment_data_root_uses_experiment_name_and_run_name(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    spec_path = write_minimal_research_run_spec(
+        tmp_path,
+        repo,
+        mlflow_experiment_name="peer residual / alpha v1",
+    )
+    run = start_research_run(spec_path)
+    expected_root = (
+        tmp_path
+        / "experiment-data"
+        / "peer-residual-alpha-v1"
+        / "peer-residual-v1-EXP-0001"
+    ).resolve()
+
+    def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        return run_experiment_flow(
+            request,
+            selection=ExperimentFlowSelection(
+                selected_plan=SelectedPlan(
+                    selected=True,
+                    plan_id="panel-plan",
+                    rationale="Materialize signal panel for evaluation.",
+                    fresh_selection_reason="Fresh selected plan.",
+                ),
+                experiment_design=ExperimentDesign(
+                    verification_commands=[
+                        {
+                            "name": "write-panel",
+                            "argv": [
+                                sys.executable,
+                                "-c",
+                                (
+                                    "import os, pathlib; "
+                                    "root = pathlib.Path(os.environ['RESEARCH_EXPERIMENT_DATA_ROOT']); "
+                                    f"assert root == pathlib.Path({str(expected_root)!r}); "
+                                    "(root / 'runtime-data').mkdir(parents=True, exist_ok=True); "
+                                    "(root / 'signal_panel.parquet').write_bytes(b'PAR1')"
+                                ),
+                            ],
+                        }
+                    ],
+                    expected_outputs=[
+                        "$RESEARCH_EXPERIMENT_DATA_ROOT/signal_panel.parquet"
+                    ],
+                ),
+                terminal_summary=Summary(
+                    outcome=ResearchOutcome.completed_inconclusive,
+                    outcome_reason="Panel materialized.",
+                    failed_stage=None,
+                    failure_classification=None,
+                    summary="Panel materialized.",
+                ),
+            ),
+        )
+
+    run_research_loop(
+        run.research_run_id,
+        research_program_root=run.run_directory.parents[1],
+        experiment_runner=experiment_runner,
+    )
+
+    assert (expected_root / "signal_panel.parquet").read_bytes() == b"PAR1"
+    assert not (
+        tmp_path / "experiment-data" / "peer-residual-v1" / "peer-residual-v1-EXP-0001"
     ).exists()
 
 
@@ -1730,6 +2145,7 @@ def test_selected_confirmatory_only_experiment_gets_default_worktree(
     run = start_research_run(spec_path)
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        write_signal_panel(request)
         return run_experiment_flow(
             request,
             selection=ExperimentFlowSelection(
@@ -1950,6 +2366,7 @@ def test_evaluator_runs_in_workspace_and_writes_result_artifacts(
     runtime = EvaluationFakeRuntime()
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        write_signal_panel(request)
         return run_experiment_flow(
             request,
             selection=ExperimentFlowSelection(
@@ -1998,6 +2415,107 @@ def test_evaluator_runs_in_workspace_and_writes_result_artifacts(
     assert summary["exploratory_findings"] == ["turnover stable"]
 
 
+def test_evaluation_requires_workspace_result_files(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    spec_path = write_minimal_research_run_spec(tmp_path, repo)
+    run = start_research_run(spec_path)
+    runtime = ResponseOnlyEvaluationRuntime()
+
+    def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        write_signal_panel(request)
+        return run_experiment_flow(
+            request,
+            selection=ExperimentFlowSelection(
+                selected_plan=SelectedPlan(
+                    selected=True,
+                    plan_id="confirmatory-plan",
+                    rationale="Run locked evaluation.",
+                    fresh_selection_reason="Fresh selected plan.",
+                ),
+                experiment_design=ExperimentDesign(
+                    confirmatory_commands=[
+                        {"name": "eval", "argv": [sys.executable, "eval.py"]}
+                    ],
+                ),
+            ),
+            agent_runtime=runtime,
+        )
+
+    run_research_loop(
+        run.research_run_id,
+        research_program_root=run.run_directory.parents[1],
+        experiment_runner=experiment_runner,
+    )
+
+    experiment_dir = run.experiments_directory / "EXP-0001"
+    summary = read_json_object(experiment_dir / "summary.json")
+
+    assert [config.role for config in runtime.configs] == ["research-evaluator"]
+    assert summary["outcome"] == "run_failed"
+    assert summary["failed_stage"] == "evaluation"
+    assert summary["failure_classification"] == "evaluation_runtime_defect"
+    assert "confirmatory_evaluation_result.json" in summary["outcome_reason"]
+    assert not (experiment_dir / "confirmatory_evaluation_result.json").exists()
+
+
+@pytest.mark.parametrize("usage_limit_mode", ["result", "exception"])
+def test_usage_limit_pause_removes_external_signal_panel_before_retry(
+    tmp_path: Path,
+    usage_limit_mode: str,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    spec_path = write_minimal_research_run_spec(tmp_path, repo)
+    run = start_research_run(spec_path)
+    attempts: list[str] = []
+    paused_signal_panels: list[Path] = []
+    selection = ExperimentFlowSelection(
+        selected_plan=SelectedPlan(
+            selected=True,
+            plan_id="confirmatory-plan",
+            rationale="Run locked evaluation.",
+            fresh_selection_reason="Fresh selected plan.",
+        ),
+        experiment_design=ExperimentDesign(
+            confirmatory_commands=[
+                {"name": "eval", "argv": [sys.executable, "eval.py"]}
+            ],
+        ),
+    )
+
+    def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        attempts.append(request.experiment_id)
+        if len(attempts) == 1:
+            paused_signal_panels.append(write_signal_panel(request))
+            if usage_limit_mode == "exception":
+                raise usage_limit_wait(0.0)
+            return {"status": "usage_limit_wait", "sleep_seconds": 0.0}
+        return run_experiment_flow(request, selection=selection)
+
+    paused = run_research_loop(
+        run.research_run_id,
+        research_program_root=run.run_directory.parents[1],
+        experiment_runner=experiment_runner,
+    )
+    assert paused["status"] == "usage_limit_wait"
+    assert not paused_signal_panels[0].exists()
+
+    result = run_research_loop(
+        run.research_run_id,
+        research_program_root=run.run_directory.parents[1],
+        experiment_runner=experiment_runner,
+    )
+
+    summary = read_json_object(run.experiments_directory / "EXP-0001" / "summary.json")
+    assert result["status"] == "completed"
+    assert attempts == ["EXP-0001", "EXP-0001"]
+    assert summary["outcome"] == "invalid"
+    assert summary["failure_classification"] == "missing_terminal_summary"
+
+
 def test_feature_specs_are_written_and_locked_for_evaluation(
     tmp_path: Path,
 ) -> None:
@@ -2008,6 +2526,7 @@ def test_feature_specs_are_written_and_locked_for_evaluation(
     runtime = EvaluationFakeRuntime()
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        write_signal_panel(request)
         return run_experiment_flow(
             request,
             selection=ExperimentFlowSelection(
@@ -2138,6 +2657,7 @@ def test_evaluation_runtime_defect_records_run_failed_without_implementer_rerout
     runtime = FailingEvaluationRuntime()
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        write_signal_panel(request)
         return run_experiment_flow(
             request,
             selection=ExperimentFlowSelection(
@@ -2180,6 +2700,7 @@ def test_evaluation_boundary_failure_records_run_failed(
     runtime = MutatingEvaluationRuntime()
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        write_signal_panel(request)
         return run_experiment_flow(
             request,
             selection=ExperimentFlowSelection(
@@ -2206,17 +2727,18 @@ def test_evaluation_boundary_failure_records_run_failed(
 
     experiment_dir = run.experiments_directory / "EXP-0001"
     summary = read_json_object(experiment_dir / "summary.json")
-    confirmatory = read_json_object(
-        experiment_dir / "confirmatory_evaluation_result.json"
-    )
+    research_state = read_json_object(run.paths.memory / "research_state.json")
     assert [config.role for config in runtime.configs] == ["research-evaluator"]
-    assert confirmatory["outcome"] == "completed_candidate"
     assert summary["outcome"] == "run_failed"
     assert summary["failed_stage"] == "evaluation_boundary_audit"
     assert summary["failure_classification"] == "evaluation_boundary_violation"
+    assert not (experiment_dir / "confirmatory_evaluation_result.json").exists()
+    assert not (experiment_dir / "exploratory_diagnostics_result.json").exists()
+    assert not (experiment_dir / "analysis_ledger.json").exists()
+    assert research_state["metric_observations"] == []
 
 
-def test_evaluation_boundary_failure_wins_after_malformed_evaluator_response(
+def test_evaluation_boundary_failure_wins_after_malformed_evaluator_file(
     tmp_path: Path,
 ) -> None:
     repo = tmp_path / "repo"
@@ -2226,6 +2748,7 @@ def test_evaluation_boundary_failure_wins_after_malformed_evaluator_response(
     runtime = MutatingMalformedEvaluationRuntime()
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        write_signal_panel(request)
         return run_experiment_flow(
             request,
             selection=ExperimentFlowSelection(
@@ -2266,6 +2789,7 @@ def test_evaluation_boundary_failure_wins_after_evaluator_crash(
     runtime = MutatingCrashingEvaluationRuntime()
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        write_signal_panel(request)
         return run_experiment_flow(
             request,
             selection=ExperimentFlowSelection(
@@ -2303,6 +2827,7 @@ def test_terminal_summary_routes_to_experiment_state(tmp_path: Path) -> None:
     run = start_research_run(spec_path)
 
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        write_signal_panel(request)
         return run_experiment_flow(
             request,
             selection=ExperimentFlowSelection(

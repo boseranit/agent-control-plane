@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -127,6 +128,18 @@ class ExperimentFlowRequest:
             self.research_run_id,
             self.experiment_id,
         )
+
+    @property
+    def experiment_data_directory(self) -> Path:
+        experiment_name = _safe_path_component(
+            self.spec.mlflow.experiment_name or self.research_run_id,
+            fallback="research-experiment",
+        )
+        run_name = _safe_path_component(
+            f"{self.research_run_id}-{self.experiment_id}",
+            fallback="run",
+        )
+        return self.spec.experiment_data_root / experiment_name / run_name
 
     @property
     def ledger_path(self) -> Path:
@@ -269,7 +282,7 @@ def _run_selected_experiment_pipeline(
         or selection.selected_plan.seed_component_ids
     ):
         validate_selected_plan_references(
-            load_research_state(research_state_path(request.paths)),
+            _selection_reference_state(request),
             selection.selected_plan,
         )
     _write_artifact_once(
@@ -335,7 +348,7 @@ def _run_selected_experiment_pipeline(
         data_audit_result = run_data_audit_phase(
             PrerequisiteAuditRequest(
                 data_root=request.spec.data_root,
-                experiment_data_root=_experiment_data_directory(request),
+                experiment_data_root=request.experiment_data_directory,
                 prerequisite_commands=experiment_design.prerequisite_commands,
                 data_audit_commands=experiment_design.data_audit_commands,
                 cwd=request.spec.target_repository,
@@ -988,7 +1001,7 @@ def _seed_worktree_for_selected_plan(
 ) -> str | None:
     if not selected_plan.seed_component_ids:
         return None
-    state = load_research_state(research_state_path(request.paths))
+    state = _selection_reference_state(request)
     seed_worktrees = {
         state.reusable_components[component_id].worktree_path
         for component_id in selected_plan.seed_component_ids
@@ -996,6 +1009,10 @@ def _seed_worktree_for_selected_plan(
     if len(seed_worktrees) != 1:
         raise ExperimentFlowError("Selected seed components must share one worktree.")
     return next(iter(seed_worktrees))
+
+
+def _selection_reference_state(request: ExperimentFlowRequest):
+    return load_research_state(research_state_path(request.paths))
 
 
 def _run_verification_if_needed(
@@ -1018,7 +1035,7 @@ def _run_verification_if_needed(
         cwd=worktree.path,
         run_dir=request.experiment_directory,
         data_root=request.spec.data_root,
-        experiment_data_root=_experiment_data_directory(request),
+        experiment_data_root=request.experiment_data_directory,
         repo_root=worktree.path,
         timeout_seconds=_data_audit_timeout_seconds(request.spec, experiment_design),
         max_repairs=request.spec.implementation.max_repairs,
@@ -1033,10 +1050,7 @@ def _run_evaluation_if_needed(
     worktree: ExperimentWorktree | None,
     agent_runtime: Any | None,
 ) -> Summary | None:
-    if not (
-        experiment_design.confirmatory_commands
-        or experiment_design.exploratory_commands
-    ):
+    if not experiment_design.confirmatory_commands:
         return None
 
     worktree_path = (
@@ -1046,12 +1060,16 @@ def _run_evaluation_if_needed(
         experiment_dir=request.experiment_directory,
         worktree_path=worktree_path,
         data_root=request.spec.data_root,
-        experiment_data_root=_experiment_data_directory(request),
+        experiment_data_root=request.experiment_data_directory,
         git_sha=git_snapshot(worktree_path).head or "",
         canonical_artifacts=_canonical_artifacts(request.experiment_directory),
         locked_artifacts=_locked_artifacts(request),
-        confirmatory_commands=_command_records(experiment_design.confirmatory_commands),
-        exploratory_commands=_command_records(experiment_design.exploratory_commands),
+        confirmatory_commands=command_declaration_records(
+            experiment_design.confirmatory_commands
+        ),
+        exploratory_commands=command_declaration_records(
+            experiment_design.exploratory_commands
+        ),
     )
     if agent_runtime is None:
         return None
@@ -1074,7 +1092,7 @@ def _run_evaluation_if_needed(
             evaluator_thread_id=thread.id,
             evaluator_workspace=str(workspace.path),
         )
-        turn_result = _run_agent_turn_with_usage_limit(
+        _run_agent_turn_with_usage_limit(
             role=ResearchAgentRole.EVALUATOR,
             run=lambda: thread.run(
                 _evaluation_input(request, workspace.manifest_path),
@@ -1085,10 +1103,6 @@ def _run_evaluation_if_needed(
                     effort=request.spec.codex.effort,
                 ),
             ),
-        )
-        summary = _write_evaluation_artifacts(
-            request.experiment_directory,
-            _response_mapping(getattr(turn_result, "final_response", None)),
         )
     except UsageLimitWait:
         raise
@@ -1112,7 +1126,25 @@ def _run_evaluation_if_needed(
             failed_stage="evaluation_boundary_audit",
             failure_classification="evaluation_boundary_violation",
         )
-    return summary
+    if summary is not None:
+        return summary
+    try:
+        return _promote_evaluation_artifacts(
+            workspace.path,
+            request.experiment_directory,
+        )
+    except (KeyError, TypeError, ValueError, ValidationError) as exc:
+        return classify_run_failed(
+            str(exc) or type(exc).__name__,
+            failed_stage="evaluation",
+            failure_classification="evaluation_runtime_defect",
+        )
+    except Exception as exc:
+        return classify_run_failed(
+            str(exc) or type(exc).__name__,
+            failed_stage="evaluation",
+            failure_classification="evaluation_runtime_defect",
+        )
 
 
 def _canonical_artifacts(experiment_dir: Path) -> dict[str, Path]:
@@ -1140,18 +1172,9 @@ def _locked_artifacts(request: ExperimentFlowRequest) -> list[Path]:
     return [path for path in candidates if path.exists()]
 
 
-def _command_records(commands: list[Any]) -> list[dict[str, Any]]:
-    return command_declaration_records(commands)
-
-
-def _experiment_data_directory(request: ExperimentFlowRequest) -> Path:
-    path = (
-        request.spec.experiment_data_root
-        / request.research_run_id
-        / request.experiment_id
-    )
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+def _safe_path_component(value: str, *, fallback: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", value.strip()).strip(".-")
+    return safe or fallback
 
 
 def _evaluation_input(
@@ -1163,7 +1186,7 @@ def _evaluation_input(
             f"Evaluate Research Experiment {request.experiment_id}.",
             f"Read manifest: {manifest_path.name}",
             "Write scripts under eval_scratch and outputs under eval_outputs.",
-            "Return confirmatory_evaluation_result, exploratory_diagnostics_result, and analysis_ledger.",
+            "Write confirmatory_evaluation_result.json, exploratory_diagnostics_result.json, and analysis_ledger.json in this directory.",
         ]
     )
 
@@ -1203,21 +1226,21 @@ def _response_mapping(final_response: Any) -> dict[str, Any]:
         parsed = json.loads(final_response)
         if isinstance(parsed, dict):
             return parsed
-    raise ValueError("Evaluator response must be a JSON object.")
+    raise ValueError("Agent response must be a JSON object.")
 
 
-def _write_evaluation_artifacts(
+def _promote_evaluation_artifacts(
+    evaluator_workspace: Path,
     experiment_dir: Path,
-    payload: dict[str, Any],
 ) -> Summary:
     confirmatory = ConfirmatoryEvaluationResult.model_validate(
-        payload["confirmatory_evaluation_result"]
+        read_json_object(evaluator_workspace / "confirmatory_evaluation_result.json")
     )
     exploratory = ExploratoryDiagnosticsResult.model_validate(
-        payload.get("exploratory_diagnostics_result", {})
+        read_json_object(evaluator_workspace / "exploratory_diagnostics_result.json")
     )
     analysis_ledger = AnalysisLedger.model_validate(
-        payload.get("analysis_ledger", {"entries": []})
+        read_json_object(evaluator_workspace / "analysis_ledger.json")
     )
     write_json(
         experiment_dir / "confirmatory_evaluation_result.json",

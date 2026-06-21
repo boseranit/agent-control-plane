@@ -88,8 +88,8 @@ def write_context_outputs(
         active_experiment_ids=active_experiment_ids,
     )
     continuation_summary = _build_continuation_summary(
-        spec=spec,
         paths=paths,
+        spec=spec,
         program_root=program_root,
         current_run_dir=run_dir,
     )
@@ -138,10 +138,6 @@ def write_context_outputs(
     write_json(context_summary_path, summary)
     continuation_summary_path = output_dir / "continuation_summary.json"
     write_json(continuation_summary_path, continuation_summary)
-    write_json(
-        paths.memory / "continuation_summary.json",
-        continuation_summary,
-    )
 
     return ContextOutputs(
         context_pack_path=context_pack_path,
@@ -155,26 +151,33 @@ def write_context_outputs(
 
 def _build_continuation_summary(
     *,
-    spec: Any,
     paths: ResearchProgramPaths,
+    spec: Any,
     program_root: Path,
     current_run_dir: Path,
 ) -> dict[str, Any]:
     research_state = load_research_state(research_state_path(paths))
     experiments = _state_prior_experiments(
         research_state,
-        max_prior_experiments=spec.research_program.max_prior_experiments,
+        max_prior_experiments=spec.continuation.max_prior_experiments,
     )
     pending_ideas = _state_pending_ideas(research_state)
     metric_history = _state_metric_history(research_state)
+    repo_loop_context = _repo_loop_context(spec.continuation.repo_loop_context_paths)
     return {
         "artifact_kind": "continuation_summary",
         "controller_generated": True,
         "program_id": program_root.name,
         "program_root": str(program_root),
         "current_run_dir": str(current_run_dir.resolve()),
-        "human_context": _human_context(program_root),
-        "memory_context": _memory_context(program_root),
+        "prior_run_dirs": [
+            str(path) for path in spec.continuation.prior_run_dirs
+        ],
+        "prior_worktree_roots": [
+            str(path) for path in spec.continuation.prior_worktree_roots
+        ],
+        "repo_loop_context": repo_loop_context,
+        "memory_context": [],
         "prior_experiments": experiments,
         "pending_followups": pending_ideas,
         "future_experiment_ideas": pending_ideas,
@@ -375,37 +378,14 @@ def _split_source_experiment(source_experiment: str) -> tuple[str, str]:
     return run_id, experiment_id
 
 
-def _human_context(program_root: Path) -> dict[str, Any]:
-    program_md = program_root / "program.md"
-    program_text = (
-        program_md.read_text(encoding="utf-8") if program_md.is_file() else None
-    )
-    notes_dir = program_root / "notes"
-    notes: list[dict[str, str]] = []
-    if notes_dir.is_dir():
-        notes = [
-            {
-                "path": path.relative_to(program_root).as_posix(),
-                "text": path.read_text(encoding="utf-8"),
-            }
-            for path in sorted(notes_dir.glob("*.md"))
-            if path.is_file()
-        ]
-    return {"program_md": program_text, "notes": notes}
-
-
-def _memory_context(program_root: Path) -> list[dict[str, Any]]:
-    records: list[dict[str, Any]] = []
-    for path in sorted((program_root / "memory").glob("*.json")):
-        if path.name in {"continuation_summary.json", "research_state.json"}:
-            continue
-        records.append(
-            {
-                "path": path.relative_to(program_root).as_posix(),
-                "content": read_json_object(path),
-            }
-        )
-    return records
+def _repo_loop_context(paths: tuple[Path, ...]) -> list[dict[str, str]]:
+    return [
+        {
+            "path": str(path),
+            "text": path.read_text(encoding="utf-8"),
+        }
+        for path in paths
+    ]
 
 
 def _build_prior_synthesis(
@@ -693,6 +673,8 @@ def _render_context_pack(
         "## Repository",
         f"- data root: {current_context['data_root']}",
         f"- experiment data root: {current_context['experiment_data_root']}",
+        "- artifact backfill policy: optional commands may write experiment-local runtime data; canonical data is read-only.",
+        "- experiment-local outputs: selected experiments may write declared evaluation evidence under $RESEARCH_EXPERIMENT_DATA_ROOT.",
         f"- repo root: {git['repo_root']}",
         f"- git head: {git['head']}",
         "- git status:",
@@ -730,27 +712,25 @@ def _render_continuation_context(continuation: dict[str, Any]) -> list[str]:
         "## Research Program Continuation",
         f"- program root: {continuation['program_root']}",
         "",
-        "### Human Context",
+        "### Repo Loop Context",
     ]
-    human_context = continuation.get("human_context", {})
-    program_md = human_context.get("program_md")
-    if isinstance(program_md, str) and program_md.strip():
-        lines.extend(["#### program.md", "```text", program_md.rstrip(), "```"])
-    notes = human_context.get("notes", [])
-    if isinstance(notes, list):
-        for item in notes:
-            lines.extend(
-                [
-                    f"#### {item['path']}",
-                    "```text",
-                    item["text"].rstrip(),
-                    "```",
-                ]
-            )
+    for item in continuation["repo_loop_context"]:
+        lines.extend(
+            [
+                f"#### {item['path']}",
+                "```text",
+                item["text"].rstrip(),
+                "```",
+            ]
+        )
     if not lines[-1].endswith("```"):
         lines.append("- none")
     lines.extend(
         [
+            "### Explicit Prior Run Dirs",
+            *_list_lines(continuation["prior_run_dirs"]),
+            "### Explicit Prior Worktree Roots",
+            *_list_lines(continuation["prior_worktree_roots"]),
             "### Memory Context",
             *_json_lines(continuation["memory_context"]),
             "### Pending Followups",

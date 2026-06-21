@@ -77,16 +77,36 @@ def write_program_research_run_spec(
     repo: Path,
     data_root: Path,
     program_root: Path,
+    *,
+    prior_run_dirs: list[Path] | None = None,
+    prior_worktree_roots: list[Path] | None = None,
+    repo_loop_context_paths: list[Path] | None = None,
 ) -> Path:
     path = tmp_path / "program-research-run.yaml"
     experiment_data_root = tmp_path / "experiment-data"
+    continuation_block = ""
+    if (
+        prior_run_dirs is not None
+        or prior_worktree_roots is not None
+        or repo_loop_context_paths is not None
+    ):
+        continuation_block = "\n".join(
+            [
+                "continuation:",
+                *_yaml_path_list("prior_run_dirs", prior_run_dirs or []),
+                *_yaml_path_list("prior_worktree_roots", prior_worktree_roots or []),
+                *_yaml_path_list(
+                    "repo_loop_context_paths",
+                    repo_loop_context_paths or [],
+                ),
+            ]
+        )
     path.write_text(
         f"""
 research_run_id: current-run
 target_repository: {repo}
 research_program_root: {program_root}
 max_experiments: 5
-max_prior_experiments: 12
 research_brief: |
   Test peer residual forecasting.
 budget: smoke
@@ -98,10 +118,61 @@ budgets:
 data_root: {data_root}
 experiment_data_root: {experiment_data_root}
 stop_on_prerequisites_failed: true
+{continuation_block}
 """,
         encoding="utf-8",
     )
     return path
+
+
+def _yaml_path_list(field: str, paths: list[Path]) -> list[str]:
+    if not paths:
+        return [f"  {field}: []"]
+    return [f"  {field}:"] + [f"    - {path}" for path in paths]
+
+
+def valid_research_spec_payload(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "hypothesis": "Peer residuals forecast returns.",
+        "target": "next_return",
+        "prediction_horizon": "1h",
+        "universe": "hyperliquid_perps",
+        "label": "forward_return_1h",
+        "feature_availability_assumptions": ["features lagged one bar"],
+        "split": {"train": "2024", "test": "2025"},
+        "primary_metric": "ic",
+        "secondary_metrics": ["turnover"],
+        "baselines": ["null"],
+        "null_tests": ["shuffle"],
+        "transaction_cost_assumptions": "5 bps",
+        "success_gates": {"ic": 0.03},
+        "failure_gates": {"ic": 0.0},
+        "inconclusive_gates": {"min_observations": 100},
+    }
+    payload.update(overrides)
+    return payload
+
+
+def selected_plan_payload(rationale: str) -> dict[str, object]:
+    return {
+        "selected": True,
+        "rationale": rationale,
+        "fresh_selection_reason": "Prior run selected a fresh idea.",
+    }
+
+
+def confirmatory_result_payload(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "outcome": "completed_candidate",
+        "outcome_reason": "Locked gates passed.",
+        "failed_stage": None,
+        "failure_classification": None,
+        "metrics": {"ic": 0.04},
+        "gate_results": {"ic": "passed"},
+        "pre_registered_evidence": ["IC above gate."],
+    }
+    payload.update(overrides)
+    return payload
 
 
 def write_run_context(run):
@@ -158,6 +229,9 @@ def test_context_outputs_include_spec_budget_and_git_facts(tmp_path: Path) -> No
     assert summary["data_root"] == str(data_root)
     assert summary["experiment_data_root"] == str(tmp_path / "experiment-data")
     assert "experiment data root:" in output.context_pack_text
+    assert "artifact backfill policy: optional commands" in output.context_pack_text
+    assert "canonical data is read-only" in output.context_pack_text
+    assert "declared evaluation evidence under $RESEARCH_EXPERIMENT_DATA_ROOT" in output.context_pack_text
     assert summary["git"]["repo_root"] == str(repo.resolve())
     assert summary["git"]["head"] == git_head
     assert summary["git"]["status_text"] == "?? scratch.txt\n"
@@ -165,6 +239,115 @@ def test_context_outputs_include_spec_budget_and_git_facts(tmp_path: Path) -> No
     assert "Test peer residual forecasting." in output.context_pack_text
     assert "default timeout seconds: 420" in output.context_pack_text
     assert "scratch.txt" in output.context_pack_text
+
+
+def test_continuation_summary_includes_persisted_program_memory(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    commit_file(repo, "README.md", "tracked\n")
+    data_root = tmp_path / "data"
+    program_root = tmp_path / "programs" / "peer-residuals"
+    spec_path = write_program_research_run_spec(
+        tmp_path,
+        repo,
+        data_root,
+        program_root,
+    )
+    run = start_research_run(spec_path)
+    write_research_state(
+        program_root,
+        {
+            "next_idea_number": 2,
+            "idea_index": {
+                "IDEA-0001": {
+                    "dedupe_key": "same-run-followup",
+                    "title": "same run followup",
+                    "kind": "direct_followup",
+                    "evidence_basis": ["current-run/EXP-0001"],
+                    "mechanism": "Existing run found a promising axis.",
+                    "axis_to_vary": "turnover gate",
+                    "specific_change": "Add turnover gate.",
+                    "falsifying_evidence": ["Gate fails."],
+                    "priority": 0.8,
+                    "priority_reason": "Best current-run followup.",
+                    "seed_component_ids": [],
+                    "source_experiments": ["current-run/EXP-0001"],
+                    "status": "pending",
+                }
+            },
+            "experiment_index": {
+                "current-run/EXP-0001": {
+                    "experiment_dir": str(
+                        program_root / "runs" / "current-run" / "experiments" / "EXP-0001"
+                    ),
+                    "outcome": "completed_inconclusive",
+                    "outcome_reason": "Generated same-run followup.",
+                    "failed_stage": None,
+                    "failure_classification": None,
+                }
+            },
+        },
+    )
+
+    output = write_run_context(run)
+
+    assert output.continuation_summary["pending_followups"][0]["idea_id"] == (
+        "IDEA-0001"
+    )
+    assert output.continuation_summary["pending_followups"][0]["title"] == (
+        "same run followup"
+    )
+
+
+def test_continuation_summary_does_not_import_prior_runs_at_read_time(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    commit_file(repo, "README.md", "tracked\n")
+    data_root = tmp_path / "data"
+    program_root = tmp_path / "programs" / "peer-residuals"
+    prior_run = program_root / "runs" / "prior-run"
+    prior_dir = prior_run / "experiments" / "EXP-0001"
+    prior_dir.mkdir(parents=True)
+    write_json(
+        prior_run / "state.json",
+        {
+            "research_run_id": "prior-run",
+            "experiments": {
+                "EXP-0001": {"experiment_directory": str(prior_dir)}
+            },
+        },
+    )
+    write_json(
+        prior_dir / "summary.json",
+        {
+            "outcome": "blocked",
+            "outcome_reason": "Prior run was blocked.",
+            "failed_stage": "selection",
+            "failure_classification": "no_plan_selected",
+            "summary": "No viable selected plan.",
+        },
+    )
+    spec_path = write_program_research_run_spec(
+        tmp_path,
+        repo,
+        data_root,
+        program_root,
+        prior_run_dirs=[prior_run],
+    )
+    run = start_research_run(spec_path)
+    assert read_json_object(program_root / "memory" / "research_state.json")[
+        "experiment_index"
+    ]
+    write_research_state(program_root, {})
+
+    output = write_run_context(run)
+
+    assert output.continuation_summary["prior_run_dirs"] == [str(prior_run.resolve())]
+    assert output.continuation_summary["prior_experiments"] == []
 
 
 def test_context_outputs_include_program_continuation_summary(
@@ -180,8 +363,14 @@ def test_context_outputs_include_program_continuation_summary(
         repo,
         data_root,
         program_root,
+        prior_run_dirs=[program_root / "runs" / "prior-run"],
+        prior_worktree_roots=[program_root / "worktrees"],
+        repo_loop_context_paths=[
+            program_root / "program.md",
+            program_root / "notes" / "data-contract.md",
+        ],
     )
-    run = start_research_run(spec_path)
+    program_root.mkdir(parents=True, exist_ok=True)
     (program_root / "program.md").write_text(
         "Peer residual program agenda.\n",
         encoding="utf-8",
@@ -193,7 +382,6 @@ def test_context_outputs_include_program_continuation_summary(
     )
     prior_run = program_root / "runs" / "prior-run"
     prior_dir = prior_run / "experiments" / "EXP-0003"
-    write_json(prior_run / "state.json", {"experiments": {}})
     write_json(
         prior_dir / "summary.json",
         {
@@ -205,20 +393,16 @@ def test_context_outputs_include_program_continuation_summary(
         },
     )
     write_json(
+        prior_dir / "selected_plan.json",
+        selected_plan_payload("Prior candidate selected."),
+    )
+    write_json(
         prior_dir / "research_spec.json",
-        {
-            "hypothesis": "Peer residuals forecast returns.",
-            "primary_metric": "ic",
-            "prediction_horizon": "1h",
-            "label": "forward_return_1h",
-        },
+        valid_research_spec_payload(),
     )
     write_json(
         prior_dir / "confirmatory_evaluation_result.json",
-        {
-            "metrics": {"ic": 0.04},
-            "gate_results": {"ic": "passed"},
-        },
+        confirmatory_result_payload(),
     )
     write_json(
         prior_dir / "exploratory_diagnostics_result.json",
@@ -251,6 +435,55 @@ def test_context_outputs_include_program_continuation_summary(
             "reusable_for_followups": True,
         },
     )
+    write_json(
+        prior_dir / "plan_update.json",
+        {
+            "followups": [
+                {
+                    "dedupe_key": "add-turnover-gate",
+                    "title": "add turnover gate",
+                    "kind": "direct_followup",
+                    "evidence_basis": ["prior-run/EXP-0003"],
+                    "mechanism": "Turnover gate may reduce costs.",
+                    "axis_to_vary": "turnover gate",
+                    "specific_change": "Add turnover gate to success criteria.",
+                    "falsifying_evidence": ["IC/cost gate fails after turnover gate."],
+                    "priority": 0.9,
+                    "priority_reason": "Directly follows passed candidate.",
+                    "seed_component_ids": ["peer-residual-feature"],
+                }
+            ],
+            "learning_updates": [],
+            "blockers": [
+                {
+                    "blocker_key": "illiquid-universe",
+                    "blocker_type": "data_quality",
+                    "description": "illiquid universe",
+                    "resolution_condition": "Add liquidity filter.",
+                    "affected_idea_ids": [],
+                }
+            ],
+            "reusable_components": [
+                {
+                    "component_key": "peer-residual-feature",
+                    "summary": "Built peer residual feature.",
+                    "reusable_for": ["turnover gate followup"],
+                    "risk_notes": [],
+                }
+            ],
+            "superseded_idea_ids": [],
+        },
+    )
+    write_json(
+        prior_run / "state.json",
+        {
+            "research_run_id": "prior-run",
+            "experiments": {
+                "EXP-0003": {"experiment_directory": str(prior_dir)},
+            },
+        },
+    )
+    run = start_research_run(spec_path)
     prior_worktree = program_root / "worktrees" / "prior-run" / "EXP-0003"
     write_research_state(
         program_root,
@@ -347,18 +580,25 @@ def test_context_outputs_include_program_continuation_summary(
     assert output.continuation_summary_path == (
         run.run_directory / "continuation_summary.json"
     )
-    assert (program_root / "memory" / "continuation_summary.json").exists()
     assert continuation["program_root"] == str(program_root.resolve())
-    assert continuation["human_context"] == {
-        "program_md": "Peer residual program agenda.\n",
-        "notes": [
-            {"path": "notes/data-contract.md", "text": "Use point-in-time bars.\n"}
-        ],
-    }
-    assert all(
-        record["path"] != "memory/research_state.json"
-        for record in continuation["memory_context"]
-    )
+    assert continuation["prior_run_dirs"] == [
+        str((program_root / "runs" / "prior-run").resolve())
+    ]
+    assert continuation["prior_worktree_roots"] == [
+        str((program_root / "worktrees").resolve())
+    ]
+    assert continuation["repo_loop_context"] == [
+        {
+            "path": str((program_root / "program.md").resolve()),
+            "text": "Peer residual program agenda.\n",
+        },
+        {
+            "path": str((program_root / "notes" / "data-contract.md").resolve()),
+            "text": "Use point-in-time bars.\n",
+        },
+    ]
+    assert "human_context" not in continuation
+    assert continuation["memory_context"] == []
     prior_experiment = continuation["prior_experiments"][0]
     assert prior_experiment["worktree"] == {
         "path": str(prior_worktree),
@@ -402,17 +642,15 @@ def test_continuation_summary_does_not_treat_seed_worktree_as_own_worktree(
     init_repo(repo)
     commit_file(repo, "README.md", "tracked\n")
     program_root = tmp_path / "programs" / "peer-residuals"
-    run = start_research_run(
-        write_program_research_run_spec(
-            tmp_path,
-            repo,
-            tmp_path / "data",
-            program_root,
-        )
+    spec_path = write_program_research_run_spec(
+        tmp_path,
+        repo,
+        tmp_path / "data",
+        program_root,
+        prior_run_dirs=[program_root / "runs" / "seeded-run"],
     )
     prior_run = program_root / "runs" / "seeded-run"
     prior_dir = prior_run / "experiments" / "EXP-0007"
-    write_json(prior_run / "state.json", {"experiments": {}})
     write_json(
         prior_dir / "summary.json",
         {
@@ -420,12 +658,74 @@ def test_continuation_summary_does_not_treat_seed_worktree_as_own_worktree(
             "outcome_reason": "Built variation.",
             "failed_stage": None,
             "failure_classification": None,
+            "summary": "Built variation.",
+        },
+    )
+    write_json(
+        prior_dir / "selected_plan.json",
+        selected_plan_payload("Adapt older implementation."),
+    )
+    write_json(
+        prior_dir / "research_spec.json",
+        valid_research_spec_payload(
+            hypothesis="Horizon variation may change residual decay."
+        ),
+    )
+    write_json(
+        prior_dir / "confirmatory_evaluation_result.json",
+        confirmatory_result_payload(outcome_reason="Built variation."),
+    )
+    write_json(
+        prior_dir / "lineage.json",
+        {
+            "research_run_id": "seeded-run",
+            "experiment_id": "EXP-0007",
+            "experiment_dir": str(prior_dir),
+            "worktree_path": None,
+            "worktree_branch": None,
+            "changed_files": [],
+            "implementation_summary": None,
+            "reusable_for_followups": False,
+        },
+    )
+    write_json(
+        prior_dir / "plan_update.json",
+        {
+            "followups": [
+                {
+                    "dedupe_key": "vary-horizon",
+                    "title": "vary horizon",
+                    "kind": "controlled_variation",
+                    "evidence_basis": ["seeded-run/EXP-0007"],
+                    "mechanism": "Horizon may change residual decay.",
+                    "axis_to_vary": "prediction horizon",
+                    "specific_change": "Evaluate a different horizon.",
+                    "falsifying_evidence": ["No metric improvement."],
+                    "priority": 0.6,
+                    "priority_reason": "Cheap controlled variation.",
+                    "seed_component_ids": [],
+                }
+            ],
+            "learning_updates": [],
+            "blockers": [],
+            "reusable_components": [],
+            "superseded_idea_ids": [],
         },
     )
     write_json(
         prior_dir / "implementation_diff_summary.json",
         {"changed_files": ["research/variation.py"]},
     )
+    write_json(
+        prior_run / "state.json",
+        {
+            "research_run_id": "seeded-run",
+            "experiments": {
+                "EXP-0007": {"experiment_directory": str(prior_dir)},
+            },
+        },
+    )
+    run = start_research_run(spec_path)
     write_research_state(
         program_root,
         {
