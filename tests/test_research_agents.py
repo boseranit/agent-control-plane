@@ -70,6 +70,32 @@ def test_research_agent_prompts_encode_shared_boundaries() -> None:
         assert "proceed with explicit assumptions" in prompt
 
 
+def test_research_agent_prompts_encode_optional_artifact_backfill_policy() -> None:
+    strategist = prompt_for_role(ResearchAgentRole.STRATEGIST)
+    implementer = prompt_for_role(ResearchAgentRole.IMPLEMENTER)
+    critic = prompt_for_role(ResearchAgentRole.CRITIC)
+    evaluator = prompt_for_role(ResearchAgentRole.EVALUATOR)
+
+    assert "Artifact backfills are optional experiment-local commands" in strategist
+    assert "post-implementation verification command" in strategist
+    assert "$RESEARCH_EXPERIMENT_DATA_ROOT/runtime-data" in strategist
+    assert "declare it in expected_outputs and materialize it during verification" in strategist
+    assert "prerequisite commands only for baseline materialization" in strategist
+    assert "read canonical inputs from $HLM_DATA_ROOT" in implementer
+    assert "$RESEARCH_EXPERIMENT_DATA_ROOT/runtime-data" in implementer
+    assert "declared evaluation outputs under $RESEARCH_EXPERIMENT_DATA_ROOT" in implementer
+    assert "Do not write generated experiment data into the canonical data root" in implementer
+    assert "require an explicit post-implementation verification backfill command" in critic
+    assert "experiment backfills into canonical data" in critic
+    assert "declared experiment-local evaluation evidence" in critic
+    assert (
+        "read experiment-local outputs under the experiment data root before canonical data"
+        in evaluator
+    )
+    assert "declared experiment-local evaluation outputs" in evaluator
+    assert "Exploratory diagnostics are attached to the locked confirmatory plan" in evaluator
+
+
 def test_research_agent_prompts_encode_continuation_behavior() -> None:
     strategist = prompt_for_role(ResearchAgentRole.STRATEGIST)
     implementer = prompt_for_role(ResearchAgentRole.IMPLEMENTER)
@@ -82,6 +108,59 @@ def test_research_agent_prompts_encode_continuation_behavior() -> None:
     assert "prior implementation worktree" in implementer
     assert "reused/adapted pieces" in implementer
     assert "Future experiment ideas must be testable directly" in evaluator
+
+
+def test_strategist_prompt_uses_current_schema_names() -> None:
+    strategist = prompt_for_role(ResearchAgentRole.STRATEGIST)
+
+    assert "Proposal/proposal.json" in strategist
+    assert "ResearchSpec/research_spec.json" in strategist
+    assert "ExperimentDesign/experiment_design.json" in strategist
+    assert "SelectedPlan/selected_plan.json" in strategist
+    assert "Summary/summary.json" in strategist
+    assert "PlanUpdate/plan_update.json" in strategist
+    assert "name, argv, timeout_seconds, phase, and failure_classification" in strategist
+    assert "Do not include cwd, env, or id in command declarations" in strategist
+    assert "expected_outputs" in strategist
+    assert "verification_commands" in strategist
+    assert "prerequisite_commands" in strategist
+    assert (
+        "exploratory_commands are diagnostics. They do not satisfy "
+        "deterministic-command selection"
+        in strategist
+    )
+    assert "selected_plan.selected_idea_ids" in strategist
+    assert "fresh_selection_reason" in strategist
+    assert "selected_plan.seed_component_ids" in strategist
+    assert "PlanUpdate.blockers" in strategist
+    assert "PlanUpdate.reusable_components" in strategist
+    assert "controller owns worktree_path and changed_files" in strategist
+
+
+def test_strategist_prompt_encodes_evidence_and_closeout_boundaries() -> None:
+    strategist = prompt_for_role(ResearchAgentRole.STRATEGIST)
+
+    assert "The controller owns context artifact creation" in strategist
+    assert "Confirmatory evidence controls the official Research Outcome" in strategist
+    assert "Exploratory diagnostics only motivate future Research Experiments" in strategist
+    assert "Closeout summary cannot change official Research Outcome" in strategist
+    assert "empirical_critique.json" in strategist
+    assert "do not rerun research computations" in strategist
+
+
+def test_strategist_prompt_encodes_plan_update_cards_without_schema_dump() -> None:
+    strategist = prompt_for_role(ResearchAgentRole.STRATEGIST)
+
+    assert "followups, learning_updates, blockers, reusable_components" in strategist
+    assert "superseded_idea_ids" in strategist
+    assert "FollowupCandidate" in strategist
+    assert "LearningUpdate" in strategist
+    assert "BlockerCard" in strategist
+    assert "ReusableComponentCard" in strategist
+    assert "learning_key, evidence_basis, claim, evidence, implication" in strategist
+    assert "blocker_key, blocker_type, description, resolution_condition" in strategist
+    assert '"properties"' not in strategist
+    assert '"additionalProperties"' not in strategist
 
 
 def test_strategist_thread_persists_per_research_run_state(
