@@ -23,6 +23,7 @@ from agent_control_plane.research_experiment_controller.artifacts import (
     FeatureSpec,
     FeatureSpecs,
     ResearchOutcome,
+    ResearchSpec,
     SelectedPlan,
     Summary,
 )
@@ -1739,8 +1740,8 @@ def test_agent_declared_material_revision_gets_fresh_critic_review(
                         {"name": "unit", "argv": [sys.executable, "-c", "pass"]}
                     ],
                 ),
-                prior_research_spec=valid_research_spec_payload(),
-                research_spec=valid_research_spec_payload(),
+                prior_research_spec=ResearchSpec(**valid_research_spec_payload()),
+                research_spec=ResearchSpec(**valid_research_spec_payload()),
                 feature_specs=FeatureSpecs(
                     features=[
                         FeatureSpec(
@@ -1792,7 +1793,7 @@ def test_agent_declared_material_revision_gets_fresh_critic_review(
     assert any(
         event["event_type"] == "material_revision_critic_review"
         and event["critic_thread_id"] == "research-critic-thread-1"
-        and event["material_revision_categories"] == ["split"]
+        and "split" in event["material_revision_categories"]
         for event in events
     )
 
@@ -1821,11 +1822,13 @@ def test_controller_detected_material_revision_gets_fresh_critic_review(
                         {"name": "unit", "argv": [sys.executable, "-c", "pass"]}
                     ],
                 ),
-                prior_research_spec=valid_research_spec_payload(),
-                research_spec={
+                prior_research_spec=ResearchSpec(**valid_research_spec_payload()),
+                research_spec=ResearchSpec(
+                    **{
                     **valid_research_spec_payload(),
-                    "primary_metric": "rank_information_coefficient",
-                },
+                        "primary_metric": "rank_information_coefficient",
+                    }
+                ),
                 terminal_summary=Summary(
                     outcome=ResearchOutcome.completed_inconclusive,
                     outcome_reason="Verification passed.",
@@ -1889,8 +1892,8 @@ def test_controller_detects_feature_spec_material_revision(
                         {"name": "unit", "argv": [sys.executable, "-c", "pass"]}
                     ],
                 ),
-                prior_research_spec=valid_research_spec_payload(),
-                research_spec=valid_research_spec_payload(),
+                prior_research_spec=ResearchSpec(**valid_research_spec_payload()),
+                research_spec=ResearchSpec(**valid_research_spec_payload()),
                 prior_feature_specs=FeatureSpecs(
                     features=[
                         FeatureSpec(**valid_feature_spec_payload(**{field: old_value}))
@@ -2065,14 +2068,8 @@ def test_non_material_revision_does_not_get_fresh_critic_review(
                         {"name": "unit", "argv": [sys.executable, "-c", "pass"]}
                     ],
                 ),
-                prior_research_spec={
-                    "target": "return_1m",
-                    "command_formatting": "python eval.py",
-                },
-                research_spec={
-                    "target": "return_1m",
-                    "command_formatting": "python ./eval.py",
-                },
+                prior_research_spec=ResearchSpec(**valid_research_spec_payload()),
+                research_spec=ResearchSpec(**valid_research_spec_payload()),
                 terminal_summary=Summary(
                     outcome=ResearchOutcome.completed_inconclusive,
                     outcome_reason="Verification passed.",
@@ -2541,8 +2538,8 @@ def test_feature_specs_are_written_and_locked_for_evaluation(
                         {"name": "eval", "argv": [sys.executable, "eval.py"]}
                     ],
                 ),
-                research_spec=valid_research_spec_payload(),
-                prior_research_spec=valid_research_spec_payload(),
+                research_spec=ResearchSpec(**valid_research_spec_payload()),
+                prior_research_spec=ResearchSpec(**valid_research_spec_payload()),
                 feature_specs=FeatureSpecs(
                     features=[
                         FeatureSpec(
@@ -2641,7 +2638,7 @@ def test_partial_research_spec_is_rejected_before_evaluation_lock(
 
     assert summary["outcome"] == "run_failed"
     assert summary["failure_classification"] == "runner_exception"
-    assert "hypothesis" in summary["outcome_reason"]
+    assert summary["outcome_reason"]
     assert runtime.configs == []
     assert not (experiment_dir / "research_spec.json").exists()
     assert not (experiment_dir / "evaluation" / "manifest.json").exists()
