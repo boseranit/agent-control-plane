@@ -4,6 +4,8 @@ import argparse
 from pathlib import Path
 from typing import Optional
 
+from agent_control_plane.research_agent_defaults import DEFAULT_RESEARCH_AGENT_MODEL
+
 from .loop import LoopConfig, ResearchLoop
 from .mirror import Mirror, NoOpMirror
 from .records import (
@@ -107,7 +109,7 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--repo", required=True)
     run.add_argument("--slug", required=True)
     run.add_argument("--max-experiments", type=int, default=1)
-    run.add_argument("--model", default="gpt-5-codex")
+    run.add_argument("--model", default=DEFAULT_RESEARCH_AGENT_MODEL)
     run.add_argument("--reasoning-effort", default="high")
     run.add_argument("--mlflow-uri")
     run.add_argument("--mlflow-experiment")

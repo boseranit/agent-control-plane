@@ -9,6 +9,7 @@ from agent_control_plane.control_plane.agent_runtime import (
     RuntimeApproval,
     RuntimePolicy,
 )
+from agent_control_plane.research_agent_defaults import DEFAULT_RESEARCH_AGENT_MODEL
 
 PROMPT_DIRECTORY = Path(__file__).parent / "prompts"
 
@@ -24,7 +25,7 @@ def agent_config(
     role: ResearchAgentRole,
     cwd: str | Path,
     *,
-    model: str | None = None,
+    model: str = DEFAULT_RESEARCH_AGENT_MODEL,
     effort: str | None = None,
     output_schema: dict[str, Any] | None = None,
     thread_id: str | None = None,

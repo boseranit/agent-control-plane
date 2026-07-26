@@ -52,7 +52,7 @@ mlflow:
   experiment_name: peer-residual-v1
 
 codex:
-  model: gpt-5.3-codex
+  model: configured-model
   effort: xhigh
 
 implementation:
@@ -146,7 +146,7 @@ def test_loads_prd_minimal_research_run_spec(tmp_path: Path) -> None:
     assert spec.mlflow.enabled is True
     assert spec.mlflow.tracking_uri == "file:/tmp/mlruns"
     assert spec.mlflow.experiment_name == "peer-residual-v1"
-    assert spec.codex.model == "gpt-5.3-codex"
+    assert spec.codex.model == "configured-model"
     assert spec.codex.effort == "xhigh"
     assert spec.implementation.max_repairs == 3
     assert spec.continuation.prior_run_dirs == ()
@@ -182,7 +182,6 @@ def test_applies_defaults_and_accepts_stop_on_prerequisites_failed_false(
     assert spec.mlflow.enabled is False
     assert spec.mlflow.tracking_uri is None
     assert spec.mlflow.experiment_name is None
-    assert spec.codex.model is None
     assert spec.codex.effort is None
     assert spec.implementation.max_repairs == 3
     assert spec.continuation.prior_run_dirs == ()
@@ -471,6 +470,7 @@ def test_resolved_spec_dict_is_deterministic_snapshot_data(tmp_path: Path) -> No
         "month_end": "2026-01",
         "max_runtime_minutes": 240,
     }
+    data["codex"] = {"model": "configured-model"}
     spec = load_research_run_spec(write_spec_data(tmp_path, data, "snapshot-source"))
 
     resolved = resolved_spec_dict(spec)
@@ -499,7 +499,7 @@ def test_resolved_spec_dict_is_deterministic_snapshot_data(tmp_path: Path) -> No
         "tracking_uri": None,
         "experiment_name": None,
     }
-    assert resolved["codex"] == {"model": None, "effort": None}
+    assert resolved["codex"] == {"model": "configured-model", "effort": None}
     assert resolved["implementation"] == {"max_repairs": 3}
     assert resolved["stop_on_prerequisites_failed"] is True
     assert "source_path" not in resolved

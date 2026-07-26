@@ -6,6 +6,7 @@ from typing import Any
 
 import yaml
 
+from agent_control_plane.research_agent_defaults import DEFAULT_RESEARCH_AGENT_MODEL
 from agent_control_plane.research_experiment_controller.paths import (
     ResearchProgramPaths,
 )
@@ -56,7 +57,7 @@ class MLflowConfig:
 
 @dataclass(frozen=True)
 class CodexConfig:
-    model: str | None = None
+    model: str = DEFAULT_RESEARCH_AGENT_MODEL
     effort: str | None = None
 
 
@@ -298,7 +299,12 @@ def _load_mlflow(value: Any) -> MLflowConfig:
 def _load_codex(value: Any) -> CodexConfig:
     data = _optional_mapping(value, "codex")
     return CodexConfig(
-        model=_optional_string(data, "model", None, "codex.model"),
+        model=_optional_string(
+            data,
+            "model",
+            DEFAULT_RESEARCH_AGENT_MODEL,
+            "codex.model",
+        ),
         effort=_optional_string(data, "effort", None, "codex.effort"),
     )
 
