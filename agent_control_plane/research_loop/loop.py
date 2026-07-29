@@ -7,6 +7,8 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from agent_control_plane.research_agent_defaults import DEFAULT_RESEARCH_AGENT_MODEL
+
 from .gates import apply_bh_fdr, decide_verdict, looks_positive
 from .gitops import (
     CommitFailedError,
@@ -51,7 +53,7 @@ class LoopConfig:
     repo: Path
     slug: str
     max_experiments: int
-    model: str = "gpt-5-codex"
+    model: str = DEFAULT_RESEARCH_AGENT_MODEL
     reasoning_effort: str = "high"
     baseline_required: bool = True
     mirror_tracking_uri: Optional[str] = None
