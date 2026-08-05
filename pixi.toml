@@ -27,13 +27,8 @@ filelock = ">=3,<4"
 psutil = ">=6,<8"
 
 [pypi-dependencies]
-openai-codex = { git = "https://github.com/openai/codex.git", tag = "rust-v0.133.0", subdirectory = "sdk/python" }
+openai-codex = "==0.144.4"
 hatchet-sdk = ">=1.33.6, <2"
-
-[pypi-options.dependency-overrides]
-# The SDK source tree keeps a stale template runtime pin; the 0.133.0
-# release publishes matching glibc Linux and Windows runtime wheels.
-openai-codex-cli-bin = "==0.133.0"
 
 [feature.dev.dependencies]
 pytest = ">=8,<9"

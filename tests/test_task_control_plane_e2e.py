@@ -110,11 +110,6 @@ class FakeCodexTurnResult:
         self.final_response = output if isinstance(output, str) else json.dumps(output)
 
 
-class FakeSandboxPolicy:
-    def __init__(self, type: str) -> None:
-        self.type = type
-
-
 def thread_call_from_config(config: AgentRunConfig) -> dict[str, object]:
     return {
         "approval_mode": "deny_all" if config.role == "reviewer" else "auto_review",
@@ -126,16 +121,13 @@ def thread_call_from_config(config: AgentRunConfig) -> dict[str, object]:
 
 
 def run_call_from_config(config: AgentRunConfig) -> dict[str, object]:
-    sandbox_policy_type = (
-        "workspaceWrite" if config.role == "implementer" else "readOnly"
-    )
     return {
         "approval_mode": "deny_all" if config.role == "reviewer" else "auto_review",
         "cwd": str(config.cwd),
         "effort": config.effort,
         "model": config.model,
         "output_schema": config.output_schema,
-        "sandbox_policy": FakeSandboxPolicy(sandbox_policy_type),
+        "sandbox": ("workspace-write" if config.role == "implementer" else "read-only"),
     }
 
 
