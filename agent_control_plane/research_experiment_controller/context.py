@@ -111,6 +111,7 @@ def write_context_outputs(
             "month_start": spec.selected_budget.month_start,
             "month_end": spec.selected_budget.month_end,
             "max_runtime_minutes": spec.selected_budget.max_runtime_minutes,
+            "maximum_memory_bytes": spec.selected_budget.maximum_memory_bytes,
             "default_command_timeout_seconds": (
                 spec.selected_budget.default_command_timeout_seconds
             ),
@@ -669,6 +670,7 @@ def _render_context_pack(
         f"- month window: {budget['month_start']}..{budget['month_end']}",
         f"- runtime minutes: {budget['max_runtime_minutes']}",
         f"- default timeout seconds: {budget['default_command_timeout_seconds']}",
+        f"- hard process-tree memory bytes: {budget['maximum_memory_bytes'] or 'unbounded'}",
         "",
         "## Repository",
         f"- data root: {current_context['data_root']}",

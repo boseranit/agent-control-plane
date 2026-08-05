@@ -9,6 +9,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from agent_control_plane.control_plane.agent_runtime import AgentMemoryLimitExceeded
 from agent_control_plane.control_plane.boundary_audit import git_snapshot
 from agent_control_plane.control_plane.json_artifacts import (
     read_json_object,
@@ -353,6 +354,9 @@ def _run_selected_experiment_pipeline(
                 run_dir=experiment_dir,
                 timeout_seconds=_data_audit_timeout_seconds(
                     request.spec, experiment_design
+                ),
+                maximum_memory_bytes=(
+                    request.spec.selected_budget.maximum_memory_bytes
                 ),
             )
         )
@@ -1026,6 +1030,7 @@ def _run_verification_if_needed(
         repo_root=worktree.path,
         timeout_seconds=_data_audit_timeout_seconds(request.spec, experiment_design),
         max_repairs=request.spec.implementation.max_repairs,
+        maximum_memory_bytes=request.spec.selected_budget.maximum_memory_bytes,
         repair_callback=_repair_callback(request, worktree, agent_runtime),
     )
 
@@ -1091,7 +1096,7 @@ def _run_evaluation_if_needed(
                 ),
             ),
         )
-    except UsageLimitWait:
+    except (UsageLimitWait, AgentMemoryLimitExceeded):
         raise
     except (KeyError, TypeError, ValueError, ValidationError) as exc:
         summary = classify_run_failed(
@@ -1309,7 +1314,7 @@ def _run_agent_turn_with_usage_limit(
 ) -> Any:
     try:
         return run()
-    except UsageLimitWait:
+    except (UsageLimitWait, AgentMemoryLimitExceeded):
         raise
     except Exception as exc:
         first_exception: Exception | None = exc

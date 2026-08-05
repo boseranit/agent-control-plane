@@ -11,6 +11,7 @@ from agent_control_plane.control_plane.command_runner import (
     run_command,
     write_command_metrics,
 )
+from agent_control_plane.control_plane.systemd_scope import ResourceLimitExceeded
 from agent_control_plane.research_experiment_controller.artifacts import (
     CommandDeclaration,
     DataAudit,
@@ -33,6 +34,7 @@ class PrerequisiteAuditRequest:
     cwd: str | Path
     run_dir: str | Path
     timeout_seconds: float
+    maximum_memory_bytes: int | None = None
 
 
 def run_data_audit_phase(request: PrerequisiteAuditRequest) -> dict[str, Any]:
@@ -64,6 +66,7 @@ def run_data_audit_phase(request: PrerequisiteAuditRequest) -> dict[str, Any]:
                     timeout_seconds=float(
                         data.get("timeout_seconds") or request.timeout_seconds
                     ),
+                    maximum_memory_bytes=request.maximum_memory_bytes,
                 ),
                 cwd=request.cwd,
                 stdout_path=_log_path(run_dir, phase, index, data, "stdout"),
@@ -71,6 +74,12 @@ def run_data_audit_phase(request: PrerequisiteAuditRequest) -> dict[str, Any]:
                 env=env,
             )
             command_results.append(result)
+            if result.memory_limit_exceeded:
+                write_command_metrics(run_dir / "command_metrics.json", command_results)
+                raise ResourceLimitExceeded(
+                    f"Data-audit command {result.name!r} exceeded the hard "
+                    f"memory limit of {result.maximum_memory_bytes} bytes."
+                )
             if result.status != "passed" and failure_classification is None:
                 failure_classification = str(
                     data.get("failure_classification") or "prerequisite_command_failed"
