@@ -26,16 +26,20 @@ DATA_AUDIT_FAILURE_CLASSIFICATIONS = frozenset(
 
 
 def classify_data_audit_failure(failure_classification: str) -> Summary:
-    if failure_classification not in DATA_AUDIT_FAILURE_CLASSIFICATIONS:
-        raise ValueError(
-            f"Unknown data-audit failure classification: {failure_classification}"
+    canonical_failure_classification = failure_classification
+    if canonical_failure_classification not in DATA_AUDIT_FAILURE_CLASSIFICATIONS:
+        canonical_failure_classification = "prerequisite_command_failed"
+        reason = (
+            "Data/prerequisite audit failed: prerequisite_command_failed "
+            f"(declared failure_classification: {failure_classification})."
         )
-    reason = f"Data/prerequisite audit failed: {failure_classification}."
+    else:
+        reason = f"Data/prerequisite audit failed: {failure_classification}."
     return Summary(
         outcome=ResearchOutcome.prerequisites_failed,
         outcome_reason=reason,
         failed_stage="data_audit",
-        failure_classification=failure_classification,
+        failure_classification=canonical_failure_classification,
         summary=reason,
     )
 
