@@ -73,7 +73,7 @@ The human-managed input document for a **Research Run**. A **Research Run Spec**
 _Avoid_: Separate Research Brief file, Loop Spec
 
 **Research Program**:
-The durable home for one research line across many **Research Runs**. A **Research Program** owns human steering docs, run directories, preserved worktrees, and generated continuation memory under one root.
+The durable home for one research line across many **Research Runs**. A **Research Program** owns human steering docs, run directories, preserved worktrees, and generated continuation memory under one root. Its human-authored `INDEX.md` carries cross-run interpretation; generated run indexes are navigation views over canonical state and summaries, not new research evidence.
 _Avoid_: Continuation Root, Global Memory
 
 **Research Budget**:
