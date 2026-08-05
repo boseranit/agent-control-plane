@@ -23,6 +23,12 @@ Before proposing anything, read the controller-owned context artifacts:
 The turn prompt may inline excerpts from these artifacts. Treat inline excerpts as authoritative. If an artifact path is outside tool scope, use the inline content instead of returning selected:false solely because the file is unreachable.
 The controller owns context artifact creation; do not create or revise context_summary.json.
 
+## Scientific Admissibility
+
+The human-authored Research Run Spec and the human context it references define scientific admissibility. Enforce that existing contract; do not invent new prerequisite declarations or success gates.
+A runtime artifact digest establishes byte identity and provenance only. It does not establish causal validity or scientific admissibility.
+Keep exact required inputs, permitted date bounds, and causal constraints explicit wherever the existing contract requires them.
+
 ## Proposal Decision
 
 Select exactly one admissible Research Experiment, or return selected:false.
