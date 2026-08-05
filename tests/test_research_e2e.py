@@ -91,6 +91,7 @@ def test_fake_runtime_drives_completed_candidate_research_run(
     )
     empirical_critique = read_json_object(experiment_dir / "empirical_critique.json")
     plan_update = read_json_object(experiment_dir / "plan_update.json")
+    research_spec = read_json_object(experiment_dir / "research_spec.json")
 
     assert summary["outcome"] == "completed_candidate"
     assert data_audit["passed"] is True
@@ -98,12 +99,68 @@ def test_fake_runtime_drives_completed_candidate_research_run(
     assert confirmatory["outcome"] == "completed_candidate"
     assert empirical_critique["recommended_outcome"] == "completed_candidate"
     assert plan_update["followups"][0]["title"] == "inspect candidate worktree"
+    assert research_spec["transaction_cost_assumptions"] == "5 bps"
+    assert runtime.run_configs
+    assert all(config.output_schema is None for config in runtime.run_configs)
     assert {config.role for config in runtime.configs} == {
         "research-strategist",
         "research-critic",
         "research-implementer",
         "research-evaluator",
     }
+
+
+def test_first_strategist_turn_can_end_planning_as_no_op(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    spec_path = _write_spec(tmp_path, repo, data_root)
+    rationale = "No admissible experiment remains after the prior blockers."
+    runtime = FakeResearchRuntime(first_turn_abstention_rationale=rationale)
+
+    run = start_research_run(spec_path)
+    result = run_research_loop(
+        run.research_run_id,
+        research_program_root=run.run_directory.parents[1],
+        agent_runtime=runtime,
+    )
+
+    experiment_dir = run.experiments_directory / "EXP-0001"
+    selected_plan = read_json_object(experiment_dir / "selected_plan.json")
+    summary = read_json_object(experiment_dir / "summary.json")
+    state = read_json_object(run.state_path)
+
+    assert result["experiments_completed"] == 1
+    assert selected_plan["selected"] is False
+    assert selected_plan["rationale"] == rationale
+    assert summary["outcome"] == "no_op"
+    assert summary["outcome_reason"] == rationale
+    assert state["experiments"]["EXP-0001"]["outcome"] == "no_op"
+    assert [config.role for config in runtime.run_configs] == ["research-strategist"]
+    assert runtime.run_configs[0].output_schema is None
+    strategist_thread = runtime.threads[state["threads"]["strategist"]]
+    assert len(strategist_thread.inputs) == 1
+
+    skipped_artifacts = {
+        "proposal.json",
+        "research_spec.json",
+        "experiment_design.json",
+        "critique.json",
+        "data_audit.json",
+        "implementation.json",
+        "confirmatory_evaluation_result.json",
+        "empirical_critique.json",
+        "plan_update.json",
+    }
+    assert not skipped_artifacts & {
+        path.name for path in experiment_dir.rglob("*") if path.is_file()
+    }
+    assert not (experiment_dir / "evaluation").exists()
+    assert not (
+        run.research_program_root / "worktrees" / "e2e-run" / "EXP-0001"
+    ).exists()
 
 
 def test_program_root_flow_writes_lineage_and_state_fields(
@@ -371,7 +428,18 @@ class FakeResearchThread:
 
     def run(self, input: str, config: Any) -> FakeTurnResult:
         self.inputs.append(input)
+        self.runtime.run_configs.append(config)
         if config.role == "research-strategist":
+            if (
+                self.runtime.first_turn_abstention_rationale is not None
+                and "proposal.json" in input
+            ):
+                return FakeTurnResult(
+                    {
+                        "selected": False,
+                        "rationale": self.runtime.first_turn_abstention_rationale,
+                    }
+                )
             return FakeTurnResult(
                 _strategist_response(
                     input,
@@ -458,8 +526,10 @@ class FakeResearchRuntime:
         repair_keeps_verification_failing: bool = False,
         allowed_write_paths: list[str] | None = None,
         write_signal_panel: bool = True,
+        first_turn_abstention_rationale: str | None = None,
     ) -> None:
         self.configs: list[Any] = []
+        self.run_configs: list[Any] = []
         self.threads: dict[str, FakeResearchThread] = {}
         self.role_counts: dict[str, int] = {}
         self.confirmatory_outcome = confirmatory_outcome
@@ -470,6 +540,7 @@ class FakeResearchRuntime:
         self.repair_keeps_verification_failing = repair_keeps_verification_failing
         self.allowed_write_paths = allowed_write_paths or ["research"]
         self.write_signal_panel = write_signal_panel
+        self.first_turn_abstention_rationale = first_turn_abstention_rationale
 
     def open_thread(self, config: Any) -> FakeResearchThread:
         self.configs.append(config)
