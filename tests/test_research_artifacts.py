@@ -108,6 +108,65 @@ def test_core_research_artifacts_validate_canonical_payloads() -> None:
     assert result.outcome is ResearchOutcome.completed_candidate
 
 
+def test_research_spec_preserves_json_planning_values() -> None:
+    payload = {
+        "hypothesis": "Funding dislocations forecast short-horizon reversals.",
+        "target": "next_day_return",
+        "prediction_horizon": "1D",
+        "universe": "hyperliquid_perps",
+        "label": "forward_return_1d",
+        "feature_availability_assumptions": ["Funding is known before entry."],
+        "split": "Train through June; test from July.",
+        "primary_metric": "net_information_coefficient",
+        "secondary_metrics": ["turnover"],
+        "baselines": ["zero_signal"],
+        "null_tests": ["timestamp_shuffle"],
+        "transaction_cost_assumptions": [
+            "Charge 5 bps per side.",
+            {"market_impact": None},
+        ],
+        "success_gates": {"minimum_ic": 0.03, "required": True},
+        "failure_gates": "Net information coefficient is at most zero.",
+        "inconclusive_gates": ["Fewer than 100 observations remain."],
+    }
+
+    assert ResearchSpec.model_validate(payload).model_dump(mode="json") == payload
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "split",
+        "transaction_cost_assumptions",
+        "success_gates",
+        "failure_gates",
+        "inconclusive_gates",
+    ],
+)
+def test_research_spec_rejects_non_json_planning_values(field: str) -> None:
+    payload = {
+        "hypothesis": "Funding dislocations forecast short-horizon reversals.",
+        "target": "next_day_return",
+        "prediction_horizon": "1D",
+        "universe": "hyperliquid_perps",
+        "label": "forward_return_1d",
+        "feature_availability_assumptions": [],
+        "split": {},
+        "primary_metric": "information_coefficient",
+        "secondary_metrics": [],
+        "baselines": [],
+        "null_tests": [],
+        "transaction_cost_assumptions": "5 bps",
+        "success_gates": {},
+        "failure_gates": {},
+        "inconclusive_gates": {},
+    }
+    payload[field] = object()
+
+    with pytest.raises(ValidationError):
+        ResearchSpec.model_validate(payload)
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -157,6 +216,15 @@ def test_invalid_artifact_shapes_are_rejected() -> None:
 
     with pytest.raises(ValidationError):
         ExperimentDesign(unknown_field=True)
+
+
+def test_plan_update_schema_excludes_selected_ideas_from_supersession() -> None:
+    description = PlanUpdate.model_json_schema()["properties"]["superseded_idea_ids"][
+        "description"
+    ]
+
+    assert "Pending, unselected idea IDs" in description
+    assert "Selected ideas transition from the official outcome" in description
 
 
 def test_feature_specs_validate_material_signal_contract() -> None:

@@ -81,9 +81,18 @@ def test_research_agent_prompts_encode_optional_artifact_backfill_policy() -> No
     assert "argv is an array of strings, never a shell string" in strategist
     assert "read canonical inputs from $HLM_DATA_ROOT" in implementer
     assert "$RESEARCH_EXPERIMENT_DATA_ROOT/runtime-data" in implementer
-    assert "declared evaluation outputs under $RESEARCH_EXPERIMENT_DATA_ROOT" in implementer
-    assert "Do not write generated experiment data into the canonical data root" in implementer
-    assert "require an explicit post-implementation verification backfill command" in critic
+    assert (
+        "declared evaluation outputs under $RESEARCH_EXPERIMENT_DATA_ROOT"
+        in implementer
+    )
+    assert (
+        "Do not write generated experiment data into the canonical data root"
+        in implementer
+    )
+    assert (
+        "require an explicit post-implementation verification backfill command"
+        in critic
+    )
     assert "experiment backfills into canonical data" in critic
     assert "declared experiment-local evaluation evidence" in critic
     assert (
@@ -91,7 +100,10 @@ def test_research_agent_prompts_encode_optional_artifact_backfill_policy() -> No
         in evaluator
     )
     assert "declared experiment-local evaluation outputs" in evaluator
-    assert "Exploratory diagnostics are attached to the locked confirmatory plan" in evaluator
+    assert (
+        "Exploratory diagnostics are attached to the locked confirmatory plan"
+        in evaluator
+    )
 
 
 def test_research_agent_prompts_encode_continuation_behavior() -> None:
@@ -111,13 +123,18 @@ def test_research_agent_prompts_encode_continuation_behavior() -> None:
 def test_strategist_prompt_uses_current_schema_names() -> None:
     strategist = prompt_for_role(ResearchAgentRole.STRATEGIST)
 
+    assert '{"selected": false, "rationale": "..."}' in strategist
+    assert "ends the Research Experiment" in strategist
     assert "Proposal/proposal.json" in strategist
     assert "ResearchSpec/research_spec.json" in strategist
+    assert "may use any JSON value" in strategist
     assert "ExperimentDesign/experiment_design.json" in strategist
     assert "SelectedPlan/selected_plan.json" in strategist
     assert "Summary/summary.json" in strategist
     assert "PlanUpdate/plan_update.json" in strategist
-    assert "name, argv, timeout_seconds, phase, and failure_classification" in strategist
+    assert (
+        "name, argv, timeout_seconds, phase, and failure_classification" in strategist
+    )
     assert "do not include cwd, env, or id" in strategist
     assert "expected_outputs" in strategist
     assert "selected_idea_ids" in strategist
@@ -125,6 +142,7 @@ def test_strategist_prompt_uses_current_schema_names() -> None:
     assert "seed_component_ids" in strategist
     assert "blockers" in strategist
     assert "reusable_components" in strategist
+    assert "output schema" not in strategist
 
 
 def test_strategist_prompt_encodes_context_and_closeout_outputs() -> None:
@@ -143,6 +161,8 @@ def test_strategist_prompt_encodes_plan_update_cards_without_schema_dump() -> No
     assert "followups, learning_updates, blockers, reusable_components" in strategist
     assert "superseded_idea_ids" in strategist
     assert "use empty lists when none apply" in strategist
+    assert "only other pending ideas made obsolete" in strategist
+    assert "Do not include selected_plan.selected_idea_ids" in strategist
     assert '"properties"' not in strategist
     assert '"additionalProperties"' not in strategist
 

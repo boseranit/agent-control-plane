@@ -221,17 +221,31 @@ def _select_agent_driven_experiment(
         effort=request.spec.codex.effort,
     )
     _persist_thread_state(request)
-    proposal = _run_agent_model(
+    proposal_payload = _run_agent_mapping(
         thread=strategist,
         role=ResearchAgentRole.STRATEGIST,
         cwd=request.experiment_directory,
         request=request,
-        model_cls=Proposal,
         turn_input=(
             "Read context_pack.md and return proposal.json for the next bounded "
-            f"Research Experiment {request.experiment_id}."
+            f"Research Experiment {request.experiment_id}. If none is admissible, "
+            'return exactly {"selected": false, "rationale": "..."}.'
         ),
     )
+    if proposal_payload.get("selected") is False:
+        selected_plan = SelectedPlan.model_validate(proposal_payload)
+        if selected_plan.model_fields_set != {"selected", "rationale"}:
+            raise ValueError(
+                "A first-turn selected:false response must contain only selected and "
+                "rationale."
+            )
+        return _ExperimentPipeline(
+            selection=ExperimentFlowSelection(
+                selected_plan=selected_plan,
+                experiment_design=None,
+            )
+        )
+    proposal = Proposal.model_validate(proposal_payload)
     _write_model_artifact(request.experiment_directory / "proposal.json", proposal)
     research_spec = _run_agent_model(
         thread=strategist,
@@ -751,6 +765,27 @@ def _run_agent_model(
     model_cls: Any,
     turn_input: str,
 ) -> Any:
+    return model_cls.model_validate(
+        _run_agent_mapping(
+            thread=thread,
+            role=role,
+            cwd=cwd,
+            request=request,
+            turn_input=turn_input,
+        )
+    )
+
+
+def _run_agent_mapping(
+    *,
+    thread: Any,
+    role: ResearchAgentRole,
+    cwd: str | Path,
+    request: ExperimentFlowRequest,
+    turn_input: str,
+) -> dict[str, Any]:
+    """Return one Research Agent artifact payload as a JSON object."""
+
     turn_result = _run_agent_turn_with_usage_limit(
         role=role,
         run=lambda: thread.run(
@@ -760,13 +795,10 @@ def _run_agent_model(
                 cwd,
                 model=request.spec.codex.model,
                 effort=request.spec.codex.effort,
-                output_schema=model_cls.model_json_schema(),
             ),
         ),
     )
-    return model_cls.model_validate(
-        _response_mapping(getattr(turn_result, "final_response", None))
-    )
+    return _response_mapping(getattr(turn_result, "final_response", None))
 
 
 def _write_model_artifact(path: Path, model: Any) -> None:
