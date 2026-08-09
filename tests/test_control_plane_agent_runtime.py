@@ -83,7 +83,7 @@ def test_shared_agent_runtime_starts_read_only_codex_thread(tmp_path: Path) -> N
     assert sdk_value(run_call["effort"]) == "high"
     assert run_call["model"] == "gpt-5-codex"
     assert run_call["output_schema"] == schema
-    assert run_call["sandbox_policy"].type == "readOnly"
+    assert sdk_value(run_call["sandbox"]) == "read-only"
 
 
 def test_shared_agent_runtime_resumes_workspace_write_thread(tmp_path: Path) -> None:
@@ -114,13 +114,15 @@ def test_shared_agent_runtime_resumes_workspace_write_thread(tmp_path: Path) -> 
     assert codex.started_threads == []
     resume_call = codex.resumed_threads[0]
     assert resume_call["thread_id"] == "evaluator-existing"
+    assert resume_call["cwd"] == str(tmp_path.resolve())
     assert sdk_value(resume_call["approval_mode"]) == "deny_all"
     assert sdk_value(resume_call["sandbox"]) == "workspace-write"
 
     run_call = thread._thread.run_calls[0]
+    assert run_call["cwd"] == str(tmp_path.resolve())
     assert sdk_value(run_call["approval_mode"]) == "deny_all"
     assert sdk_value(run_call["effort"]) == "xhigh"
-    assert run_call["sandbox_policy"].type == "workspaceWrite"
+    assert sdk_value(run_call["sandbox"]) == "workspace-write"
 
 
 def test_shared_agent_runtime_run_config_can_override_thread_policy(
@@ -142,7 +144,7 @@ def test_shared_agent_runtime_run_config_can_override_thread_policy(
     )
 
     assert sdk_value(codex.started_threads[0]["sandbox"]) == "read-only"
-    assert thread._thread.run_calls[0]["sandbox_policy"].type == "workspaceWrite"
+    assert sdk_value(thread._thread.run_calls[0]["sandbox"]) == "workspace-write"
 
 
 def test_shared_agent_runtime_closes_owned_codex_client(tmp_path: Path) -> None:

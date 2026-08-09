@@ -150,11 +150,6 @@ def sdk_value(value: object) -> object:
     return getattr(value, "value", value)
 
 
-class FakeSandboxPolicy:
-    def __init__(self, type: str) -> None:
-        self.type = type
-
-
 def thread_call_from_config(config: AgentRunConfig) -> dict[str, object]:
     return {
         "approval_mode": "deny_all" if config.role == "reviewer" else "auto_review",
@@ -166,16 +161,13 @@ def thread_call_from_config(config: AgentRunConfig) -> dict[str, object]:
 
 
 def run_call_from_config(config: AgentRunConfig) -> dict[str, object]:
-    sandbox_policy_type = (
-        "workspaceWrite" if config.role == "implementer" else "readOnly"
-    )
     return {
         "approval_mode": "deny_all" if config.role == "reviewer" else "auto_review",
         "cwd": str(config.cwd),
         "effort": config.effort,
         "model": config.model,
         "output_schema": config.output_schema,
-        "sandbox_policy": FakeSandboxPolicy(sandbox_policy_type),
+        "sandbox": ("workspace-write" if config.role == "implementer" else "read-only"),
     }
 
 
@@ -780,7 +772,7 @@ def test_plan_active_task_starts_planner_thread_and_records_planned_output(
     assert "TASK-1" in run_call["input"]
     assert run_call["cwd"] == str(target_repository.resolve())
     assert sdk_value(run_call["approval_mode"]) == "auto_review"
-    assert run_call["sandbox_policy"].type == "readOnly"
+    assert sdk_value(run_call["sandbox"]) == "read-only"
     assert sdk_value(run_call["effort"]) == "high"
     assert run_call["output_schema"]["title"] == "PlannerOutput"
 
@@ -1242,7 +1234,7 @@ def test_run_active_task_implementer_runs_from_approved_plan_and_resumes_thread(
     assert "Human-edited Approved Plan" not in run_call["input"]
     assert run_call["cwd"] == str(target_repository.resolve())
     assert sdk_value(run_call["approval_mode"]) == "auto_review"
-    assert run_call["sandbox_policy"].type == "workspaceWrite"
+    assert sdk_value(run_call["sandbox"]) == "workspace-write"
     assert sdk_value(run_call["effort"]) == "high"
     assert run_call["output_schema"]["title"] == "ImplementerResultOutput"
 
@@ -1675,7 +1667,7 @@ def test_run_active_task_reviewer_uses_fresh_read_only_threads_and_records_appro
     assert "diff --git" not in reviewer_input
     assert reviewer_run_call["cwd"] == str(target_repository.resolve())
     assert sdk_value(reviewer_run_call["approval_mode"]) == "deny_all"
-    assert reviewer_run_call["sandbox_policy"].type == "readOnly"
+    assert sdk_value(reviewer_run_call["sandbox"]) == "read-only"
     assert sdk_value(reviewer_run_call["effort"]) == "high"
     assert reviewer_run_call["output_schema"]["title"] == "ReviewerOutput"
 
@@ -3081,7 +3073,7 @@ def test_plan_active_task_resolves_planner_questions_with_context_and_human_answ
     assert str(planning_artifact_path) in context_run_call["input"]
     assert context_run_call["cwd"] == str(target_repository.resolve())
     assert sdk_value(context_run_call["approval_mode"]) == "auto_review"
-    assert context_run_call["sandbox_policy"].type == "readOnly"
+    assert sdk_value(context_run_call["sandbox"]) == "read-only"
     assert context_run_call["output_schema"]["title"] == "ContextAnswersOutput"
 
     assert len(human_batches) == 1

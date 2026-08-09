@@ -7,12 +7,8 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from openai_codex import ApprovalMode as CodexApprovalMode
-from openai_codex import Codex
-from openai_codex.generated.v2_all import (
-    ReadOnlySandboxPolicy,
-    WorkspaceWriteSandboxPolicy,
-)
-from openai_codex.types import ReasoningEffort, SandboxMode
+from openai_codex import Codex, Sandbox
+from openai_codex.types import ReasoningEffort
 
 
 class RuntimePolicy(str, Enum):
@@ -104,7 +100,7 @@ class AgentRuntime:
             "cwd": str(cwd),
             "developer_instructions": config.developer_instructions,
             "model": config.model,
-            "sandbox": _sandbox_mode(policy),
+            "sandbox": _sandbox(policy),
         }
         if config.thread_id is None:
             thread = self._client().thread_start(**thread_kwargs)
@@ -154,7 +150,7 @@ class AgentThread:
             effort=_reasoning_effort(config.effort),
             model=config.model or self._model,
             output_schema=config.output_schema,
-            sandbox_policy=_sandbox_policy(policy, cwd),
+            sandbox=_sandbox(policy),
         )
         return AgentTurnResult(final_response=getattr(result, "final_response", None))
 
@@ -163,21 +159,10 @@ def _codex_approval(approval: RuntimeApproval) -> CodexApprovalMode:
     return CodexApprovalMode(approval.value)
 
 
-def _sandbox_mode(policy: RuntimePolicy) -> SandboxMode:
+def _sandbox(policy: RuntimePolicy) -> Sandbox:
     if policy == RuntimePolicy.WORKSPACE_WRITE:
-        return SandboxMode.workspace_write
-    return SandboxMode.read_only
-
-
-def _sandbox_policy(
-    policy: RuntimePolicy, cwd: Path
-) -> ReadOnlySandboxPolicy | WorkspaceWriteSandboxPolicy:
-    if policy == RuntimePolicy.WORKSPACE_WRITE:
-        return WorkspaceWriteSandboxPolicy(
-            type="workspaceWrite",
-            writable_roots=[str(cwd)],
-        )
-    return ReadOnlySandboxPolicy(type="readOnly")
+        return Sandbox.workspace_write
+    return Sandbox.read_only
 
 
 def _reasoning_effort(effort: str | None) -> ReasoningEffort | None:
