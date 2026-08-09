@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from agent_control_plane.research_experiment_controller.artifacts import (
     ResearchOutcome,
     Summary,
@@ -23,6 +25,15 @@ DATA_AUDIT_FAILURE_CLASSIFICATIONS = frozenset(
         "prerequisite_command_failed",
     }
 )
+
+
+def terminal_record_consumes_budget(record: Mapping[str, object]) -> bool:
+    """Return whether a terminal Experiment consumes one scientific budget slot."""
+    return not (
+        record.get("outcome") == ResearchOutcome.run_failed.value
+        and record.get("failed_stage") == "controller"
+        and record.get("failure_classification") == "runner_exception"
+    )
 
 
 def classify_data_audit_failure(failure_classification: str) -> Summary:

@@ -21,6 +21,7 @@ from agent_control_plane.control_plane.usage_limit import (
 from agent_control_plane.research_experiment_controller import hatchet_workflow
 from agent_control_plane.research_experiment_controller import durable_shell
 from agent_control_plane.research_experiment_controller.controller import (
+    ResearchRunError,
     run_research_loop,
     start_research_run,
 )
@@ -520,26 +521,26 @@ def test_usage_limit_retry_preserves_dirty_in_progress_worktree(
     async def durable_sleep(seconds: float) -> None:
         sleeps.append(seconds)
 
-    result = asyncio.run(
-        run_research_shell(
-            ResearchRunInput(
-                research_run_id=run.research_run_id,
-                research_program_root=str(run.run_directory.parents[1]),
-            ),
-            controller_runner=lambda input: run_research_loop(
-                input.research_run_id,
-                research_program_root=input.research_program_root,
-                experiment_runner=experiment_runner,
-            ),
-            durable_sleep=durable_sleep,
+    with pytest.raises(ResearchRunError, match="Existing Experiment Worktree is dirty"):
+        asyncio.run(
+            run_research_shell(
+                ResearchRunInput(
+                    research_run_id=run.research_run_id,
+                    research_program_root=str(run.run_directory.parents[1]),
+                ),
+                controller_runner=lambda input: run_research_loop(
+                    input.research_run_id,
+                    research_program_root=input.research_program_root,
+                    experiment_runner=experiment_runner,
+                ),
+                durable_sleep=durable_sleep,
+            )
         )
-    )
 
     summary = read_json_object(run.experiments_directory / "EXP-0001" / "summary.json")
     worktree_path = (
         run.run_directory.parents[1] / "worktrees" / run.research_run_id / "EXP-0001"
     )
-    assert result["status"] == "completed"
     assert sleeps == [11.0]
     assert runtime.run_calls == 1
     assert summary["outcome"] == "run_failed"

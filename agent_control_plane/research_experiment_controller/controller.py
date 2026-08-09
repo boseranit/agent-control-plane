@@ -22,6 +22,7 @@ from agent_control_plane.research_experiment_controller.ledger import (
 from agent_control_plane.research_experiment_controller.outcomes import (
     classify_run_failed,
     should_stop_research_run,
+    terminal_record_consumes_budget,
 )
 from agent_control_plane.research_experiment_controller.research_run_spec import (
     load_research_run_spec,
@@ -76,7 +77,7 @@ class ResearchRun:
 
 
 class ResearchRunError(RuntimeError):
-    """Raised when a Research Run cannot be started or loaded."""
+    """Raised when a Research Run cannot be started, loaded, or continued."""
 
 
 ExperimentRunner = Callable[[ExperimentFlowRequest], dict[str, Any]]
@@ -228,7 +229,7 @@ def run_research_loop(
             return _loop_result(research_run_id, state)
         if state.get("status") != "running":
             raise ResearchRunError("Research Run state is not running.")
-        if len(_experiments(state)) >= _max_experiments(state):
+        if _experiment_budget_count(state) >= _max_experiments(state):
             _complete_research_run(run, state)
             return _loop_result(research_run_id, state)
 
@@ -401,6 +402,11 @@ def _record_terminal_result(
         experiment_id=experiment_id,
         outcome=terminal_summary["outcome"],
     )
+    if not terminal_record_consumes_budget(terminal_summary):
+        raise ResearchRunError(
+            f"Research Experiment {experiment_id} runner failed: "
+            f"{terminal_summary.get('outcome_reason')}"
+        )
     return {
         "status": "experiment_completed",
         "experiment_id": experiment_id,
@@ -445,6 +451,13 @@ def _max_experiments(state: dict[str, Any]) -> int:
     return max_experiments
 
 
+def _experiment_budget_count(state: dict[str, Any]) -> int:
+    return sum(
+        terminal_record_consumes_budget(record)
+        for record in _experiments(state).values()
+    )
+
+
 def _complete_research_run(run: ResearchRun, state: dict[str, Any]) -> None:
     state["status"] = "completed"
     state["current_phase"] = "completed"
@@ -462,5 +475,5 @@ def _loop_result(research_run_id: str, state: dict[str, Any]) -> dict[str, Any]:
     return {
         "status": "completed",
         "research_run_id": research_run_id,
-        "experiments_completed": len(_experiments(state)),
+        "experiments_completed": _experiment_budget_count(state),
     }
