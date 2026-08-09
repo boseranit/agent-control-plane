@@ -94,6 +94,23 @@ def test_research_agent_prompts_encode_optional_artifact_backfill_policy() -> No
     assert "Exploratory diagnostics are attached to the locked confirmatory plan" in evaluator
 
 
+def test_planning_prompts_keep_admissibility_in_the_human_contract() -> None:
+    prompts = (
+        prompt_for_role(ResearchAgentRole.STRATEGIST),
+        prompt_for_role(ResearchAgentRole.CRITIC),
+    )
+
+    for prompt in prompts:
+        assert "human-authored Research Run Spec" in prompt
+        assert "human context it references define scientific admissibility" in prompt
+        assert "Enforce that existing contract" in prompt
+        assert "do not invent new prerequisite declarations or success gates" in prompt
+        assert "digest establishes byte identity and provenance only" in prompt
+        assert "does not establish causal validity or scientific admissibility" in prompt
+        assert "exact required inputs, permitted date bounds, and causal constraints" in prompt
+        assert "wherever the existing contract requires them" in prompt
+
+
 def test_research_agent_prompts_encode_continuation_behavior() -> None:
     strategist = prompt_for_role(ResearchAgentRole.STRATEGIST)
     implementer = prompt_for_role(ResearchAgentRole.IMPLEMENTER)

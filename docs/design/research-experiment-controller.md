@@ -81,6 +81,18 @@ Every terminal summary also has `outcome_reason`, `failed_stage`, and
 `failure_classification`. Keep these separate from the enum so the enum stays
 small while diagnostics remain precise.
 
+## Scientific Admissibility
+
+The human-authored Research Run Spec and the human context it references are
+authoritative for scientific admissibility. Agents and Critics enforce that
+existing contract; they do not add prerequisite declarations or success gates.
+Exact required inputs, permitted date bounds, and causal constraints remain
+explicit and binding wherever the contract requires them.
+
+A runtime artifact digest records byte identity and provenance. It supports
+integrity and replay, but it does not establish causal validity or make a
+Research Experiment scientifically admissible.
+
 ## Simplified Package Shape
 
 Use these conceptual areas, not necessarily these exact files:
