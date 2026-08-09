@@ -165,7 +165,23 @@ def test_exposes_selected_budget_with_default_command_timeout(tmp_path: Path) ->
     assert spec.selected_budget.month_start == "2026-01"
     assert spec.selected_budget.month_end == "2026-01"
     assert spec.selected_budget.max_runtime_minutes == 5
+    assert spec.selected_budget.maximum_memory_bytes is None
     assert spec.selected_budget.default_command_timeout_seconds == 300
+
+
+def test_selected_budget_round_trips_a_hard_memory_limit(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    data = minimal_spec_data(repo)
+    data["budgets"]["smoke"]["maximum_memory_bytes"] = 2 * 1024**3
+
+    spec = load_research_run_spec(write_spec_data(tmp_path, data, "memory-limit"))
+
+    assert spec.selected_budget.maximum_memory_bytes == 2 * 1024**3
+    assert (
+        resolved_spec_dict(spec)["budgets"]["smoke"]["maximum_memory_bytes"]
+        == 2 * 1024**3
+    )
 
 
 def test_applies_defaults_and_accepts_stop_on_prerequisites_failed_false(
@@ -386,6 +402,11 @@ def test_snapshot_load_ignores_embedded_research_program_root(
             "budget_runtime_not_positive",
             {"budgets": {"smoke": {"max_runtime_minutes": 0}}},
             "max_runtime_minutes.*positive",
+        ),
+        (
+            "budget_memory_not_positive",
+            {"budgets": {"smoke": {"maximum_memory_bytes": 0}}},
+            "maximum_memory_bytes.*positive",
         ),
         (
             "implementation_repairs_not_positive",

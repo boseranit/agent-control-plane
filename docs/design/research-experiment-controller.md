@@ -227,6 +227,16 @@ cwd, env overlay, timeout, stdout log path, stderr log path, and structured
 result. Command metrics aggregate command count, pass/fail counts, status counts,
 durations, env overlay, exit codes, and log paths.
 
+An optional budget `maximum_memory_bytes` is a hard aggregate ceiling for each
+controller-owned command process tree and for the Codex app-server process tree,
+including commands launched by agents. Linux systemd user scopes enforce the
+ceiling with swap disabled. A requested boundary fails closed when unavailable;
+agents do not monitor, approve, or retry commands based on sampled memory.
+Memory exhaustion is a systemic controller failure: command metrics remain
+durable and implementation repair does not rerun the command. Land the systemic
+runner-failure policy first so this failure stops the invocation without
+consuming scientific budget.
+
 Worktree manager:
 Creates or reuses one preserved experiment worktree per selected experiment.
 Reject dirty existing worktrees. Do not clean up automatically.
@@ -342,7 +352,7 @@ This is controller-owned, not agent-owned.
 Context includes:
 
 - Research Run Spec snapshot fields
-- selected budget and default command timeout
+- selected budget, default command timeout, and hard process-tree memory limit
 - canonical input data root
 - experiment data root
 - artifact backfill policy: canonical data is read-only; optional experiment

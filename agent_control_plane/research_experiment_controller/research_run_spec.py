@@ -17,6 +17,7 @@ class ResearchBudget:
     month_start: str
     month_end: str
     max_runtime_minutes: int
+    maximum_memory_bytes: int | None = None
 
     @property
     def default_command_timeout_seconds(self) -> int:
@@ -197,6 +198,11 @@ def resolved_spec_dict(
                 "month_start": budget.month_start,
                 "month_end": budget.month_end,
                 "max_runtime_minutes": budget.max_runtime_minutes,
+                **(
+                    {"maximum_memory_bytes": budget.maximum_memory_bytes}
+                    if budget.maximum_memory_bytes is not None
+                    else {}
+                ),
             }
             for name, budget in (
                 (name, spec.budgets[name]) for name in sorted(spec.budgets)
@@ -253,6 +259,11 @@ def _load_budgets(value: Any) -> dict[str, ResearchBudget]:
             month_start=_required_string(item, "month_start"),
             month_end=_required_string(item, "month_end"),
             max_runtime_minutes=_positive_int(item, "max_runtime_minutes", 1),
+            maximum_memory_bytes=(
+                _positive_int(item, "maximum_memory_bytes", 1)
+                if "maximum_memory_bytes" in item
+                else None
+            ),
         )
     return budgets
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -7,12 +9,16 @@ from pathlib import Path
 
 import pytest
 
+from agent_control_plane.control_plane import command_runner as command_runner_module
 from agent_control_plane.control_plane.command_runner import (
     CommandResult,
     CommandSpec,
     run_command,
     run_command_combined_log,
     write_command_metrics,
+)
+from agent_control_plane.control_plane.systemd_scope import (
+    ResourceBoundaryUnavailable,
 )
 
 
@@ -29,6 +35,46 @@ def test_command_spec_rejects_shell_strings_empty_argv_and_non_string_parts(
 ) -> None:
     with pytest.raises(ValueError):
         CommandSpec(name="bad", argv=argv)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("maximum_memory_bytes", [0, -1, True, 1.5])
+def test_command_spec_rejects_invalid_memory_limits(
+    maximum_memory_bytes: object,
+) -> None:
+    with pytest.raises(ValueError, match="positive integer"):
+        CommandSpec(
+            name="bad-memory-limit",
+            argv=["true"],
+            maximum_memory_bytes=maximum_memory_bytes,  # type: ignore[arg-type]
+        )
+
+
+def test_requested_memory_boundary_failure_propagates_as_systemic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class UnavailableScope:
+        @classmethod
+        def create(cls, maximum_memory_bytes: int, *, purpose: str) -> None:
+            raise ResourceBoundaryUnavailable("systemd user manager unavailable")
+
+    monkeypatch.setattr(
+        command_runner_module,
+        "SystemdMemoryScope",
+        UnavailableScope,
+    )
+
+    with pytest.raises(ResourceBoundaryUnavailable, match="user manager"):
+        run_command(
+            CommandSpec(
+                name="bounded",
+                argv=["true"],
+                maximum_memory_bytes=123456,
+            ),
+            cwd=tmp_path,
+            stdout_path=tmp_path / "stdout.log",
+            stderr_path=tmp_path / "stderr.log",
+        )
 
 
 def test_run_command_uses_cwd_and_env_overlay(
@@ -249,6 +295,8 @@ def test_write_command_metrics_writes_deterministic_summary(tmp_path: Path) -> N
       "duration_seconds": 1.2,
       "env": {},
       "exit_code": 0,
+      "maximum_memory_bytes": null,
+      "memory_limit_exceeded": false,
       "name": "ok",
       "status": "passed",
       "stderr_path": "/logs/ok.err",
@@ -263,6 +311,8 @@ def test_write_command_metrics_writes_deterministic_summary(tmp_path: Path) -> N
       "duration_seconds": 0.3,
       "env": {},
       "exit_code": 1,
+      "maximum_memory_bytes": null,
+      "memory_limit_exceeded": false,
       "name": "bad",
       "status": "failed",
       "stderr_path": "/logs/bad.err",
@@ -278,6 +328,8 @@ def test_write_command_metrics_writes_deterministic_summary(tmp_path: Path) -> N
       "duration_seconds": 0.5,
       "env": {},
       "exit_code": null,
+      "maximum_memory_bytes": null,
+      "memory_limit_exceeded": false,
       "name": "slow",
       "status": "timed_out",
       "stderr_path": "/logs/slow.err",
@@ -319,3 +371,74 @@ def test_run_command_combined_log_writes_stdout_and_stderr_to_one_log(
     assert result.stderr_path == str(log_path.resolve())
     assert "stdout-combined" in log_text
     assert "stderr-combined" in log_text
+
+
+def _systemd_user_memory_scopes_available() -> bool:
+    if sys.platform != "linux":
+        return False
+    if not Path("/sys/fs/cgroup/cgroup.controllers").exists():
+        return False
+    systemctl = shutil.which("systemctl")
+    if systemctl is None or shutil.which("systemd-run") is None:
+        return False
+    try:
+        completed = subprocess.run(
+            [systemctl, "--user", "show-environment"],
+            check=False,
+            capture_output=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return completed.returncode == 0
+
+
+@pytest.mark.skipif(
+    not _systemd_user_memory_scopes_available(),
+    reason="systemd user cgroup scopes are unavailable",
+)
+def test_hard_memory_limit_kills_the_command_process_tree(tmp_path: Path) -> None:
+    maximum_memory_bytes = 32 * 1024 * 1024
+    stderr_path = tmp_path / "memory.stderr.log"
+
+    result = run_command(
+        CommandSpec(
+            name="memory-boundary",
+            argv=[
+                sys.executable,
+                "-c",
+                "bytearray(256 * 1024 * 1024)",
+            ],
+            maximum_memory_bytes=maximum_memory_bytes,
+        ),
+        cwd=tmp_path,
+        stdout_path=tmp_path / "memory.stdout.log",
+        stderr_path=stderr_path,
+    )
+
+    assert result.status == "memory_limit_exceeded"
+    assert result.maximum_memory_bytes == maximum_memory_bytes
+    assert result.memory_limit_exceeded is True
+    assert result.argv[0] == sys.executable
+    assert "hard process-tree memory limit" in stderr_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.skipif(
+    not _systemd_user_memory_scopes_available(),
+    reason="systemd user cgroup scopes are unavailable",
+)
+def test_memory_scope_preserves_an_ordinary_nonzero_exit(tmp_path: Path) -> None:
+    result = run_command(
+        CommandSpec(
+            name="bounded-nonzero",
+            argv=[sys.executable, "-c", "raise SystemExit(7)"],
+            maximum_memory_bytes=128 * 1024 * 1024,
+        ),
+        cwd=tmp_path,
+        stdout_path=tmp_path / "nonzero.stdout.log",
+        stderr_path=tmp_path / "nonzero.stderr.log",
+    )
+
+    assert result.status == "failed"
+    assert result.exit_code == 7
+    assert result.memory_limit_exceeded is False

@@ -224,6 +224,7 @@ def test_context_outputs_include_spec_budget_and_git_facts(tmp_path: Path) -> No
         "month_start": "2026-01",
         "month_end": "2026-02",
         "max_runtime_minutes": 7,
+        "maximum_memory_bytes": None,
         "default_command_timeout_seconds": 420,
     }
     assert summary["data_root"] == str(data_root)
@@ -238,6 +239,7 @@ def test_context_outputs_include_spec_budget_and_git_facts(tmp_path: Path) -> No
     assert summary["git"]["changed_files"] == ["scratch.txt"]
     assert "Test peer residual forecasting." in output.context_pack_text
     assert "default timeout seconds: 420" in output.context_pack_text
+    assert "hard process-tree memory bytes: unbounded" in output.context_pack_text
     assert "scratch.txt" in output.context_pack_text
 
 

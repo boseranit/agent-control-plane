@@ -12,6 +12,7 @@ from agent_control_plane.control_plane.command_runner import (
     run_command,
     write_command_metrics,
 )
+from agent_control_plane.control_plane.systemd_scope import ResourceLimitExceeded
 from agent_control_plane.research_experiment_controller.artifacts import (
     CommandDeclaration,
     command_declaration_record,
@@ -42,6 +43,7 @@ def run_verification_commands(
     repo_root: str | Path | None = None,
     timeout_seconds: float,
     max_repairs: int,
+    maximum_memory_bytes: int | None = None,
     repair_callback: RepairCallback | None = None,
 ) -> dict[str, Any]:
     resolved_cwd = Path(cwd).resolve()
@@ -62,10 +64,20 @@ def run_verification_commands(
                 repo_root=repo_root,
             ),
             timeout_seconds=timeout_seconds,
+            maximum_memory_bytes=maximum_memory_bytes,
             attempt=attempt,
         )
         all_results.extend(attempt_results)
         write_command_metrics(resolved_run_dir / "command_metrics.json", all_results)
+        memory_failure = next(
+            (result for result in attempt_results if result.memory_limit_exceeded),
+            None,
+        )
+        if memory_failure is not None:
+            raise ResourceLimitExceeded(
+                f"Verification command {memory_failure.name!r} exceeded the hard "
+                f"memory limit of {memory_failure.maximum_memory_bytes} bytes."
+            )
         if all(result.status == "passed" for result in attempt_results):
             return {
                 "status": "passed",
@@ -110,11 +122,17 @@ def _run_attempt(
     run_dir: Path,
     env: dict[str, str],
     timeout_seconds: float,
+    maximum_memory_bytes: int | None,
     attempt: int,
 ) -> list[CommandResult]:
     return [
         run_command(
-            _command_spec(command, index, timeout_seconds),
+            _command_spec(
+                command,
+                index,
+                timeout_seconds,
+                maximum_memory_bytes,
+            ),
             cwd=cwd,
             stdout_path=_log_path(run_dir, attempt, command, index, "stdout"),
             stderr_path=_log_path(run_dir, attempt, command, index, "stderr"),
@@ -128,12 +146,14 @@ def _command_spec(
     command: CommandDeclaration | dict[str, Any],
     index: int,
     default_timeout_seconds: float,
+    maximum_memory_bytes: int | None,
 ) -> CommandSpec:
     data = command_declaration_record(command)
     return CommandSpec(
         name=str(data.get("name") or f"verification-{index}"),
         argv=data["argv"],
         timeout_seconds=float(data.get("timeout_seconds") or default_timeout_seconds),
+        maximum_memory_bytes=maximum_memory_bytes,
     )
 
 

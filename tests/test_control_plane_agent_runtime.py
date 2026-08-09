@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+from agent_control_plane.control_plane import agent_runtime as agent_runtime_module
 from agent_control_plane.control_plane.agent_runtime import (
+    AgentMemoryLimitExceeded,
     AgentRunConfig,
     AgentRuntime,
     RuntimeApproval,
@@ -36,6 +40,28 @@ class FakeCodexThread:
     def run(self, input: str, **kwargs: object) -> object:
         self.run_calls.append({"input": input, **kwargs})
         return type("TurnResult", (), {"final_response": '{"status": "ok"}'})()
+
+
+class FakeMemoryScope:
+    def __init__(self, maximum_memory_bytes: int) -> None:
+        self.maximum_memory_bytes = maximum_memory_bytes
+        self.commands: list[tuple[str, ...]] = []
+        self.result_value: str | None = None
+        self.stopped = False
+        self.cleaned = False
+
+    def command_argv(self, argv: tuple[str, ...]) -> tuple[str, ...]:
+        self.commands.append(argv)
+        return ("memory-scope", *argv)
+
+    def result(self) -> str | None:
+        return self.result_value
+
+    def stop(self) -> None:
+        self.stopped = True
+
+    def cleanup(self) -> None:
+        self.cleaned = True
 
 
 def sdk_value(value: object) -> object:
@@ -154,3 +180,107 @@ def test_shared_agent_runtime_closes_owned_codex_client(tmp_path: Path) -> None:
         runtime.open_thread(AgentRunConfig(role="strategist", cwd=tmp_path))
 
     assert codex.closed is True
+
+
+def test_owned_agent_runtime_launches_codex_inside_one_memory_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    maximum_memory_bytes = 123456
+    scope = FakeMemoryScope(maximum_memory_bytes)
+    codex = FakeCodex()
+    configs: list[object] = []
+
+    class FakeScopeFactory:
+        @classmethod
+        def create(cls, requested_bytes: int, *, purpose: str) -> FakeMemoryScope:
+            assert requested_bytes == maximum_memory_bytes
+            assert purpose == "codex-app-server"
+            return scope
+
+    def codex_factory(config: object) -> FakeCodex:
+        configs.append(config)
+        return codex
+
+    monkeypatch.setattr(
+        agent_runtime_module,
+        "SystemdMemoryScope",
+        FakeScopeFactory,
+    )
+    monkeypatch.setattr(
+        agent_runtime_module,
+        "bundled_codex_path",
+        lambda: Path("/opt/codex/bin/codex"),
+    )
+
+    with AgentRuntime(
+        codex_factory=codex_factory,
+        maximum_memory_bytes=maximum_memory_bytes,
+    ) as runtime:
+        runtime.open_thread(AgentRunConfig(role="strategist", cwd=tmp_path))
+
+    assert len(configs) == 1
+    assert getattr(configs[0], "launch_args_override") == (
+        "memory-scope",
+        "/opt/codex/bin/codex",
+        "app-server",
+        "--listen",
+        "stdio://",
+    )
+    assert scope.commands == [
+        (
+            "/opt/codex/bin/codex",
+            "app-server",
+            "--listen",
+            "stdio://",
+        )
+    ]
+    assert codex.closed is True
+    assert scope.stopped is True
+    assert scope.cleaned is True
+
+
+def test_agent_turn_reports_a_hard_memory_kill(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    maximum_memory_bytes = 123456
+    scope = FakeMemoryScope(maximum_memory_bytes)
+    scope.result_value = "oom-kill"
+
+    class FailingThread(FakeCodexThread):
+        def run(self, input: str, **kwargs: object) -> object:
+            raise RuntimeError("app server connection closed")
+
+    class FailingCodex(FakeCodex):
+        def thread_start(self, **kwargs: object) -> FailingThread:
+            return FailingThread("thread-1")
+
+    class FakeScopeFactory:
+        @classmethod
+        def create(cls, requested_bytes: int, *, purpose: str) -> FakeMemoryScope:
+            return scope
+
+    monkeypatch.setattr(
+        agent_runtime_module,
+        "SystemdMemoryScope",
+        FakeScopeFactory,
+    )
+    monkeypatch.setattr(
+        agent_runtime_module,
+        "bundled_codex_path",
+        lambda: Path("/opt/codex/bin/codex"),
+    )
+
+    with AgentRuntime(
+        codex_factory=lambda config: FailingCodex(),
+        maximum_memory_bytes=maximum_memory_bytes,
+    ) as runtime:
+        thread = runtime.open_thread(AgentRunConfig(role="strategist", cwd=tmp_path))
+        with pytest.raises(AgentMemoryLimitExceeded, match="123456 bytes"):
+            thread.run("plan", AgentRunConfig(role="strategist", cwd=tmp_path))
+
+
+def test_agent_runtime_rejects_memory_limit_for_external_client() -> None:
+    with pytest.raises(ValueError, match="externally owned"):
+        AgentRuntime(codex_client=FakeCodex(), maximum_memory_bytes=123456)
