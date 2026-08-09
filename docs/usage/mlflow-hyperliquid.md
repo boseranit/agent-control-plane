@@ -141,7 +141,7 @@ adapter; do not make controller state depend on the MLflow store.
 Use the external controller archive for new HLM research:
 
 ```text
-/home/boser/agent-control-plane-runs/runs/<research-run-id>
+/home/boser/agent-control-plane-runs/programs/<program-id>/runs/<research-run-id>
 ```
 
 The legacy HyperliquidMomentum config shape was:
@@ -157,7 +157,7 @@ specific Research Run directory, for example:
 
 ```yaml
 mlflow:
-  tracking_uri: sqlite:////home/boser/agent-control-plane-runs/runs/<research-run-id>/mlflow/mlflow.db
+  tracking_uri: sqlite:////home/boser/agent-control-plane-runs/programs/<program-id>/runs/<research-run-id>/mlflow/mlflow.db
   experiment_name: <research-run-id>
 ```
 
@@ -173,7 +173,9 @@ worktree:
 ```
 
 With `research_program_root`, controller runs live under `runs/`, preserved
-worktrees under `worktrees/`, and continuation memory under `memory/`.
+worktrees under `worktrees/`, and continuation memory under `memory/`. Start at
+the archive `INDEX.md`, then follow the program, generated run-catalog, and
+per-run indexes to inspect terminal Experiments.
 
 The mirror adapter should log experiment params, tags, numeric metrics, and run
 directory files, but failures in MLflow mirroring must not change the official

@@ -37,6 +37,9 @@ Research Program:
 Durable home for one research line across many Research Runs. Every Research
 Run Spec must configure `research_program_root`; it owns human steering docs,
 run directories, preserved worktrees, and generated continuation memory.
+Its human-authored `INDEX.md` owns cross-run interpretation. Generated archive,
+Run-catalog, and per-Run indexes are disposable navigation views over controller
+state, terminal summaries, worktrees, and continuation memory.
 
 Research Run:
 One execution of a snapshotted Research Run Spec. It owns a run directory,
@@ -95,7 +98,7 @@ Use these conceptual areas, not necessarily these exact files:
 - Mirror interface: provider-neutral research run mirror plus MLflow adapter.
 - Shared primitives: JSON/JSONL IO, command runner, usage-limit backoff, generic
   agent runtime, git/hash boundary checks.
-- CLI or shell entry points: start and resume a run.
+- CLI or shell entry points: start, resume, and regenerate navigation.
 
 Important boundary rule: SDK-specific integration code must live behind narrow
 interfaces. In particular, MLflow code belongs in a separate adapter module. The
@@ -109,6 +112,7 @@ The run directory is the canonical inspection surface.
 Simplified shape:
 
 - `<research_program_root>/runs/<research_run_id>/`
+- optional generated `INDEX.md`
 - snapshotted Research Run Spec
 - `state.json`
 - append-only ledger
@@ -760,6 +764,7 @@ Minimum user-facing commands:
 
 - start a Research Run from a Research Run Spec
 - resume an existing Research Run
+- regenerate Markdown navigation for a Research Program
 
 Start command:
 
@@ -781,6 +786,17 @@ Resume command:
 - loads existing run
 - invokes the controller loop through an agent runtime
 - prints final status
+
+Index command:
+
+```bash
+research-experiment-controller index \
+  --research-program-root /path/to/program
+```
+
+This explicit command regenerates derived archive, Run-catalog, and per-Run
+indexes. The research loop never reads them and never rewrites the human
+Research Program `INDEX.md`.
 
 CLI should not import MLflow. Keep integration setup behind the mirror adapter.
 

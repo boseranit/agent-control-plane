@@ -210,7 +210,7 @@ researcher unable to answer basic experiment-audit questions:
 A run is one cycle under:
 
 ```text
-/home/boser/agent-control-plane-runs/runs/<research-run-id>/experiments/<experiment-id>/
+/home/boser/agent-control-plane-runs/programs/<program-id>/runs/<research-run-id>/experiments/<experiment-id>/
 ```
 
 It should contain the full chain of agent outputs, command results, logs, and
@@ -221,7 +221,7 @@ final summaries needed to reconstruct what happened.
 Each selected experiment gets an isolated worktree under:
 
 ```text
-/home/boser/agent-control-plane-runs/HyperliquidMomentum-worktrees/<research-run-id>/<experiment-id>/
+/home/boser/agent-control-plane-runs/programs/<program-id>/worktrees/<research-run-id>/<experiment-id>/
 ```
 
 The worktree is the inspection surface for implementation edits. It should be
@@ -631,8 +631,8 @@ The researcher should be able to open one MLflow experiment and:
 
 The researcher should be able to inspect:
 
-- `/home/boser/agent-control-plane-runs/runs/<research-run-id>/experiments/<experiment-id>/`
-- `/home/boser/agent-control-plane-runs/HyperliquidMomentum-worktrees/<research-run-id>/<experiment-id>/`
+- `/home/boser/agent-control-plane-runs/programs/<program-id>/runs/<research-run-id>/experiments/<experiment-id>/`
+- `/home/boser/agent-control-plane-runs/programs/<program-id>/worktrees/<research-run-id>/<experiment-id>/`
 - `/mnt/redbackup/experiment-data/<experiment-name>/<research-run-id>-<experiment-id>/`
 
 These two surfaces should be enough to reconstruct the experiment without tmux
