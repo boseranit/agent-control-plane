@@ -43,6 +43,7 @@ from agent_control_plane.research_experiment_controller.outcomes import (
     classify_completed,
     classify_invalid,
     classify_run_failed,
+    terminal_record_consumes_budget,
 )
 from research_helpers import write_evaluation_result_files, write_signal_panel
 
@@ -1012,11 +1013,12 @@ continuation:
             ),
         )
 
-    run_research_loop(
-        run.research_run_id,
-        research_program_root=run.run_directory.parents[1],
-        experiment_runner=experiment_runner,
-    )
+    with pytest.raises(ResearchRunError, match=expected_reason):
+        run_research_loop(
+            run.research_run_id,
+            research_program_root=run.run_directory.parents[1],
+            experiment_runner=experiment_runner,
+        )
 
     summary = read_json_object(run.experiments_directory / "EXP-0001" / "summary.json")
     assert summary["outcome"] == "run_failed"
@@ -2678,11 +2680,12 @@ def test_partial_research_spec_is_rejected_before_evaluation_lock(
             agent_runtime=runtime,
         )
 
-    run_research_loop(
-        run.research_run_id,
-        research_program_root=run.run_directory.parents[1],
-        experiment_runner=experiment_runner,
-    )
+    with pytest.raises(ResearchRunError):
+        run_research_loop(
+            run.research_run_id,
+            research_program_root=run.run_directory.parents[1],
+            experiment_runner=experiment_runner,
+        )
 
     experiment_dir = run.experiments_directory / "EXP-0001"
     summary = read_json_object(experiment_dir / "summary.json")
@@ -2929,7 +2932,7 @@ def test_terminal_summary_routes_to_experiment_state(tmp_path: Path) -> None:
     assert summary["confirmatory_findings"] == ["IC 0.04"]
 
 
-def test_non_completed_runner_result_records_run_failed_experiment(
+def test_non_systemic_runner_failure_consumes_experiment_budget(
     tmp_path: Path,
 ) -> None:
     repo = tmp_path / "repo"
@@ -2958,34 +2961,127 @@ def test_non_completed_runner_result_records_run_failed_experiment(
     }
     assert state["active_experiment_id"] is None
     assert state["current_phase"] == "completed"
+    assert state["experiment_count"] == 1
+    assert list(state["experiments"]) == ["EXP-0001"]
     assert state["experiments"]["EXP-0001"]["outcome"] == "run_failed"
     assert summary["outcome"] == "run_failed"
     assert summary["failed_stage"] == "controller"
     assert summary["failure_classification"] == "agent_unavailable"
 
 
-def test_runner_exception_records_run_failed_experiment(tmp_path: Path) -> None:
+def test_runner_exception_stops_after_durable_terminal_record(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     spec_path = write_minimal_research_run_spec(tmp_path, repo)
     run = start_research_run(spec_path)
 
+    runner_calls = 0
+
     def experiment_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        nonlocal runner_calls
+        runner_calls += 1
         raise RuntimeError("agent crashed")
+
+    with pytest.raises(
+        ResearchRunError,
+        match="Research Experiment EXP-0001 runner failed: agent crashed",
+    ):
+        run_research_loop(
+            run.research_run_id,
+            research_program_root=run.run_directory.parents[1],
+            experiment_runner=experiment_runner,
+        )
+
+    state = read_json_object(run.state_path)
+    summary = read_json_object(run.experiments_directory / "EXP-0001" / "summary.json")
+    events = read_ledger_events(run.ledger_path)
+    assert runner_calls == 1
+    assert state["status"] == "running"
+    assert state["current_phase"] == "ready_for_experiment"
+    assert state["active_experiment_id"] is None
+    assert state["experiment_count"] == 1
+    assert state["experiments"]["EXP-0001"]["outcome"] == "run_failed"
+    assert state["experiments"]["EXP-0001"]["failed_stage"] == "controller"
+    assert (
+        state["experiments"]["EXP-0001"]["failure_classification"] == "runner_exception"
+    )
+    assert summary["outcome_reason"] == "agent crashed"
+    assert summary["failed_stage"] == "controller"
+    assert summary["failure_classification"] == "runner_exception"
+    assert events[-1] == {
+        "event_type": "experiment_completed",
+        "research_run_id": run.research_run_id,
+        "experiment_id": "EXP-0001",
+        "outcome": "run_failed",
+    }
+
+
+def test_runner_exception_does_not_consume_budget_on_repaired_resume(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    spec_path = write_minimal_research_run_spec(tmp_path, repo, max_experiments=1)
+    run = start_research_run(spec_path)
+    seen: list[str] = []
+
+    def broken_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        seen.append(request.experiment_id)
+        raise RuntimeError("temporary runtime defect")
+
+    with pytest.raises(ResearchRunError, match="temporary runtime defect"):
+        run_research_loop(
+            run.research_run_id,
+            research_program_root=run.run_directory.parents[1],
+            experiment_runner=broken_runner,
+        )
+
+    def repaired_runner(request: ExperimentFlowRequest) -> dict[str, object]:
+        seen.append(request.experiment_id)
+        return run_experiment_flow(
+            request,
+            selection=ExperimentFlowSelection(
+                selected_plan=SelectedPlan(
+                    selected=True,
+                    plan_id="repaired-plan",
+                    rationale="Run after repairing the controller runtime.",
+                    fresh_selection_reason="Fresh selected plan.",
+                ),
+                experiment_design=ExperimentDesign(
+                    verification_commands=[
+                        {"name": "unit", "argv": [sys.executable, "-c", "pass"]}
+                    ],
+                ),
+                terminal_summary=Summary(
+                    outcome=ResearchOutcome.completed_rejected,
+                    outcome_reason="Locked gate failed.",
+                    failed_stage=None,
+                    failure_classification=None,
+                    summary="Experiment rejected.",
+                ),
+            ),
+        )
 
     result = run_research_loop(
         run.research_run_id,
         research_program_root=run.run_directory.parents[1],
-        experiment_runner=experiment_runner,
+        experiment_runner=repaired_runner,
     )
 
     state = read_json_object(run.state_path)
-    summary = read_json_object(run.experiments_directory / "EXP-0001" / "summary.json")
-    assert result["experiments_completed"] == 1
-    assert state["active_experiment_id"] is None
-    assert state["experiments"]["EXP-0001"]["outcome"] == "run_failed"
-    assert summary["outcome_reason"] == "agent crashed"
-    assert summary["failure_classification"] == "runner_exception"
+    assert result == {
+        "status": "completed",
+        "research_run_id": run.research_run_id,
+        "experiments_completed": 1,
+    }
+    assert seen == ["EXP-0001", "EXP-0002"]
+    assert state["status"] == "completed"
+    assert state["experiment_count"] == 2
+    assert list(state["experiments"]) == ["EXP-0001", "EXP-0002"]
+    assert state["experiments"]["EXP-0001"]["failure_classification"] == (
+        "runner_exception"
+    )
+    assert state["experiments"]["EXP-0002"]["outcome"] == "completed_rejected"
 
 
 def test_outcome_classification_hooks_return_summary_artifacts() -> None:
@@ -2998,6 +3094,13 @@ def test_outcome_classification_hooks_return_summary_artifacts() -> None:
 
     assert invalid.model_dump(mode="json")["outcome"] == "invalid"
     assert run_failed.model_dump(mode="json")["outcome"] == "run_failed"
+    assert terminal_record_consumes_budget(run_failed.model_dump(mode="json"))
+    assert not terminal_record_consumes_budget(
+        classify_run_failed(
+            "Runner crashed.",
+            failure_classification="runner_exception",
+        ).model_dump(mode="json")
+    )
     assert completed.model_dump(mode="json") == {
         "outcome": "completed_inconclusive",
         "outcome_reason": "Locked gate underpowered.",

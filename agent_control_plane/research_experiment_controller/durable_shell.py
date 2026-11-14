@@ -11,6 +11,9 @@ from typing import Any, Protocol
 
 from agent_control_plane.control_plane.agent_runtime import AgentRuntime
 from agent_control_plane.control_plane.json_artifacts import read_json_object
+from agent_control_plane.research_experiment_controller.research_run_spec import (
+    load_research_run_spec_snapshot,
+)
 
 
 @dataclass(frozen=True)
@@ -88,9 +91,14 @@ def _run_controller_loop(input: ResearchRunInput) -> dict[str, Any]:
     )
 
     run_directory = _run_directory(input)
+    spec = load_research_run_spec_snapshot(
+        run_directory / "research_run_spec.yaml",
+        research_program_root=input.research_program_root,
+    )
     with AgentRuntime(
         agent_name_prefix="research-experiment",
         session_db_path=run_directory / "agent_sessions.sqlite3",
+        maximum_memory_bytes=spec.selected_budget.maximum_memory_bytes,
     ) as agent_runtime:
         return run_research_loop(
             input.research_run_id,

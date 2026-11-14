@@ -6,6 +6,13 @@ Primary glossary: [CONTEXT.md](../../CONTEXT.md)
 SDK reference: [OpenAI Codex Python SDK API Reference](https://github.com/openai/codex/blob/main/sdk/python/docs/api-reference.md)
 Usage: [Task Control Plane Usage](../usage/task-control-plane.md)
 
+Dependency refreshes use `pixi update` and commit `pixi.lock` for both Linux and
+Windows. The published `openai-codex` package selects its matching CLI runtime;
+do not replace that pairing with a source-tree runtime override. The SDK requires
+`packaging>=26.2`, so the environment must permit that version.
+Ruff's rule selection is explicit in `pyproject.toml`, preserving the established
+checks rather than adopting expanded defaults during a tool upgrade.
+
 ## 1. Purpose
 
 The Task Control Plane is the first Control-Plane Workflow in this Agent Control Plane repo. It coordinates Codex agents through a deterministic software-task loop while keeping the outer workflow in ordinary Python code.

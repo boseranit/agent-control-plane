@@ -5,6 +5,7 @@ import subprocess
 from dataclasses import is_dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -21,6 +22,7 @@ from agent_control_plane.control_plane.usage_limit import (
 from agent_control_plane.research_experiment_controller import hatchet_workflow
 from agent_control_plane.research_experiment_controller import durable_shell
 from agent_control_plane.research_experiment_controller.controller import (
+    ResearchRunError,
     run_research_loop,
     start_research_run,
 )
@@ -217,7 +219,7 @@ def test_default_shell_controller_uses_agent_runtime(
 
     class FakeAgentRuntime:
         def __init__(self, **kwargs: object) -> None:
-            seen["runtime_created"] = bool(kwargs)
+            seen["runtime_kwargs"] = kwargs
 
         def __enter__(self) -> FakeAgentRuntime:
             seen["entered"] = True
@@ -239,6 +241,13 @@ def test_default_shell_controller_uses_agent_runtime(
 
     monkeypatch.setattr(durable_shell, "AgentRuntime", FakeAgentRuntime)
     monkeypatch.setattr(
+        durable_shell,
+        "load_research_run_spec_snapshot",
+        lambda *args, **kwargs: SimpleNamespace(
+            selected_budget=SimpleNamespace(maximum_memory_bytes=987654321)
+        ),
+    )
+    monkeypatch.setattr(
         "agent_control_plane.research_experiment_controller.controller.run_research_loop",
         fake_run_research_loop,
     )
@@ -252,7 +261,18 @@ def test_default_shell_controller_uses_agent_runtime(
 
     assert result == {"status": "completed", "research_run_id": "run-1"}
     assert seen["agent_runtime"].__class__ is FakeAgentRuntime
-    assert seen["runtime_created"] is True
+    assert seen["runtime_kwargs"] == {
+        "agent_name_prefix": "research-experiment",
+        "session_db_path": (
+            tmp_path
+            / "programs"
+            / "run-1"
+            / "runs"
+            / "run-1"
+            / "agent_sessions.sqlite3"
+        ),
+        "maximum_memory_bytes": 987654321,
+    }
     assert seen["entered"] is True
     assert seen["exited"] is True
 
@@ -520,26 +540,26 @@ def test_usage_limit_retry_preserves_dirty_in_progress_worktree(
     async def durable_sleep(seconds: float) -> None:
         sleeps.append(seconds)
 
-    result = asyncio.run(
-        run_research_shell(
-            ResearchRunInput(
-                research_run_id=run.research_run_id,
-                research_program_root=str(run.run_directory.parents[1]),
-            ),
-            controller_runner=lambda input: run_research_loop(
-                input.research_run_id,
-                research_program_root=input.research_program_root,
-                experiment_runner=experiment_runner,
-            ),
-            durable_sleep=durable_sleep,
+    with pytest.raises(ResearchRunError, match="Existing Experiment Worktree is dirty"):
+        asyncio.run(
+            run_research_shell(
+                ResearchRunInput(
+                    research_run_id=run.research_run_id,
+                    research_program_root=str(run.run_directory.parents[1]),
+                ),
+                controller_runner=lambda input: run_research_loop(
+                    input.research_run_id,
+                    research_program_root=input.research_program_root,
+                    experiment_runner=experiment_runner,
+                ),
+                durable_sleep=durable_sleep,
+            )
         )
-    )
 
     summary = read_json_object(run.experiments_directory / "EXP-0001" / "summary.json")
     worktree_path = (
         run.run_directory.parents[1] / "worktrees" / run.research_run_id / "EXP-0001"
     )
-    assert result["status"] == "completed"
     assert sleeps == [11.0]
     assert runtime.run_calls == 1
     assert summary["outcome"] == "run_failed"

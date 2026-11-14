@@ -11,6 +11,7 @@ from agent_control_plane.control_plane.command_runner import (
     run_command,
     write_command_metrics,
 )
+from agent_control_plane.control_plane.systemd_scope import ResourceLimitExceeded
 from agent_control_plane.research_experiment_controller.artifacts import (
     CommandDeclaration,
     DataAudit,
@@ -33,6 +34,7 @@ class PrerequisiteAuditRequest:
     cwd: str | Path
     run_dir: str | Path
     timeout_seconds: float
+    maximum_memory_bytes: int | None = None
 
 
 def run_data_audit_phase(request: PrerequisiteAuditRequest) -> dict[str, Any]:
@@ -51,32 +53,39 @@ def run_data_audit_phase(request: PrerequisiteAuditRequest) -> dict[str, Any]:
         write_command_metrics(run_dir / "command_metrics.json", command_results)
         return _failed_result("data_root_missing", command_results)
 
-    for phase, commands in (
-        ("prerequisite", request.prerequisite_commands),
-        ("data_audit", request.data_audit_commands),
-    ):
-        for index, command in enumerate(commands, start=1):
-            data = command_declaration_record(command)
-            result = run_command(
-                CommandSpec(
-                    name=str(data.get("name") or f"{phase}-{index}"),
-                    argv=data["argv"],
-                    timeout_seconds=float(
-                        data.get("timeout_seconds") or request.timeout_seconds
+    try:
+        for phase, commands in (
+            ("prerequisite", request.prerequisite_commands),
+            ("data_audit", request.data_audit_commands),
+        ):
+            for index, command in enumerate(commands, start=1):
+                data = command_declaration_record(command)
+                result = run_command(
+                    CommandSpec(
+                        name=str(data.get("name") or f"{phase}-{index}"),
+                        argv=data["argv"],
+                        timeout_seconds=float(
+                            data.get("timeout_seconds") or request.timeout_seconds
+                        ),
+                        maximum_memory_bytes=request.maximum_memory_bytes,
                     ),
-                ),
-                cwd=request.cwd,
-                stdout_path=_log_path(run_dir, phase, index, data, "stdout"),
-                stderr_path=_log_path(run_dir, phase, index, data, "stderr"),
-                env=env,
-            )
-            command_results.append(result)
-            if result.status != "passed" and failure_classification is None:
-                failure_classification = str(
-                    data.get("failure_classification") or "prerequisite_command_failed"
+                    cwd=request.cwd,
+                    stdout_path=_log_path(run_dir, phase, index, data, "stdout"),
+                    stderr_path=_log_path(run_dir, phase, index, data, "stderr"),
+                    env=env,
                 )
-
-    write_command_metrics(run_dir / "command_metrics.json", command_results)
+                command_results.append(result)
+                if result.memory_limit_exceeded:
+                    raise ResourceLimitExceeded(
+                        f"Data-audit command {result.name!r} exceeded the hard "
+                        f"memory limit of {result.maximum_memory_bytes} bytes."
+                    )
+                if result.status != "passed" and failure_classification is None:
+                    failure_classification = str(
+                        data.get("failure_classification") or "prerequisite_command_failed"
+                    )
+    finally:
+        write_command_metrics(run_dir / "command_metrics.json", command_results)
     if failure_classification is not None:
         return _failed_result(failure_classification, command_results)
 

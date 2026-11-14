@@ -227,6 +227,17 @@ cwd, env overlay, timeout, stdout log path, stderr log path, and structured
 result. Command metrics aggregate command count, pass/fail counts, status counts,
 durations, env overlay, exit codes, and log paths.
 
+An optional budget `maximum_memory_bytes` is a hard aggregate ceiling for each
+controller-owned command process tree and for the Codex app-server process tree,
+including commands launched by agents. Linux systemd user scopes enforce the
+ceiling with swap disabled. A requested boundary fails closed when unavailable;
+agents do not monitor, approve, or retry commands based on sampled memory.
+Memory exhaustion is a systemic controller failure: command metrics remain
+durable, later verification commands do not run, and implementation repair does
+not rerun the command. If a later boundary cannot be created, metrics preserve
+completed commands and stderr retains the boundary diagnostic. Systemic failures
+stop the invocation without consuming scientific budget.
+
 Worktree manager:
 Creates or reuses one preserved experiment worktree per selected experiment.
 Reject dirty existing worktrees. Do not clean up automatically.
@@ -342,7 +353,7 @@ This is controller-owned, not agent-owned.
 Context includes:
 
 - Research Run Spec snapshot fields
-- selected budget and default command timeout
+- selected budget, default command timeout, and hard process-tree memory limit
 - canonical input data root
 - experiment data root
 - artifact backfill policy: canonical data is read-only; optional experiment
@@ -413,7 +424,7 @@ run_research_loop(research_run_id):
       return completed result
     if state is not running:
       fail controller
-    if experiment_count >= max_experiments:
+    if budgeted_experiment_count >= max_experiments:
       mark run completed
       return completed result
 
@@ -456,8 +467,18 @@ run_one_experiment():
   record terminal experiment in state
   set ready_for_experiment
   ledger experiment_completed
+  if summary is run_failed/controller/runner_exception:
+    raise controller error
   return experiment_completed result
 ```
+
+Every terminal record except `run_failed/controller/runner_exception` consumes
+the Research Run's `max_experiments` budget and contributes to the returned
+`experiments_completed` count. A systemic runner exception remains durably
+recorded but stops that controller invocation so the caller can repair the
+operational fault. Resume allocates the next Experiment id; ids and the state
+`experiment_count` remain append-only even when a record is excluded from the
+scientific budget.
 
 ## Experiment Flow Pseudocode
 
@@ -550,6 +571,8 @@ Command environment:
 - `RESEARCH_DATA_ROOT`
 - `RESEARCH_EXPERIMENT_DATA_ROOT`
 - `HLM_DATA_ROOT`
+- `CRYPTO_DATA_ROOT` (same canonical input root as `RESEARCH_DATA_ROOT`)
+- `RESEARCH_SCRATCH_ROOT` (same writable root as `RESEARCH_EXPERIMENT_DATA_ROOT`)
 - `RESEARCH_RUN_DIR`
 - `RESEARCH_REPO_ROOT`
 
@@ -564,6 +587,10 @@ Allowed data-audit failure classifications:
 - `artifact_missing`
 - `point_in_time_invalid`
 - `prerequisite_command_failed`
+
+Any declared value outside this list is retained in the failure reason for
+diagnosis and normalized to `prerequisite_command_failed` in both the terminal
+summary and data-audit artifact. The failed command remains terminal.
 
 Successful audit writes a passing data-audit artifact and command metrics.
 Failed audit writes failed data-audit artifact, command metrics, logs, and a
