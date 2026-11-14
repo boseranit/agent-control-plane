@@ -14,6 +14,9 @@ from agent_control_plane.research_experiment_controller.durable_shell import (
     ResearchRunInput,
     run_research_shell,
 )
+from agent_control_plane.research_experiment_controller.indexes import (
+    refresh_research_indexes,
+)
 from agent_control_plane.research_experiment_controller.research_run_spec import (
     ResearchRunSpecError,
 )
@@ -40,6 +43,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Research Program root; resume uses its runs/ directory.",
     )
 
+    index_parser = subparsers.add_parser(
+        "index", help="Regenerate Markdown navigation from Research Program artifacts."
+    )
+    index_parser.add_argument(
+        "--research-program-root",
+        required=True,
+        help="Research Program root whose derived indexes should be refreshed.",
+    )
+
     args = parser.parse_args(argv)
     if args.command == "run":
         return _run(args.research_run_spec_path)
@@ -48,6 +60,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.research_run_id,
             research_program_root=args.research_program_root,
         )
+    if args.command == "index":
+        return _index(args.research_program_root)
     parser.error(f"Unsupported command: {args.command}")
     return 2
 
@@ -86,4 +100,15 @@ def _resume(
 
     print(f"Resumed Research Run: {research_run_id}")
     print(f"Status: {result.get('status')}")
+    return 0
+
+
+def _index(research_program_root: str | Path) -> int:
+    try:
+        written = refresh_research_indexes(research_program_root)
+    except (OSError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"Refreshed {len(written)} research indexes.")
     return 0
