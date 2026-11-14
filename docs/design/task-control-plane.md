@@ -10,6 +10,8 @@ Dependency refreshes use `pixi update` and commit `pixi.lock` for both Linux and
 Windows. The published `openai-codex` package selects its matching CLI runtime;
 do not replace that pairing with a source-tree runtime override. The SDK requires
 `packaging>=26.2`, so the environment must permit that version.
+Ruff's rule selection is explicit in `pyproject.toml`, preserving the established
+checks rather than adopting expanded defaults during a tool upgrade.
 
 ## 1. Purpose
 
