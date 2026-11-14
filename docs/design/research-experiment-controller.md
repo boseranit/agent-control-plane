@@ -221,6 +221,11 @@ reasoning effort, output schema, thread id, sandbox policy, and approval policy.
 Strategist and Critic are read-only. Implementer and Evaluator are
 workspace-write.
 
+Research Experiment Controller turns leave the provider output schema unset.
+The controller parses each returned JSON object and validates the requested
+Research Artifact locally with Pydantic. Other workflows may still use the
+runtime's optional output schema.
+
 Command runner:
 Commands are structured records, not shell strings. Use argv with `shell=false`,
 cwd, env overlay, timeout, stdout log path, stderr log path, and structured
@@ -249,6 +254,8 @@ artifacts to propose the next bounded experiment, lock research spec/design,
 select exactly one plan or no plan, close out completed experiments, and emit
 future plan updates. It may use thread memory for continuity, but artifacts are
 authoritative.
+Its first planning turn may instead return only `selected:false` and a rationale;
+that ends the experiment without further agent turns or workspaces.
 
 Critic:
 Fresh read-only thread per critique pass. It independently reviews designs,
@@ -271,8 +278,10 @@ the implementation worktree or locked design artifacts.
 
 ## Artifact Schemas
 
-Use strict schema validation at controller/agent boundaries. Do not over-model
-controller internals.
+Use Pydantic schema validation at controller/agent boundaries. Canonical
+artifacts require their named fields and reject unknown fields. Research Spec
+split, transaction-cost, and gate fields preserve any JSON value chosen by the
+Strategist. Do not over-model controller internals.
 
 Key artifact contracts:
 
@@ -330,8 +339,9 @@ outcome, outcome reason, failed stage, failure classification, human-readable
 summary, confirmatory findings, exploratory findings.
 
 Plan update:
-followups, revisit conditions, blocked paths, reusable worktree flag,
-recommended next experiment kind, implementation reuse notes.
+followups, learning updates, blockers, reusable components, and pending,
+unselected idea ids made obsolete by the experiment. Selected idea status comes
+from the official outcome, not the superseded list.
 
 ## Deterministic Context Build
 
@@ -469,8 +479,11 @@ run_experiment_flow(request):
     create no-op selection
   else:
     write context pack
-    strategist returns proposal, research spec, design, selected plan
-    pipeline enables design critique, implementation, empirical closeout
+    strategist returns proposal or selected:false with rationale
+    if selected:false: disable all downstream phases
+    else:
+      strategist returns research spec, design, selected plan
+      enable design critique, implementation, empirical closeout
 
   write selected plan, design, research spec, feature specs if present
 
@@ -510,7 +523,9 @@ run_experiment_flow(request):
 
 ## Selection and Design Validation
 
-If `selected=false`, end as `no_op`.
+If `selected=false`, end as `no_op`. A first-turn no-plan response contains only
+`selected:false` and its rationale, so no proposal, spec, design, critic,
+worktree, implementation, or evaluation is created.
 
 If a selected plan has no valid experiment design, end as `invalid`.
 

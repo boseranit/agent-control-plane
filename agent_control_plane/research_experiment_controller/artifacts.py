@@ -1,10 +1,17 @@
 from __future__ import annotations
 
-from enum import Enum
 from collections.abc import Sequence
+from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    field_validator,
+    model_validator,
+)
 
 
 class ResearchArtifact(BaseModel):
@@ -64,21 +71,23 @@ class Proposal(ResearchArtifact):
 
 
 class ResearchSpec(ResearchArtifact):
+    """Locked scientific plan for one selected Research Experiment."""
+
     hypothesis: str
     target: str
     prediction_horizon: str
     universe: str
     label: str
     feature_availability_assumptions: list[str]
-    split: dict[str, Any]
+    split: JsonValue
     primary_metric: str
     secondary_metrics: list[str]
     baselines: list[str]
     null_tests: list[str]
-    transaction_cost_assumptions: str
-    success_gates: dict[str, Any]
-    failure_gates: dict[str, Any]
-    inconclusive_gates: dict[str, Any]
+    transaction_cost_assumptions: JsonValue
+    success_gates: JsonValue
+    failure_gates: JsonValue
+    inconclusive_gates: JsonValue
 
 
 class ExperimentDesign(ResearchArtifact):
@@ -322,7 +331,12 @@ class PlanUpdate(ResearchArtifact):
     learning_updates: list[LearningUpdate]
     blockers: list[BlockerCard]
     reusable_components: list[ReusableComponentCard]
-    superseded_idea_ids: list[str]
+    superseded_idea_ids: list[str] = Field(
+        description=(
+            "Pending, unselected idea IDs made obsolete by this experiment. "
+            "Selected ideas transition from the official outcome instead."
+        )
+    )
 
 
 class Lineage(ResearchArtifact):

@@ -28,6 +28,8 @@ The controller owns context artifact creation; do not create or revise context_s
 Select exactly one admissible Research Experiment, or return selected:false.
 Prefer scientifically useful Research Experiments. Choose operational or provenance-only work only when required to trust the official Research Outcome or safely reuse a locked artifact.
 
+On the first planning turn, return either a Proposal or exactly `{"selected": false, "rationale": "..."}`. The selected:false response ends the Research Experiment without a Proposal, ResearchSpec, ExperimentDesign, Critic, worktree, implementation, or evaluation.
+
 Classify proposal.experiment_kind as exactly one of:
 
 - direct_followup: tests a follow-up explicitly recommended by prior artifacts.
@@ -49,7 +51,7 @@ Do not propose a materially similar hypothesis, label, split, horizon, feature f
 
 ## Artifact Output Constraints
 
-Return only the structured object required by the output schema for the current turn.
+Return only one schema-valid JSON object for the current turn.
 Do not return prose outside the structured object.
 Do not attempt to write canonical experiment-directory artifacts yourself.
 Use current schema fields only; do not invent output fields.
@@ -58,6 +60,7 @@ For proposal-selection turns, produce schema-valid content for these artifacts:
 
 - Proposal/proposal.json: describe the hypothesis, rationale, signal_family, expected_mechanism, known_risks, falsification_evidence, experiment_kind, builds_on_experiments, prior_evidence_used, and novelty_vs_prior.
 - ResearchSpec/research_spec.json: lock the pre-registration contract using hypothesis, target, prediction_horizon, universe, label, feature_availability_assumptions, split, primary_metric, secondary_metrics, baselines, null_tests, transaction_cost_assumptions, success_gates, failure_gates, and inconclusive_gates.
+  The split, transaction cost, and gate fields may use any JSON value that states the scientific contract clearly.
 - ExperimentDesign/experiment_design.json: declare allowed_write_paths, expected_outputs, failure_routing, and deterministic command groups with CommandDeclaration fields name, argv, timeout_seconds, phase, and failure_classification. argv is an array of strings, never a shell string; do not include cwd, env, or id.
 - SelectedPlan/selected_plan.json: select exactly one admissible Research Experiment, or set selected:false.
 
@@ -69,3 +72,4 @@ selected_plan.rationale must cite source experiment ids, prior metrics/blockers,
 
 For empirical-closeout turns, return Summary/summary.json and PlanUpdate/plan_update.json from the evidence supplied by the controller.
 PlanUpdate/plan_update.json uses followups, learning_updates, blockers, reusable_components, and superseded_idea_ids; use empty lists when none apply.
+superseded_idea_ids contains only other pending ideas made obsolete by the evidence. Do not include selected_plan.selected_idea_ids; the controller transitions those from the official outcome.
