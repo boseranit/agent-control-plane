@@ -565,6 +565,10 @@ Allowed data-audit failure classifications:
 - `point_in_time_invalid`
 - `prerequisite_command_failed`
 
+Any declared value outside this list is retained in the failure reason for
+diagnosis and normalized to `prerequisite_command_failed` in both the terminal
+summary and data-audit artifact. The failed command remains terminal.
+
 Successful audit writes a passing data-audit artifact and command metrics.
 Failed audit writes failed data-audit artifact, command metrics, logs, and a
 terminal summary.
