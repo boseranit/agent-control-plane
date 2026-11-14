@@ -423,7 +423,7 @@ run_research_loop(research_run_id):
       return completed result
     if state is not running:
       fail controller
-    if experiment_count >= max_experiments:
+    if budgeted_experiment_count >= max_experiments:
       mark run completed
       return completed result
 
@@ -466,8 +466,18 @@ run_one_experiment():
   record terminal experiment in state
   set ready_for_experiment
   ledger experiment_completed
+  if summary is run_failed/controller/runner_exception:
+    raise controller error
   return experiment_completed result
 ```
+
+Every terminal record except `run_failed/controller/runner_exception` consumes
+the Research Run's `max_experiments` budget and contributes to the returned
+`experiments_completed` count. A systemic runner exception remains durably
+recorded but stops that controller invocation so the caller can repair the
+operational fault. Resume allocates the next Experiment id; ids and the state
+`experiment_count` remain append-only even when a record is excluded from the
+scientific budget.
 
 ## Experiment Flow Pseudocode
 
@@ -574,6 +584,10 @@ Allowed data-audit failure classifications:
 - `artifact_missing`
 - `point_in_time_invalid`
 - `prerequisite_command_failed`
+
+Any declared value outside this list is retained in the failure reason for
+diagnosis and normalized to `prerequisite_command_failed` in both the terminal
+summary and data-audit artifact. The failed command remains terminal.
 
 Successful audit writes a passing data-audit artifact and command metrics.
 Failed audit writes failed data-audit artifact, command metrics, logs, and a

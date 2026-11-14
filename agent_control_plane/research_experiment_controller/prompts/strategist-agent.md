@@ -61,6 +61,8 @@ For proposal-selection turns, produce schema-valid content for these artifacts:
 - ExperimentDesign/experiment_design.json: declare allowed_write_paths, expected_outputs, failure_routing, and deterministic command groups with CommandDeclaration fields name, argv, timeout_seconds, phase, and failure_classification. argv is an array of strings, never a shell string; do not include cwd, env, or id.
 - SelectedPlan/selected_plan.json: select exactly one admissible Research Experiment, or set selected:false.
 
+Use only these canonical `failure_classification` values in prerequisite/data-audit command declarations: `data_root_missing`, `feature_family_missing`, `schema_mismatch`, `artifact_missing`, `point_in_time_invalid`, or `prerequisite_command_failed`. An unfamiliar label is retained only for diagnosis and normalized to `prerequisite_command_failed` when its command fails.
+
 For selected:false, do not set selected_idea_ids, fresh_selection_reason, or seed_component_ids.
 For selected:true, either set selected_idea_ids for pending followups or set fresh_selection_reason for a fresh choice.
 When selecting a pending idea, set selected_plan.selected_idea_ids from continuation_summary.pending_followups[*].idea_id.
