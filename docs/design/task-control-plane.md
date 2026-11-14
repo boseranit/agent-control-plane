@@ -553,7 +553,7 @@ Relevant SDK surface:
 - `Codex.thread_start(...)`
 - `Codex.thread_resume(thread_id, ...)`
 - `Thread.id`
-- `Thread.run(input, output_schema=..., effort=..., cwd=..., approval_mode=..., sandbox_policy=...)`
+- `Thread.run(input, output_schema=..., effort=..., cwd=..., approval_mode=..., sandbox=...)`
 
 One long-lived `Codex` client should be used per `run` or `resume` process:
 
@@ -575,7 +575,7 @@ def create_or_resume_thread(
     cwd: Path,
     developer_instructions: str,
     approval_mode: ApprovalMode,
-    sandbox: SandboxMode,
+    sandbox: Sandbox,
     model: str | None,
 ) -> Thread:
     ...
@@ -1241,7 +1241,7 @@ Tasks:
 7. Use public SDK symbols where possible:
    - `openai_codex.Codex`
    - `openai_codex.ApprovalMode`
-   - `openai_codex.types.SandboxMode`
+   - `openai_codex.Sandbox`
    - `openai_codex.types.ReasoningEffort`
 8. Keep all SDK-specific adaptation out of the Controller where practical.
 
