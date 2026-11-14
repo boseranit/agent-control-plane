@@ -73,6 +73,8 @@ def test_failed_data_audit_command_records_prerequisite_failure_and_metrics(
                             "print(os.environ['RESEARCH_DATA_ROOT']); "
                             "print(os.environ['RESEARCH_EXPERIMENT_DATA_ROOT']); "
                             "print(os.environ['HLM_DATA_ROOT']); "
+                            "print(os.environ['CRYPTO_DATA_ROOT']); "
+                            "print(os.environ['RESEARCH_SCRATCH_ROOT']); "
                             "print('schema failed', file=sys.stderr); "
                             "raise SystemExit(9)"
                         ),
@@ -103,6 +105,8 @@ def test_failed_data_audit_command_records_prerequisite_failure_and_metrics(
         str(data_root),
         str(experiment_data_root),
         str(data_root),
+        str(data_root),
+        str(experiment_data_root),
     ]
     assert experiment_data_root.is_dir()
     assert "schema failed" in stderr.read_text(encoding="utf-8")

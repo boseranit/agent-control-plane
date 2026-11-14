@@ -233,9 +233,10 @@ including commands launched by agents. Linux systemd user scopes enforce the
 ceiling with swap disabled. A requested boundary fails closed when unavailable;
 agents do not monitor, approve, or retry commands based on sampled memory.
 Memory exhaustion is a systemic controller failure: command metrics remain
-durable and implementation repair does not rerun the command. Land the systemic
-runner-failure policy first so this failure stops the invocation without
-consuming scientific budget.
+durable, later verification commands do not run, and implementation repair does
+not rerun the command. If a later boundary cannot be created, metrics preserve
+completed commands and stderr retains the boundary diagnostic. Systemic failures
+stop the invocation without consuming scientific budget.
 
 Worktree manager:
 Creates or reuses one preserved experiment worktree per selected experiment.
@@ -570,6 +571,8 @@ Command environment:
 - `RESEARCH_DATA_ROOT`
 - `RESEARCH_EXPERIMENT_DATA_ROOT`
 - `HLM_DATA_ROOT`
+- `CRYPTO_DATA_ROOT` (same canonical input root as `RESEARCH_DATA_ROOT`)
+- `RESEARCH_SCRATCH_ROOT` (same writable root as `RESEARCH_EXPERIMENT_DATA_ROOT`)
 - `RESEARCH_RUN_DIR`
 - `RESEARCH_REPO_ROOT`
 

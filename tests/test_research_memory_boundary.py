@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -6,7 +7,10 @@ import pytest
 from agent_control_plane.control_plane.agent_runtime import AgentMemoryLimitExceeded
 from agent_control_plane.control_plane.command_runner import CommandResult
 from agent_control_plane.control_plane.json_artifacts import read_json_object
-from agent_control_plane.control_plane.systemd_scope import ResourceLimitExceeded
+from agent_control_plane.control_plane.systemd_scope import (
+    ResourceBoundaryUnavailable,
+    ResourceLimitExceeded,
+)
 from agent_control_plane.research_experiment_controller import experiment_flow
 from agent_control_plane.research_experiment_controller import prerequisites
 from agent_control_plane.research_experiment_controller import verification
@@ -50,7 +54,10 @@ def test_verification_memory_kill_is_not_sent_to_implementation_repair(
 
     with pytest.raises(ResourceLimitExceeded, match="Verification command"):
         verification.run_verification_commands(
-            verification_commands=[{"name": "verification", "argv": ["test"]}],
+            verification_commands=[
+                {"name": "verification", "argv": ["test"]},
+                {"name": "must-not-run", "argv": ["finalize"]},
+            ],
             cwd=tmp_path,
             run_dir=tmp_path / "run",
             timeout_seconds=60,
@@ -96,6 +103,65 @@ def test_data_audit_memory_kill_is_a_systemic_resource_failure(
     metrics = read_json_object(tmp_path / "run" / "command_metrics.json")
     assert metrics["command_count"] == 1
     assert metrics["commands"][0]["memory_limit_exceeded"] is True
+
+
+@pytest.mark.parametrize("phase", ["verification", "data_audit"])
+def test_boundary_failure_preserves_completed_command_metrics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    phase: str,
+) -> None:
+    commands = [
+        {"name": "first", "argv": ["first"]},
+        {"name": "unavailable", "argv": ["unavailable"]},
+    ]
+    calls = 0
+
+    def run_command(command, **kwargs) -> CommandResult:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise ResourceBoundaryUnavailable("systemd scope unavailable")
+        return replace(
+            _memory_failure(tmp_path, name=command.name),
+            status="passed",
+            exit_code=0,
+            memory_limit_exceeded=False,
+        )
+
+    module = verification if phase == "verification" else prerequisites
+    monkeypatch.setattr(module, "run_command", run_command)
+    run_dir = tmp_path / "run"
+    with pytest.raises(ResourceBoundaryUnavailable, match="scope unavailable"):
+        if phase == "verification":
+            verification.run_verification_commands(
+                verification_commands=commands,
+                cwd=tmp_path,
+                run_dir=run_dir,
+                timeout_seconds=60,
+                max_repairs=3,
+                maximum_memory_bytes=123456,
+            )
+        else:
+            prerequisites.run_data_audit_phase(
+                PrerequisiteAuditRequest(
+                    data_root=tmp_path,
+                    experiment_data_root=tmp_path / "experiment-data",
+                    prerequisite_commands=[],
+                    data_audit_commands=commands,
+                    cwd=tmp_path,
+                    run_dir=run_dir,
+                    timeout_seconds=60,
+                    maximum_memory_bytes=123456,
+                )
+            )
+
+    metrics = read_json_object(run_dir / "command_metrics.json")
+    assert calls == 2
+    assert metrics["command_count"] == 1
+    assert metrics["commands"][0]["name"] == "first"
+    assert metrics["commands"][0]["status"] == "passed"
+
 
 
 def test_agent_memory_kill_never_enters_usage_limit_retry() -> None:

@@ -158,8 +158,15 @@ def _run_command(
                 stderr=stderr_target,
                 **_process_group_kwargs(),
             )
+        except ResourceBoundaryUnavailable as exc:
+            stderr_file.write(f"failed to enforce command memory boundary: {exc}\n")
+            raise
         except OSError as exc:
             stderr_file.write(f"failed to start command: {exc}\n")
+            if scope is not None:
+                raise ResourceBoundaryUnavailable(
+                    f"failed to start command memory boundary: {exc}"
+                ) from exc
         else:
             try:
                 exit_code = process.wait(timeout=command.timeout_seconds)
@@ -174,9 +181,11 @@ def _run_command(
             else:
                 scope_result = scope.result() if scope is not None else None
                 if scope is not None and exit_code != 0 and scope_result is None:
-                    raise ResourceBoundaryUnavailable(
+                    message = (
                         "systemd did not retain the requested command memory scope."
                     )
+                    stderr_file.write(f"{message}\n")
+                    raise ResourceBoundaryUnavailable(message)
                 memory_limit_exceeded = scope_result == "oom-kill"
                 if memory_limit_exceeded:
                     status = "memory_limit_exceeded"

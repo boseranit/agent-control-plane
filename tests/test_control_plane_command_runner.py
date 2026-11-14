@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -75,6 +76,38 @@ def test_requested_memory_boundary_failure_propagates_as_systemic(
             stdout_path=tmp_path / "stdout.log",
             stderr_path=tmp_path / "stderr.log",
         )
+    assert "systemd user manager unavailable" in (
+        tmp_path / "stderr.log"
+    ).read_text(encoding="utf-8")
+
+
+def test_memory_scope_launcher_failure_is_not_an_ordinary_command_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scope = SimpleNamespace(
+        command_argv=lambda argv: [str(tmp_path / "missing-systemd-run")],
+        cleanup=lambda: None,
+    )
+    monkeypatch.setattr(
+        command_runner_module.SystemdMemoryScope,
+        "create",
+        lambda *args, **kwargs: scope,
+    )
+    with pytest.raises(ResourceBoundaryUnavailable, match="failed to start"):
+        run_command(
+            CommandSpec(
+                name="bounded",
+                argv=["true"],
+                maximum_memory_bytes=123456,
+            ),
+            cwd=tmp_path,
+            stdout_path=tmp_path / "stdout.log",
+            stderr_path=tmp_path / "stderr.log",
+        )
+    assert "missing-systemd-run" in (tmp_path / "stderr.log").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_run_command_uses_cwd_and_env_overlay(

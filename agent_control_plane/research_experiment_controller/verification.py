@@ -66,9 +66,8 @@ def run_verification_commands(
             timeout_seconds=timeout_seconds,
             maximum_memory_bytes=maximum_memory_bytes,
             attempt=attempt,
+            all_results=all_results,
         )
-        all_results.extend(attempt_results)
-        write_command_metrics(resolved_run_dir / "command_metrics.json", all_results)
         memory_failure = next(
             (result for result in attempt_results if result.memory_limit_exceeded),
             None,
@@ -124,22 +123,30 @@ def _run_attempt(
     timeout_seconds: float,
     maximum_memory_bytes: int | None,
     attempt: int,
+    all_results: list[CommandResult],
 ) -> list[CommandResult]:
-    return [
-        run_command(
-            _command_spec(
-                command,
-                index,
-                timeout_seconds,
-                maximum_memory_bytes,
-            ),
-            cwd=cwd,
-            stdout_path=_log_path(run_dir, attempt, command, index, "stdout"),
-            stderr_path=_log_path(run_dir, attempt, command, index, "stderr"),
-            env=env,
-        )
-        for index, command in enumerate(verification_commands, start=1)
-    ]
+    attempt_results: list[CommandResult] = []
+    try:
+        for index, command in enumerate(verification_commands, start=1):
+            result = run_command(
+                _command_spec(
+                    command,
+                    index,
+                    timeout_seconds,
+                    maximum_memory_bytes,
+                ),
+                cwd=cwd,
+                stdout_path=_log_path(run_dir, attempt, command, index, "stdout"),
+                stderr_path=_log_path(run_dir, attempt, command, index, "stderr"),
+                env=env,
+            )
+            attempt_results.append(result)
+            all_results.append(result)
+            if result.memory_limit_exceeded:
+                break
+    finally:
+        write_command_metrics(run_dir / "command_metrics.json", all_results)
+    return attempt_results
 
 
 def _command_spec(
