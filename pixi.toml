@@ -27,7 +27,7 @@ filelock = ">=3,<4"
 psutil = ">=6,<8"
 
 [pypi-dependencies]
-openai-codex = "==0.144.4"
+openai-codex = "*"
 hatchet-sdk = ">=1.33.6, <2"
 
 [feature.dev.dependencies]
