@@ -41,6 +41,40 @@ def test_default_material_fields_require_fresh_critic() -> None:
         assert requires_fresh_critic(before, after) is True
 
 
+def test_materiality_detects_planning_value_changes_across_json_shapes() -> None:
+    cases = [
+        (
+            "split",
+            {"train": "2020:2024", "test": "2025"},
+            "Train 2020 through 2024; test 2025.",
+            "split",
+        ),
+        (
+            "transaction_cost_assumptions",
+            "5 bps",
+            ["Charge 5 bps per side.", "Do not model market impact."],
+            "transaction_cost_model",
+        ),
+        (
+            "success_gates",
+            {"ic": 0.03},
+            ["IC must exceed 0.03."],
+            "success_gate",
+        ),
+    ]
+
+    for field, before_value, after_value, expected_category in cases:
+        decision = assess_material_revision(
+            {field: before_value},
+            {field: after_value},
+            agent_declared_categories=[],
+        )
+
+        assert decision.requires_fresh_critic is True
+        assert decision.controller_detected_categories == [expected_category]
+        assert decision.agent_declared_categories == []
+
+
 def test_agent_declared_materiality_is_conservative() -> None:
     before = {"target": "return_1m", "notes": "old"}
     after = {"target": "return_1m", "notes": "new"}

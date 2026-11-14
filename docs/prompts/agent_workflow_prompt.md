@@ -16,7 +16,7 @@ This is the actual workflow that I want to implement; you should note that it is
 Agents
 
 1. Research Strategist Agent
-Persistent read-only thread, scoped to the loop. Owns context summary, hypothesis framing, proposal, pre-registration, experiment design, design revision, plan selection, final interpretation handoff, and plan update. It remembers prior rejected ideas, blockers, revisions, empirical outcomes, and allowed revisit conditions, but generated JSON artifacts remain the source of truth. It must distinguish pre-registered evidence from exploratory findings and may not revise success gates after seeing results.
+Persistent read-only thread, scoped to the Research Run. Reads controller-owned context summaries and owns hypothesis framing, proposal, pre-registration, experiment design, design revision, plan selection, final interpretation handoff, and plan update. It remembers prior rejected ideas, blockers, revisions, empirical outcomes, and allowed revisit conditions, but generated JSON artifacts remain the source of truth. It must distinguish pre-registered evidence from exploratory findings and may not revise success gates after seeing results. The controller persists its returned canonical artifacts; the Strategist does not write them directly.
 2. Research Critic Agent
 Fresh read-only thread per critique. Owns independent critique of research design, material revisions, implementation-plan alignment, and final empirical interpretation. It should not inherit Strategist, Implementer, or Evaluator conversation state, so it can catch leakage, weak baselines, scope creep, invalid success gates, post-hoc reasoning, and overclaiming.
 3. Research Implementer Agent
@@ -31,15 +31,15 @@ Controller builds context_pack.md deterministically from params, loop spec, prio
 2. Strategic Planning
 
 
-Strategist receives the context pack and writes context_summary.json, then proposal.json. The proposal should state the hypothesis, economic or statistical rationale, intended signal/feature family, expected mechanism, known risks, and what evidence would falsify the idea. It should use prior loop memory to avoid repeating known blocked paths, while recording every decision in artifacts. 3. Research Specification And Experiment Design
+Strategist receives the controller-built context pack and context_summary.json, then returns proposal.json, or exactly {"selected": false, "rationale": "..."} when no admissible Research Experiment remains. The controller persists the response. The proposal should state the hypothesis, economic or statistical rationale, intended signal/feature family, expected mechanism, known risks, and what evidence would falsify the idea. It should use prior Research Run memory to avoid repeating known blocked paths, while recording every decision in artifacts. 3. Research Specification And Experiment Design
 Strategist writes research spec.json and experiment_design.json. research_spec.json is the pre-registration artifact. It defines the hypothesis, target, prediction horizon, universe, label, feature availability assumptions, train/validation/test split, primary metric, secondary metrics, baselines, null tests, transaction-cost assumptions, success gates, failure gates, and inconclusive gates. experiment_design.json defines prerequisite commands, implementation verification commands, confirmatory evaluation commands, optional exploratory diagnostic commands attached to confirmatory evaluation, expected outputs, allowed write paths, timeouts, resource budgets, and failure routing.
 4. Independent Design Critique
 Controller starts a fresh Critic thread with the proposal, research spec, experiment design, context summary, failed-run context, and relevant artifact notes. Critic writes critique.json. It should check leakage risk, point-in-time validity, baseline strength, statistical validity, multiple-testing risk, scope control, feasibility, and whether the success gates are meaningful.
 5. Design Revision And Selection
-Strategist revises the research spec or experiment design when required, then writes selected plan.json. A second fresh Critic pass is required for material revisions involving target, label, universe, data source, feature family, split, primary metric, success gate, baseline set, transaction-cost model, holding period, rebalance frequency, or neutralization policy. Minor command or formatting fixes do not require another Critic pass.
+Strategist revises the research spec or experiment design when required, then returns selected_plan.json. Materiality is controller-owned: a fresh Critic pass is required when the controller detects material changes or the agent declares them. Default categories include target, label, universe, data source, feature family, split, primary metric, success gate, baseline set, transaction-cost model, holding period, rebalance frequency, and neutralization policy. Agents may declare a revision material, but may not decide it is non-material. Only the controller may classify command or formatting repairs as non-material; JSON shape flexibility does not exempt material planning values from comparison.
 6. Data And Prerequisite Audit
 Controller runs prerequisite and data-audit commands from the experiment design using deterministic argy execution. These checks verify data availability, schema compatibility, artifact presence, time coverage, point-in-time assumptions, feature/label timestamp alignment, and obvious leakage risks. Results are written to data_audit.json and prerequisite logs. If the design assumes unavailable data or invalid artifacts, return to Strategist. If the failure is mechanical setup or command repair, route to Implementer after worktree setup. 7. Implementation
-Controller prepares the loop-scoped worktree. Implementer receives selected plan, research spec, experiment design, critique, data audit, prerequisite result, allowed edit paths, and repo rules. It makes code and test changes, then writes implementation, json. The implementation must match the selected plan rather than improve or reinterpret it.
+Controller prepares one preserved Experiment Worktree per selected Research Experiment. Implementer receives selected plan, research spec, experiment design, critique, data audit, prerequisite result, allowed edit paths, and repo rules. It makes code and test changes only within the selected design's allowed_write_paths, then returns implementation.json. The implementation must match the selected plan rather than improve or reinterpret it.
 
 8. Verification and repair loop 
 Controller runs implementation verification commands. On failure, logs and experiment_result.json go back to the same implementer thread. Implementer writes a repair artifact, changes code
@@ -86,6 +86,9 @@ Key Design Rules
 5, Success, failure, and inconclusive outcomes should all be first-class results. 6. Any material change to label, universe, split, metric, baseline, cost model, feature timing, or success gate requires Strategist revision and fresh Critic review.
 7. Every signal must prove point-in-time validity before empirical claims are
 trusted.
+8. The human-authored Research Run Spec and the human context it references define scientific admissibility. Agents enforce that existing contract; they do not invent prerequisite declarations or success gates. Recorded assumptions cannot relax human constraints or authorize missing required evidence. A runtime artifact digest proves byte identity and provenance, not causal validity or scientific admissibility.
+9. The Evaluator may write only in its Evaluator Workspace or declared experiment-local output paths. Run evaluator-authored checks from that workspace with bytecode writes disabled and caches, temporary files, and analysis outputs under eval_scratch or eval_outputs. Do not run package managers, tests, linters, or ad hoc Python with the Experiment Worktree as cwd. Commands must not mutate the worktree, including ignored environments and caches, or locked artifacts.
+10. The Implementer prepares evaluation-safe commands during implementation or verification. If a locked evaluation command would mutate protected inputs, the Evaluator reports an operational design defect rather than running it, repairing source, or changing the locked plan. The controller audits the evaluation boundary even after evaluator failure.
 
 This is a simplified sketch to illustrate how your workflow translates to Hatchet. The full implementation would include and artifact production for example.
 
@@ -107,10 +110,11 @@ class ResearchSpec(BaseModel): ...
 def research_cycle(input: EmptyModel, ctx: DurableContext) -> dict:
     # 1. Context Build (Controller logic, could be a separate task or part of this)
     context_pack = build_context_pack()  # Your deterministic function
+    context_summary = build_context_summary(context_pack)  # Controller-owned
     ctx.log("Context pack built")
     
     # 2. Strategic Planning
-    context_summary, proposal = run_strategist(context_pack)
+    proposal = run_strategist(context_pack, context_summary)
     # 3. Research Specification And Experiment Design
     research_spec, experiment_design = run_strategist(context_summary, proposal)
     
@@ -165,7 +169,7 @@ def research_cycle(input: EmptyModel, ctx: DurableContext) -> dict:
     return {"status": confirmatory_result.status, "summary": summary}
 ```
 
-Note that you should use Pydantic, but only at artifact boundaries. Do not make the whole workflow Pydantic-heavy. Use it to define and validate the canonical json artifacts agents produce like research_spec.json from the Strategist. Use Pydantic as a thin contract layer.
+Use Pydantic boundary schemas for canonical JSON artifacts, but do not make the whole workflow Pydantic-heavy. Require each artifact's named fields and reject unknown keys. Preserve the existing named field contracts while deliberately allowing shape-flexible ResearchSpec planning payloads for split, transaction-cost assumptions, and success, failure, and inconclusive gates. Preserve agent-selected JSON values instead of imposing provider-specific scalar, array, or object shapes. Validate responses locally against the requested artifact model; provider output schemas are not the contract. Use Pydantic as a thin contract layer.
 
 This workflow should land as a new sibling Control-Plane Workflow rather than as a mode of the existing Task Control Plane.
 

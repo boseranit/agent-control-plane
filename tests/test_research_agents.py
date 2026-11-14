@@ -68,6 +68,10 @@ def test_research_agent_prompts_encode_shared_boundaries() -> None:
         assert "Materiality is controller-owned" in prompt
         assert "Do not wait for human input in v1" in prompt
         assert "proceed with explicit assumptions" in prompt
+        assert "human-authored Research Run Spec" in prompt
+        assert "do not invent new prerequisite declarations or success gates" in prompt
+        assert "Assumptions must not relax human-authored constraints" in prompt
+        assert "authorize missing required evidence" in prompt
 
 
 def test_research_agent_prompts_encode_optional_artifact_backfill_policy() -> None:
@@ -104,6 +108,25 @@ def test_research_agent_prompts_encode_optional_artifact_backfill_policy() -> No
         "Exploratory diagnostics are attached to the locked confirmatory plan"
         in evaluator
     )
+
+
+def test_execution_prompts_preserve_the_evaluation_write_boundary() -> None:
+    implementer = prompt_for_role(ResearchAgentRole.IMPLEMENTER)
+    evaluator = prompt_for_role(ResearchAgentRole.EVALUATOR)
+
+    assert "only paths allowed by experiment_design.json" in implementer
+    assert "declared evaluation commands cannot change the Experiment Worktree" in implementer
+    assert "ignored environments, bytecode, and tool caches" in implementer
+    assert "worktree-mutating setup during implementation or verification" in implementer
+    assert "not evaluation" in implementer
+    assert "Do not edit the Experiment Worktree or locked artifacts" in evaluator
+    assert "Do not run package managers, tests, linters, or ad hoc Python" in evaluator
+    assert "with the Experiment Worktree as cwd" in evaluator
+    assert "Python bytecode writes disabled" in evaluator
+    assert "under eval_scratch or eval_outputs" in evaluator
+    assert "operational design defect instead of executing it" in evaluator
+    assert "Do not repair source code, change the locked commands" in evaluator
+    assert "must not upgrade the current outcome" in evaluator
 
 
 def test_planning_prompts_keep_admissibility_in_the_human_contract() -> None:

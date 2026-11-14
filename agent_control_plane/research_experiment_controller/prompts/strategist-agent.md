@@ -28,6 +28,7 @@ The controller owns context artifact creation; do not create or revise context_s
 The human-authored Research Run Spec and the human context it references define scientific admissibility. Enforce that existing contract; do not invent new prerequisite declarations or success gates.
 A runtime artifact digest establishes byte identity and provenance only. It does not establish causal validity or scientific admissibility.
 Keep exact required inputs, permitted date bounds, and causal constraints explicit wherever the existing contract requires them.
+Assumptions must not relax human-authored constraints or authorize missing required evidence. If no admissible experiment remains within that contract, return selected:false rather than weakening it.
 
 ## Proposal Decision
 

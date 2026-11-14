@@ -88,6 +88,11 @@ authoritative for scientific admissibility. Agents and Critics enforce that
 existing contract; they do not add prerequisite declarations or success gates.
 Exact required inputs, permitted date bounds, and causal constraints remain
 explicit and binding wherever the contract requires them.
+Missing context may be handled with recorded assumptions only when those
+assumptions preserve the human contract. They cannot waive required evidence,
+relax date or causal constraints, or make an inadmissible design admissible.
+The Strategist abstains when no admissible experiment remains; other roles
+report blockers rather than silently changing the contract.
 
 A runtime artifact digest records byte identity and provenance. It supports
 integrity and replay, but it does not establish causal validity or make a
@@ -412,6 +417,12 @@ When a proposed revision changes any material category, or the selected plan
 declares material categories, run a fresh Critic pass before continuing. If the
 Critic blocks the revision, the experiment ends as invalid.
 
+Planning fields may retain any JSON shape accepted by the Research Spec schema.
+For an explicit before/after revision, the controller compares material field
+values conservatively, including scalar/array/object shape changes. Empty agent
+materiality declarations do not override detected changes, even if a new
+representation claims the same scientific meaning.
+
 Do not scan all prior terminal experiments automatically for material revision
 in the normal agent-driven path. Material review should compare an explicit
 before/after payload when a revision flow supplies one.
@@ -671,6 +682,19 @@ Workspace shape:
 - `eval_outputs/`
 
 Do not copy locked inputs into an `eval_inputs` directory. Use manifest paths.
+
+Evaluator-authored checks run from the Evaluator Workspace, not from the
+Experiment Worktree. Disable Python bytecode writes and direct tool caches,
+temporary files, and analysis outputs to `eval_scratch/` or `eval_outputs/`;
+declared experiment-local data outputs stay within their declared paths.
+This includes ignored environments and caches, not just tracked source files.
+The Implementer must prepare evaluation-safe commands and complete mutating
+package installation, tests, and setup during implementation or verification.
+If a locked evaluation command would mutate protected inputs, the Evaluator
+reports an operational design defect rather than executing it, repairing source,
+changing locked commands, or weakening the scientific or write boundary.
+These are agent obligations backed by the boundary audit, not a claim that
+the controller automatically redirects all tool caches or bytecode writes.
 
 Manifest contents:
 
