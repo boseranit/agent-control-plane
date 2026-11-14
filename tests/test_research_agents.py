@@ -68,6 +68,10 @@ def test_research_agent_prompts_encode_shared_boundaries() -> None:
         assert "Materiality is controller-owned" in prompt
         assert "Do not wait for human input in v1" in prompt
         assert "proceed with explicit assumptions" in prompt
+        assert "human-authored Research Run Spec" in prompt
+        assert "do not invent new prerequisite declarations or success gates" in prompt
+        assert "Assumptions must not relax human-authored constraints" in prompt
+        assert "authorize missing required evidence" in prompt
 
 
 def test_research_agent_prompts_encode_optional_artifact_backfill_policy() -> None:
@@ -81,9 +85,18 @@ def test_research_agent_prompts_encode_optional_artifact_backfill_policy() -> No
     assert "argv is an array of strings, never a shell string" in strategist
     assert "read canonical inputs from $HLM_DATA_ROOT" in implementer
     assert "$RESEARCH_EXPERIMENT_DATA_ROOT/runtime-data" in implementer
-    assert "declared evaluation outputs under $RESEARCH_EXPERIMENT_DATA_ROOT" in implementer
-    assert "Do not write generated experiment data into the canonical data root" in implementer
-    assert "require an explicit post-implementation verification backfill command" in critic
+    assert (
+        "declared evaluation outputs under $RESEARCH_EXPERIMENT_DATA_ROOT"
+        in implementer
+    )
+    assert (
+        "Do not write generated experiment data into the canonical data root"
+        in implementer
+    )
+    assert (
+        "require an explicit post-implementation verification backfill command"
+        in critic
+    )
     assert "experiment backfills into canonical data" in critic
     assert "declared experiment-local evaluation evidence" in critic
     assert (
@@ -91,7 +104,46 @@ def test_research_agent_prompts_encode_optional_artifact_backfill_policy() -> No
         in evaluator
     )
     assert "declared experiment-local evaluation outputs" in evaluator
-    assert "Exploratory diagnostics are attached to the locked confirmatory plan" in evaluator
+    assert (
+        "Exploratory diagnostics are attached to the locked confirmatory plan"
+        in evaluator
+    )
+
+
+def test_execution_prompts_preserve_the_evaluation_write_boundary() -> None:
+    implementer = prompt_for_role(ResearchAgentRole.IMPLEMENTER)
+    evaluator = prompt_for_role(ResearchAgentRole.EVALUATOR)
+
+    assert "only paths allowed by experiment_design.json" in implementer
+    assert "declared evaluation commands cannot change the Experiment Worktree" in implementer
+    assert "ignored environments, bytecode, and tool caches" in implementer
+    assert "worktree-mutating setup during implementation or verification" in implementer
+    assert "not evaluation" in implementer
+    assert "Do not edit the Experiment Worktree or locked artifacts" in evaluator
+    assert "Do not run package managers, tests, linters, or ad hoc Python" in evaluator
+    assert "with the Experiment Worktree as cwd" in evaluator
+    assert "Python bytecode writes disabled" in evaluator
+    assert "under eval_scratch or eval_outputs" in evaluator
+    assert "operational design defect instead of executing it" in evaluator
+    assert "Do not repair source code, change the locked commands" in evaluator
+    assert "must not upgrade the current outcome" in evaluator
+
+
+def test_planning_prompts_keep_admissibility_in_the_human_contract() -> None:
+    prompts = (
+        prompt_for_role(ResearchAgentRole.STRATEGIST),
+        prompt_for_role(ResearchAgentRole.CRITIC),
+    )
+
+    for prompt in prompts:
+        assert "human-authored Research Run Spec" in prompt
+        assert "human context it references define scientific admissibility" in prompt
+        assert "Enforce that existing contract" in prompt
+        assert "do not invent new prerequisite declarations or success gates" in prompt
+        assert "digest establishes byte identity and provenance only" in prompt
+        assert "does not establish causal validity or scientific admissibility" in prompt
+        assert "exact required inputs, permitted date bounds, and causal constraints" in prompt
+        assert "wherever the existing contract requires them" in prompt
 
 
 def test_research_agent_prompts_encode_continuation_behavior() -> None:
@@ -111,13 +163,18 @@ def test_research_agent_prompts_encode_continuation_behavior() -> None:
 def test_strategist_prompt_uses_current_schema_names() -> None:
     strategist = prompt_for_role(ResearchAgentRole.STRATEGIST)
 
+    assert '{"selected": false, "rationale": "..."}' in strategist
+    assert "ends the Research Experiment" in strategist
     assert "Proposal/proposal.json" in strategist
     assert "ResearchSpec/research_spec.json" in strategist
+    assert "may use any JSON value" in strategist
     assert "ExperimentDesign/experiment_design.json" in strategist
     assert "SelectedPlan/selected_plan.json" in strategist
     assert "Summary/summary.json" in strategist
     assert "PlanUpdate/plan_update.json" in strategist
-    assert "name, argv, timeout_seconds, phase, and failure_classification" in strategist
+    assert (
+        "name, argv, timeout_seconds, phase, and failure_classification" in strategist
+    )
     assert "do not include cwd, env, or id" in strategist
     assert "expected_outputs" in strategist
     assert "selected_idea_ids" in strategist
@@ -125,6 +182,7 @@ def test_strategist_prompt_uses_current_schema_names() -> None:
     assert "seed_component_ids" in strategist
     assert "blockers" in strategist
     assert "reusable_components" in strategist
+    assert "output schema" not in strategist
 
 
 def test_strategist_prompt_encodes_context_and_closeout_outputs() -> None:
@@ -143,6 +201,8 @@ def test_strategist_prompt_encodes_plan_update_cards_without_schema_dump() -> No
     assert "followups, learning_updates, blockers, reusable_components" in strategist
     assert "superseded_idea_ids" in strategist
     assert "use empty lists when none apply" in strategist
+    assert "only other pending ideas made obsolete" in strategist
+    assert "Do not include selected_plan.selected_idea_ids" in strategist
     assert '"properties"' not in strategist
     assert '"additionalProperties"' not in strategist
 
